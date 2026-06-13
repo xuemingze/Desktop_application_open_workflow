@@ -149,6 +149,24 @@ class MCPEmbeddedServer(QThread):
             self.status_signal.emit(False, "MCP SDK 未安装")
             return
 
+        # 打包后 (frozen GUI 模式) 重新绑定 stdin/stdout,避免 sys.stdin 为 None
+        # 从文件描述符 0/1 重建
+        if getattr(__import__('sys'), 'frozen', False):
+            import sys as _sys
+            try:
+                if _sys.stdin is None or not hasattr(_sys.stdin, 'buffer'):
+                    try:
+                        _sys.stdin = open(0, 'r', encoding='utf-8', buffering=1)
+                    except Exception:
+                        pass
+                if _sys.stdout is None or not hasattr(_sys.stdout, 'buffer'):
+                    try:
+                        _sys.stdout = open(1, 'w', encoding='utf-8', buffering=1)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
         try:
             self._running = True
             self.status_signal.emit(True, "MCP server 启动中...")
@@ -160,7 +178,9 @@ class MCPEmbeddedServer(QThread):
             self._loop.run_until_complete(self._serve())
 
         except Exception as e:
-            self.log_signal.emit(f"❌ MCP server 异常: {e}")
+            import traceback
+            tb = traceback.format_exc()
+            self.log_signal.emit(f"❌ MCP server 异常: {e}\n{tb}")
             self.status_signal.emit(False, str(e))
         finally:
             self.status_signal.emit(False, "已停止")

@@ -1141,41 +1141,61 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1000, lambda: self._quick_capture_countdown(n - 1))
 
     def _start_mcp_server(self):
-        """启动嵌入式 MCP server"""
-        from mcp_embedded import MCPEmbeddedServer
-        if hasattr(self, 'mcp_server') and self.mcp_server and self.mcp_server.isRunning():
-            self._append_log("MCP server 已在运行")
+        """启动 MCP server (子进程方式)
+        启动子进程用 --mcp 模式,子进程负责 stdio 通信,
+        主 GUI 进程不被占用,AI 客户端连接子进程的 stdio。
+        """
+        import subprocess
+        import sys as _sys
+        if hasattr(self, 'mcp_proc') and self.mcp_proc and self.mcp_proc.poll() is None:
+            self._append_log(f"[MCP] 已在运行 (PID={self.mcp_proc.pid})")
             return
-        self.mcp_server = MCPEmbeddedServer()
-        self.mcp_server.log_signal.connect(self._on_mcp_log)
-        self.mcp_server.status_signal.connect(self._on_mcp_status)
-        self.mcp_server.start()
-        self.btn_start_mcp.setEnabled(False)
-        self.btn_stop_mcp.setEnabled(True)
+
+        # 决定怎么启动: 打包后用 exe, 源码用 python
+        if getattr(_sys, 'frozen', False):
+            cmd = [_sys.executable, '--mcp']
+        else:
+            cmd = [_sys.executable, 'desktop_auto.py', '--mcp']
+
+        self._append_log(f"[MCP] 启动子进程: {cmd[0]} {cmd[1:]}")
+        try:
+            self.mcp_proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=0x08000000,  # CREATE_NO_WINDOW
+            )
+            self._append_log(f"[MCP] ✅ 启动成功, PID={self.mcp_proc.pid}")
+            self._append_log(f"[MCP] 💡 AI 客户端可连接此子进程的 stdio")
+            self.btn_start_mcp.setEnabled(False)
+            self.btn_stop_mcp.setEnabled(True)
+            self.lbl_mcp_status.setText(f"状态: 运行中 (PID={self.mcp_proc.pid})")
+            self.lbl_mcp_status.setStyleSheet("color: #10b981; font-weight: bold; font-size: 11px;")
+        except Exception as e:
+            self._append_log(f"[MCP] ❌ 启动失败: {e}")
 
     def _stop_mcp_server(self):
-        """停止嵌入式 MCP server"""
-        if hasattr(self, 'mcp_server') and self.mcp_server:
-            self.mcp_server.stop()
-            self.mcp_server.wait(2000)
+        """停止 MCP server 子进程"""
+        if hasattr(self, 'mcp_proc') and self.mcp_proc:
+            try:
+                self.mcp_proc.terminate()
+                self.mcp_proc.wait(2000)
+                self._append_log("[MCP] ⏹ 子进程已停止")
+            except Exception as e:
+                self._append_log(f"[MCP] 停止失败: {e}")
+            self.mcp_proc = None
         self.btn_start_mcp.setEnabled(True)
         self.btn_stop_mcp.setEnabled(False)
         self.lbl_mcp_status.setText("状态: 已停止")
         self.lbl_mcp_status.setStyleSheet("color: #666; font-size: 11px;")
-        self._append_log("⏹ MCP server 已停止")
 
     def _on_mcp_log(self, msg: str):
         self._append_log(f"[MCP] {msg}")
 
     def _on_mcp_status(self, running: bool, msg: str):
-        if running:
-            self.lbl_mcp_status.setText(f"状态: {msg}")
-            self.lbl_mcp_status.setStyleSheet("color: #10b981; font-weight: bold; font-size: 11px;")
-        else:
-            self.lbl_mcp_status.setText(f"状态: {msg}")
-            self.lbl_mcp_status.setStyleSheet("color: #dc2626; font-size: 11px;")
-        self.btn_start_mcp.setEnabled(not running)
-        self.btn_stop_mcp.setEnabled(running)
+        # 子进程模式下不使用
+        pass
 
     def _on_worker_log(self, msg: str) -> None:
         self._append_log(msg)
