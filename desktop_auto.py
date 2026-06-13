@@ -1493,6 +1493,11 @@ class MainWindow(QMainWindow):
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("桌面自动化助手")
+    # 设置应用图标
+    icon_path = Path(__file__).parent / "app_icon.ico"
+    if icon_path.exists():
+        from PySide6.QtGui import QIcon
+        app.setWindowIcon(QIcon(str(icon_path)))
 
     # 统一 QSS 风格(浅色)
     app.setStyleSheet("""

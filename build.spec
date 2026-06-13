@@ -35,6 +35,8 @@ datas = [
     ('image_match.py', '.'),
     ('workflows.json', '.'),
     ('samples', 'samples'),
+    ('app_icon.ico', '.'),  # 应用图标
+    ('app_icon_512_v2.png', '.'),  # README 用图标
 ]
 
 # 排除掉大且不需要的包
@@ -89,5 +91,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,  # 如有 icon.ico 可填
+    icon='app_icon.ico',  # 应用图标
 )

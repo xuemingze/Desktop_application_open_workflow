@@ -26,6 +26,7 @@ datas = [
     ('workflow_panel.py', '.'),
     ('image_match.py', '.'),
     ('workflows.json', '.'),
+    ('app_icon.ico', '.'),
 ]
 
 excludes = [
@@ -75,5 +76,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon='app_icon.ico',
 )
