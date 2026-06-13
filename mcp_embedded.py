@@ -106,11 +106,10 @@ def run_workflow_sync(name: str, log_func=None) -> dict:
 
 def launch_shortcut_sync(name: str) -> dict:
     """启动指定快捷方式"""
-    from app_scanner import scan_all_apps
-    apps = scan_all_apps()
-    sc = next((a for a in apps if a["name"].lower() == name.lower()), None)
+    shortcuts = scan_desktop_shortcuts()
+    sc = next((s for s in shortcuts if s["name"].lower() == name.lower()), None)
     if not sc:
-        return {"ok": False, "error": f"未找到: {name}"}
+        return {"ok": False, "error": f"未找到快捷方式: {name}"}
     if not sc.get("target") or not Path(sc["target"]).exists():
         return {"ok": False, "error": f"目标不存在: {sc.get('target', '')}"}
     try:

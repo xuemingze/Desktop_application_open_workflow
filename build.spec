@@ -38,7 +38,6 @@ datas = [
     ('workflow_panel.py', '.'),
     ('image_match.py', '.'),
     ('mcp_embedded.py', '.'),
-    ('app_scanner.py', '.'),
     ('workflows.json', '.'),
     ('samples', 'samples'),
     ('app_icon.ico', '.'),  # 应用图标

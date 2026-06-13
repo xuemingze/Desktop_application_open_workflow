@@ -1244,92 +1244,23 @@ class MainWindow(QMainWindow):
             self._append_log(f"⚠️ 状态保存失败: {e}")
 
     def refresh_shortcuts(self) -> None:
-        from app_scanner import scan_all_apps, group_by_category
         self.list_widget.clear()
-        self.all_apps = scan_all_apps()
-        # 转成 ShortcutInfo 对象,兼容老代码访问 .name / .target
-        self.shortcuts = []
-        for app in self.all_apps:
-            sc = ShortcutInfo(
-                name=app.get("name", ""),
-                target=app.get("target", ""),
-                lnk_path=app.get("lnk_path", ""),
-                work_dir=app.get("work_dir", ""),
-            )
-            self.shortcuts.append(sc)
-        groups = group_by_category(self.all_apps)
-        for cat, items in groups.items():
-            header = QListWidgetItem(f"═══ {cat} ({len(items)}) ═══")
-            header.setFlags(Qt.NoItemFlags)
-            header.setBackground(QColor(240, 240, 240))
-            self.list_widget.addItem(header)
-            for i, app in enumerate(items):
-                mark = "✅" if app.get("exists") else "❌"
-                custom = " ⭐" if app.get("is_custom") else ""
-                text = f"  {mark} {app['name']}{custom}"
-                item = QListWidgetItem(text)
-                # 同时存 dict 和 index(到 self.shortcuts)
-                item.setData(Qt.UserRole, i)
-                self.list_widget.addItem(item)
-        self._append_log(f"🔍 扫描到 {len(self.shortcuts)} 个应用 (按 {len(groups)} 个分类)")
-        for i in range(self.list_widget.count()):
-            if self.list_widget.item(i).flags() != Qt.NoItemFlags:
-                self.list_widget.setCurrentRow(i)
-                break
+        self.shortcuts = scan_desktop_shortcuts()
+        for sc in self.shortcuts:
+            item = QListWidgetItem(f"{sc.name}   →   {sc.target}")
+            self.list_widget.addItem(item)
+        self._append_log(f"🔍 扫描到 {len(self.shortcuts)} 个快捷方式")
+        if self.shortcuts:
+            self.list_widget.setCurrentRow(0)
+        # 同步到工作流面板
         if hasattr(self, 'workflow_editor'):
             self.workflow_editor.refresh_shortcuts()
 
     def _current(self) -> Optional[ShortcutInfo]:
         row = self.list_widget.currentRow()
-        if row < 0:
-            return None
-        item = self.list_widget.item(row)
-        if not item:
-            return None
-        # 新格式: UserRole 存的是 self.shortcuts 的 index
-        idx = item.data(Qt.UserRole)
-        if isinstance(idx, int) and 0 <= idx < len(self.shortcuts):
-            return self.shortcuts[idx]
-        # 兼容老格式
         if 0 <= row < len(self.shortcuts):
             return self.shortcuts[row]
         return None
-
-    def _add_custom_app(self) -> None:
-        """弹出对话框让用户添加自定义应用"""
-        from app_scanner import add_custom_app
-        path, _ = QFileDialog.getOpenFileName(
-            self, "选择要添加的应用",
-            "C:\\Program Files", "可执行文件 (*.exe *.bat *.cmd);;所有文件 (*.*)"
-        )
-        if not path:
-            return
-        name, ok = QInputDialog.getText(self, "应用名称", "应用名称:", text=Path(path).stem)
-        if not ok or not name.strip():
-            name = Path(path).stem
-        try:
-            app = add_custom_app(name.strip(), path)
-            self._append_log(f"✅ 已添加自定义应用: {app['name']} → {app['target']}")
-            self.refresh_shortcuts()
-        except Exception as e:
-            QMessageBox.warning(self, "添加失败", str(e))
-
-    def _remove_custom_app(self) -> None:
-        """删除当前选中的自定义应用"""
-        from app_scanner import remove_custom_app, load_custom_apps
-        sc = self._current()
-        if not sc:
-            return
-        # 检查 target 是否在 custom_apps.json 里
-        custom_apps = load_custom_apps()
-        custom_targets = {a["target"].lower() for a in custom_apps}
-        if sc.target.lower() not in custom_targets:
-            QMessageBox.information(self, "提示", "这不是自定义应用,不能删除 (只有 ⭐ 标记的可删)")
-            return
-        if QMessageBox.question(self, "确认", f"删除自定义应用: {sc.name}?") == QMessageBox.Yes:
-            if remove_custom_app(sc.target):
-                self._append_log(f"🗑 已删除: {sc.name}")
-                self.refresh_shortcuts()
 
     def _on_select(self) -> None:
         sc = self._current()
