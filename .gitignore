@@ -43,3 +43,6 @@ project-blueprint/
 fusion-experiment-1/
 fusion-experiment-ontology/
 .cowork-temp/
+
+# 备份目录 (本地保留,用户说“整理”才删)
+backups/
