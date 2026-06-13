@@ -1061,8 +1061,26 @@ class MainWindow(QMainWindow):
         scroll.setWidget(right)
         scroll.setMinimumWidth(560)
 
+        # ===== 左侧: 快捷方式列表 + 重新扫描按钮 =====
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(4)
+        # 头部: 标题 + 重新扫描
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(4, 4, 4, 0)
+        list_title = QLabel("桌面快捷方式:")
+        list_title.setStyleSheet("font-weight: bold;")
+        header_row.addWidget(list_title)
+        header_row.addStretch()
+        self.btn_refresh.setStyleSheet("padding: 2px 8px; min-height: 22px;")
+        self.btn_refresh.setToolTip("重新扫描桌面快捷方式")
+        header_row.addWidget(self.btn_refresh)
+        left_layout.addLayout(header_row)
+        left_layout.addWidget(self.list_widget)
+
         splitter = QSplitter(Qt.Horizontal, self)
-        splitter.addWidget(self.list_widget)
+        splitter.addWidget(left_panel)
         splitter.addWidget(scroll)
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 3)
