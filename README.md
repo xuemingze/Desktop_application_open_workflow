@@ -1,5 +1,9 @@
 # 桌面自动化助手 (Desktop Auto Assistant)
 
+<div align="center">
+  <img src="app_icon_512_v2.png" width="128" height="128" alt="Logo"/>
+</div>
+
 > 基于 PySide6 的 Windows 桌面自动化工具,支持**直接启动**、**后台点击**、**图像识别**、**坐标点击**和**自定义工作流**。内置 **MCP (Model Context Protocol) Server**,可被任何 AI 客户端调用。
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
