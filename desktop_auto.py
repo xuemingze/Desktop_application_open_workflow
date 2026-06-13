@@ -1563,6 +1563,10 @@ class MainWindow(QMainWindow):
 # 8. 入口
 # ---------------------------------------------------------------------------
 def main() -> int:
+    # MCP 模式: 不显示 GUI,作为 stdio server 运行
+    if "--mcp" in sys.argv:
+        return _run_mcp_only()
+
     app = QApplication(sys.argv)
     app.setApplicationName("桌面自动化助手")
     # 设置应用图标
@@ -1584,6 +1588,60 @@ def main() -> int:
     win = MainWindow()
     win.show()
     return app.exec()
+
+
+def _run_mcp_only() -> int:
+    """只运行 MCP server,不显示 GUI (用于 AI 客户端调用)"""
+    import asyncio
+    from mcp_embedded import scan_desktop_shortcuts, load_workflows, run_workflow_sync, launch_shortcut_sync
+    from mcp.server import Server
+    from mcp.server.stdio import stdio_server
+    from mcp.types import Tool, TextContent
+    import json
+
+    async def serve():
+        server = Server("desktop-auto")
+        @server.list_tools()
+        async def list_tools():
+            return [
+                Tool(name="list_workflows", description="列出所有工作流", inputSchema={"type": "object", "properties": {"name": {"type": "string"}}}),
+                Tool(name="list_shortcuts", description="列出桌面快捷方式", inputSchema={"type": "object", "properties": {}}),
+                Tool(name="run_workflow", description="执行工作流", inputSchema={"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}),
+                Tool(name="launch_shortcut", description="启动快捷方式", inputSchema={"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}),
+            ]
+        @server.call_tool()
+        async def call_tool(name, arguments):
+            try:
+                if name == "list_workflows":
+                    wfs = load_workflows()
+                    target = arguments.get("name", "")
+                    if target:
+                        wf = wfs.get(target)
+                        if not wf: return [TextContent(type="text", text=json.dumps({"ok": False, "error": f"不存在: {target}"}, ensure_ascii=False))]
+                        return [TextContent(type="text", text=json.dumps({"ok": True, "workflow": wf}, ensure_ascii=False, indent=2))]
+                    summary = {n: {"description": wf.get("description", ""), "step_count": len(wf.get("steps", []))} for n, wf in wfs.items()}
+                    return [TextContent(type="text", text=json.dumps({"ok": True, "workflows": summary}, ensure_ascii=False, indent=2))]
+                elif name == "list_shortcuts":
+                    scs = scan_desktop_shortcuts()
+                    return [TextContent(type="text", text=json.dumps({"ok": True, "count": len(scs), "shortcuts": scs}, ensure_ascii=False, indent=2))]
+                elif name == "run_workflow":
+                    n = arguments.get("name", "")
+                    logs = []
+                    result = run_workflow_sync(n, logs.append)
+                    result["logs"] = logs
+                    return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+                elif name == "launch_shortcut":
+                    n = arguments.get("name", "")
+                    return [TextContent(type="text", text=json.dumps(launch_shortcut_sync(n), ensure_ascii=False))]
+                return [TextContent(type="text", text=json.dumps({"ok": False, "error": f"未知: {name}"}, ensure_ascii=False))]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))]
+
+        async with stdio_server() as (read_stream, write_stream):
+            await server.run(read_stream, write_stream, server.create_initialization_options())
+
+    asyncio.run(serve())
+    return 0
 
 
 if __name__ == "__main__":

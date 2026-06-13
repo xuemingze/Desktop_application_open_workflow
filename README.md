@@ -57,10 +57,19 @@ pip install PySide6 pyautogui pillow pyperclip pywinauto psutil pywin32 mcp
 python desktop_auto.py
 ```
 
-### 3. 启动 MCP Server(给 AI 用)
+### 3. 启动 MCP Server (给 AI 用)
 
+**方式 A: GUI 内启动 (推荐)**
+在 GUI 中点击「启动 MCP Server」按钮,后台会启动一个嵌入式 MCP server。
+
+**方式 B: 作为独立进程启动**
 ```bash
-python workflow_mcp_server.py
+python desktop_auto.py --mcp
+```
+
+**方式 C: 使用打包后的 EXE**
+```bash
+"桌面自动化助手.exe" --mcp
 ```
 
 ## 🤖 MCP 客户端接入
@@ -74,7 +83,7 @@ python workflow_mcp_server.py
   "mcpServers": {
     "desktop-auto": {
       "command": "C:\\path\\to\\.venv\\Scripts\\python.exe",
-      "args": ["C:\\path\\to\\workflow_mcp_server.py"]
+      "args": ["C:\\path\\to\\dist\\桌面自动化助手.exe", "--mcp"]
     }
   }
 }
@@ -108,7 +117,7 @@ python workflow_mcp_server.py
 控制电脑/
 ├── desktop_auto.py          # 主 GUI 程序
 ├── workflow_panel.py        # 工作流编辑面板
-├── workflow_mcp_server.py   # MCP Server (4 个工具)
+├── mcp_embedded.py          # 嵌入式 MCP server 模块
 ├── image_match.py           # 纯 PIL 模板匹配
 ├── workflows.json           # 工作流配置 (自动生成)
 ├── samples/                 # 模板图片目录

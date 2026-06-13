@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "desktop-auto": {
-      "command": ".venv\\Scripts\\python.exe",
-      "args": ["workflow_mcp_server.py"],
-      "cwd": "C:\\Users\\Administrator\\Desktop\\控制电脑"
+      "command": "C:\\Users\\Administrator\\Desktop\\控制电脑\\dist\\桌面自动化助手.exe",
+      "args": ["--mcp"]
     }
   }
 }
+
