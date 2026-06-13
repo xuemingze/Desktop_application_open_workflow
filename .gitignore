@@ -21,6 +21,11 @@ env/
 samples/_debug_*.png
 samples/_test_*.png
 
+# PyInstaller 输出 (只忽略构建临时目录,spec 配置要追踪)
+build/
+dist/
+
+
 # 操作系统
 .DS_Store
 Thumbs.db
