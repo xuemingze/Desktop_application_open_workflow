@@ -68,7 +68,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QListWidget, QListWidgetItem, QLabel, QTextEdit,
     QFileDialog, QMessageBox, QStatusBar, QGroupBox, QRadioButton,
-    QButtonGroup, QCheckBox, QSpinBox, QLineEdit, QComboBox
+    QButtonGroup, QCheckBox, QSpinBox, QLineEdit, QComboBox, QInputDialog
 )
 
 # ---------------------------------------------------------------------------
@@ -130,7 +130,8 @@ def get_real_desktop() -> Path:
 
 
 def scan_desktop_shortcuts() -> list[ShortcutInfo]:
-    """扫描桌面所有 .lnk 快捷方式,容错处理每个文件"""
+    """扫描桌面所有 .lnk 快捷方式,容错处理每个文件
+    + 追加自定义应用 (custom_apps.json)"""
     desktop = get_real_desktop()
     if not desktop.exists():
         log.warning(f"桌面路径不存在: {desktop}")
@@ -155,7 +156,68 @@ def scan_desktop_shortcuts() -> list[ShortcutInfo]:
             out.append(info)
         except Exception as e:
             log.warning(f"跳过 {lnk.name}: {e}")
+
+    # 追加用户自定义应用
+    for custom in load_custom_apps():
+        out.append(ShortcutInfo(
+            name=custom.get("name", Path(custom["target"]).stem),
+            target=custom.get("target", ""),
+            lnk_path="",  # 自定义不是快捷方式
+            work_dir=custom.get("work_dir", ""),
+        ))
     return out
+
+
+# 自定义应用管理
+CUSTOM_APPS_FILE = Path(__file__).parent / "custom_apps.json"
+
+
+def load_custom_apps() -> list[dict]:
+    """加载 custom_apps.json"""
+    if not CUSTOM_APPS_FILE.exists():
+        return []
+    try:
+        return json.loads(CUSTOM_APPS_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        log.warning(f"custom_apps.json 读取失败: {e}")
+        return []
+
+
+def save_custom_apps(apps: list[dict]) -> None:
+    """保存到 custom_apps.json"""
+    CUSTOM_APPS_FILE.write_text(
+        json.dumps(apps, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+
+
+def add_custom_app(name: str, target: str, work_dir: str = "") -> dict:
+    """添加一个自定义应用(同名/同 target 视为重复,返回已有)"""
+    if not target or not Path(target).exists():
+        raise FileNotFoundError(f"目标不存在: {target}")
+    apps = load_custom_apps()
+    # 去重: 同 target (不区分大小写) 不重复
+    for a in apps:
+        if a["target"].lower() == target.lower():
+            return a
+    app = {
+        "name": name.strip() or Path(target).stem,
+        "target": target,
+        "work_dir": work_dir or str(Path(target).parent),
+    }
+    apps.append(app)
+    save_custom_apps(apps)
+    return app
+
+
+def remove_custom_app(target: str) -> bool:
+    """删除指定 target 的自定义应用"""
+    apps = load_custom_apps()
+    new_apps = [a for a in apps if a["target"].lower() != target.lower()]
+    if len(new_apps) < len(apps):
+        save_custom_apps(new_apps)
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1073,6 +1135,17 @@ class MainWindow(QMainWindow):
         list_title.setStyleSheet("font-weight: bold;")
         header_row.addWidget(list_title)
         header_row.addStretch()
+        # 自定义添加按钮
+        self.btn_add_custom = QPushButton("➕", self)
+        self.btn_add_custom.setStyleSheet("padding: 2px 8px; min-height: 22px; font-weight: bold; color: #10b981;")
+        self.btn_add_custom.setToolTip("添加自定义启动程序")
+        header_row.addWidget(self.btn_add_custom)
+        # 删除自定义按钮
+        self.btn_remove_custom = QPushButton("🗑", self)
+        self.btn_remove_custom.setStyleSheet("padding: 2px 8px; min-height: 22px; font-weight: bold; color: #dc2626;")
+        self.btn_remove_custom.setToolTip("删除当前选中的自定义程序 (仅删除自定义添加的)")
+        header_row.addWidget(self.btn_remove_custom)
+        # 重新扫描
         self.btn_refresh.setStyleSheet("padding: 2px 8px; min-height: 22px;")
         self.btn_refresh.setToolTip("重新扫描桌面快捷方式")
         header_row.addWidget(self.btn_refresh)
@@ -1103,6 +1176,8 @@ class MainWindow(QMainWindow):
 
         # 信号
         self.btn_refresh.clicked.connect(self.refresh_shortcuts)
+        self.btn_add_custom.clicked.connect(self._add_custom_app)
+        self.btn_remove_custom.clicked.connect(self._remove_custom_app)
         self.btn_snipping.clicked.connect(self.start_snipping)
         self.btn_load_samples.clicked.connect(self.load_samples_from_files)
         self.btn_capture_coord.clicked.connect(self._capture_coord_for_quick)
@@ -1261,6 +1336,46 @@ class MainWindow(QMainWindow):
         if 0 <= row < len(self.shortcuts):
             return self.shortcuts[row]
         return None
+
+    def _add_custom_app(self) -> None:
+        """弹出对话框添加自定义应用"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择要添加的应用",
+            "C:\\Program Files",
+            "可执行文件 (*.exe *.bat *.cmd);;所有文件 (*.*)"
+        )
+        if not path:
+            return
+        default_name = Path(path).stem
+        name, ok = QInputDialog.getText(self, "应用名称", "应用名称 (留空用文件名):", text=default_name)
+        if not ok:
+            return
+        name = (name or "").strip() or default_name
+        try:
+            app = add_custom_app(name, path)
+            self._append_log(f"✅ 已添加自定义应用: {app['name']} → {app['target']}")
+            self.refresh_shortcuts()
+        except FileNotFoundError as e:
+            QMessageBox.warning(self, "路径不存在", str(e))
+        except Exception as e:
+            QMessageBox.warning(self, "添加失败", str(e))
+
+    def _remove_custom_app(self) -> None:
+        """删除当前选中的自定义应用 (只能删 lnk_path 为空的)"""
+        sc = self._current()
+        if not sc:
+            QMessageBox.information(self, "提示", "请先选中一个应用")
+            return
+        if sc.lnk_path:  # 是 .lnk 快捷方式,不是自定义
+            QMessageBox.information(self, "提示", "只能删除自定义添加的应用 (桌面快捷方式请直接删除 .lnk 文件)")
+            return
+        if QMessageBox.question(self, "确认删除", f"删除自定义应用「{sc.name}」?") != QMessageBox.Yes:
+            return
+        if remove_custom_app(sc.target):
+            self._append_log(f"🗑 已删除: {sc.name}")
+            self.refresh_shortcuts()
+        else:
+            QMessageBox.warning(self, "删除失败", "未找到该应用")
 
     def _on_select(self) -> None:
         sc = self._current()
