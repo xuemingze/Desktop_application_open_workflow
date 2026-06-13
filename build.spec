@@ -27,12 +27,17 @@ hiddenimports = [
     'pyperclip',
     'psutil',
     'numpy',
+    'mcp',
+    'mcp.server',
+    'mcp.server.stdio',
+    'mcp.types',
 ]
 
 # 数据文件: workflow_panel / image_match / workflows.json
 datas = [
     ('workflow_panel.py', '.'),
     ('image_match.py', '.'),
+    ('mcp_embedded.py', '.'),
     ('workflows.json', '.'),
     ('samples', 'samples'),
     ('app_icon.ico', '.'),  # 应用图标
