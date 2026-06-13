@@ -27,7 +27,11 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 # 0. 环境自检: 缺包时用当前 python 自动装,避免 ModuleNotFoundError
+# 打包后 (PyInstaller) 不需要这个检查,直接跳过
 def _ensure_dependencies() -> None:
+    # 打包后冻结环境跳过: 没有 pip / 不能安装依赖
+    if getattr(sys, 'frozen', False):
+        return
     import importlib
     missing = []
     for mod, pkg in [
@@ -36,7 +40,6 @@ def _ensure_dependencies() -> None:
         ("win32com", "pywin32"),
         ("PIL", "Pillow"),
         ("PySide6", "PySide6"),
-        ("cv2", "opencv-python"),
         ("psutil", "psutil"),
     ]:
         try:
@@ -45,9 +48,13 @@ def _ensure_dependencies() -> None:
             missing.append(pkg)
     if missing:
         print(f"[env] 缺依赖,自动安装: {missing}", flush=True)
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", *missing],
-        )
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", *missing],
+            )
+        except Exception as e:
+            print(f"[env] 自动安装失败: {e}\n请手动: pip install {' '.join(missing)}", flush=True)
+            sys.exit(1)
 
 _ensure_dependencies()
 
