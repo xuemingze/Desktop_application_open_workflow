@@ -1,0 +1,36 @@
+{
+  "zzz日常": {
+    "name": "zzz日常",
+    "description": "",
+    "steps": [
+      {
+        "type": "click_coords",
+        "name": "启动",
+        "params": {
+          "x": 1754,
+          "y": 287,
+          "click_type": "left_double"
+        },
+        "enabled": true
+      },
+      {
+        "type": "wait",
+        "name": "等待打开",
+        "params": {
+          "seconds": 20
+        },
+        "enabled": true
+      },
+      {
+        "type": "click_coords",
+        "name": "点击",
+        "params": {
+          "x": 1450,
+          "y": 918,
+          "click_type": "left_single"
+        },
+        "enabled": true
+      }
+    ]
+  }
+}

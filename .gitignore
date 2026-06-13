@@ -1,0 +1,40 @@
+# Python 编译缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 临时文件
+*.tmp
+*.bak
+*.log
+samples/_debug_*.png
+samples/_test_*.png
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 环境配置
+.env
+*.local
+
+# 个人目录 (不推送到公开仓库)
+agents/
+memory/
+notes/
+project-blueprint/
+fusion-experiment-1/
+fusion-experiment-ontology/
+.cowork-temp/
