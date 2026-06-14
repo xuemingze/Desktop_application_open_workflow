@@ -1048,6 +1048,22 @@ class SearchPanel(QWidget):
         self.lbl_result_count.setText(f"📋 已复制 {len(selected)} 个文件名")
 
 
+
+# ---------------------------------------------------------------------------
+# 便利函数 (供 MCP 调用)
+# ---------------------------------------------------------------------------
+def search_everything(query: str, limit: int = 50, offset: int = 0, sort: str = "date", path: str = ""):
+    """
+    Everything 全盘搜索 (供 MCP 调用)
+    """
+    # 默认 Everything 无密码模式
+    config = {"host": "127.0.0.1", "port": 16259, "username": "", "password": ""}
+    try:
+        eh = EverythingHTTP(config)
+        return eh.search(query, limit=limit, offset=offset, sort=sort, path=path)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 # ---------------------------------------------------------------------------
 # 5. CLI 入口 (调试用)
 # ---------------------------------------------------------------------------

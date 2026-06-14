@@ -15,6 +15,12 @@
 
 from __future__ import annotations
 
+# 提前 import 辅助模块,让 PyInstaller 能扫描到它们的依赖
+import backup  # noqa: F401
+import image_match  # noqa: F401
+import mcp_embedded  # noqa: F401
+import workflow_panel  # noqa: F401
+
 import os
 import sys
 import time
@@ -1774,11 +1780,18 @@ def main() -> int:
 def _run_mcp_only() -> int:
     """只运行 MCP server,不显示 GUI (用于 AI 客户端调用)"""
     import asyncio
-    from mcp_embedded import scan_desktop_shortcuts, load_workflows, run_workflow_sync, launch_shortcut_sync
-    from mcp.server import Server
-    from mcp.server.stdio import stdio_server
-    from mcp.types import Tool, TextContent
     import json
+    from mcp_embedded import scan_desktop_shortcuts, load_workflows, run_workflow_sync, launch_shortcut_sync
+    from search_panel import search_everything
+    
+    try:
+        from mcp.server import Server
+        from mcp.server.stdio import stdio_server
+        from mcp.types import Tool, TextContent
+    except ImportError as e:
+        print(f"[ERR] MCP 依赖缺失: {e}", file=sys.stderr)
+        print("[ERR] 需要安装: pip install mcp", file=sys.stderr)
+        return 1
 
     async def serve():
         server = Server("desktop-auto")
@@ -1789,6 +1802,12 @@ def _run_mcp_only() -> int:
                 Tool(name="list_shortcuts", description="列出桌面快捷方式", inputSchema={"type": "object", "properties": {}}),
                 Tool(name="run_workflow", description="执行工作流", inputSchema={"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}),
                 Tool(name="launch_shortcut", description="启动快捷方式", inputSchema={"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}),
+                Tool(name="search_local_files", description="Everything 全盘搜索 (支持通配符 *.py / 文件名 4月明细 / 大小 size:>10MB / 日期 dm:today)", inputSchema={"type": "object", "properties": {
+                    "query": {"type": "string", "description": "搜索词,如: 4月明细"},
+                    "limit": {"type": "number", "description": "返回结果数,默认50"},
+                    "path": {"type": "string", "description": "限定目录,如 C:\\Users\\Public"},
+                    "sort": {"type": "string", "description": "排序: name/date/size,默认 date"},
+                }, "required": ["query"]}),
             ]
         @server.call_tool()
         async def call_tool(name, arguments):
@@ -1814,6 +1833,13 @@ def _run_mcp_only() -> int:
                 elif name == "launch_shortcut":
                     n = arguments.get("name", "")
                     return [TextContent(type="text", text=json.dumps(launch_shortcut_sync(n), ensure_ascii=False))]
+                elif name == "search_local_files":
+                    q = arguments.get("query", "")
+                    limit = int(arguments.get("limit", 50))
+                    path = arguments.get("path", "")
+                    sort = arguments.get("sort", "date")
+                    result = search_everything(q, path=path, limit=limit, sort=sort)
+                    return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
                 return [TextContent(type="text", text=json.dumps({"ok": False, "error": f"未知: {name}"}, ensure_ascii=False))]
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))]
@@ -1823,6 +1849,8 @@ def _run_mcp_only() -> int:
 
     asyncio.run(serve())
     return 0
+
+
 
 
 if __name__ == "__main__":

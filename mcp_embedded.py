@@ -11,14 +11,11 @@ from typing import Optional
 
 from PySide6.QtCore import QThread, Signal
 
-# MCP SDK
-try:
-    from mcp.server import Server
-    from mcp.server.stdio import stdio_server
-    from mcp.types import Tool, TextContent
-    HAS_MCP = True
-except ImportError:
-    HAS_MCP = False
+# MCP SDK - 顶层 import 让 PyInstaller 一定能打包
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import Tool, TextContent
+HAS_MCP = True
 
 # 导入工作流执行器
 import sys

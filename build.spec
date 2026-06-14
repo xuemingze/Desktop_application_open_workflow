@@ -30,7 +30,17 @@ hiddenimports = [
     'mcp',
     'mcp.server',
     'mcp.server.stdio',
+    'mcp.server.models',
+    'mcp.server.lowlevel',
+    'mcp.server.lowlevel.helper',
+    'mcp.server.session',
     'mcp.types',
+    'mcp.shared',
+    'mcp.shared.session',
+    'mcp.shared.exceptions',
+    'mcp.client',
+    'mcp.client.stdio',
+    'mcp.client.session',
 ]
 
 # 数据文件: workflow_panel / image_match / workflows.json
@@ -56,6 +66,9 @@ excludes = [
     'IPython',
     'notebook',
     'cv2',  # 故意排除,避免 DLL 问题
+    'typer',  # mcp.cli 需要 typer,我们不用 CLI
+    'mcp.cli',  # 不打包 CLI 避免 typer 依赖
+    'mcp.cli.cli',
 ]
 
 a = Analysis(
@@ -73,6 +86,15 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
+# 强制收集 mcp 包所有子模块
+try:
+    from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+    extra = collect_submodules('mcp') + collect_submodules('mcp.server') + collect_submodules('mcp.client')
+    a.hiddenimports = list(set(a.hiddenimports + extra))
+    print(f'[spec] mcp extra hiddenimports: {len(extra)}')
+except Exception as e:
+    print(f'[spec] collect_submodules failed: {e}')
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
