@@ -174,6 +174,7 @@ class EverythingHTTP:
         params = {
             "q": query, "limit": limit, "offset": offset,
             "sort": sort, "json": 1,
+            "path_column": 1,  # 返回完整路径
         }
         if path:
             params["path"] = path
@@ -1055,12 +1056,28 @@ class SearchPanel(QWidget):
 def search_everything(query: str, limit: int = 50, offset: int = 0, sort: str = "date", path: str = ""):
     """
     Everything 全盘搜索 (供 MCP 调用)
+    返回 JSON 友好的 dict
     """
     # 默认 Everything 无密码模式
-    config = {"host": "127.0.0.1", "port": 16259, "username": "", "password": ""}
+    config = EverythingConfig(host="127.0.0.1", port=16259, username="", password="")
     try:
         eh = EverythingHTTP(config)
-        return eh.search(query, limit=limit, offset=offset, sort=sort, path=path)
+        results = eh.search(query, limit=limit, offset=offset, sort=sort, path=path)
+        # 转换为 dict 列表
+        out = []
+        for r in results:
+            if hasattr(r, '__dict__'):
+                out.append({
+                    "name": getattr(r, "name", ""),
+                    "path": getattr(r, "path", ""),
+                    "type": getattr(r, "type", "file"),
+                    "size": getattr(r, "size", 0),
+                    "date_modified": getattr(r, "date_modified", ""),
+                    "extension": getattr(r, "extension", ""),
+                })
+            elif isinstance(r, dict):
+                out.append(r)
+        return {"ok": True, "count": len(out), "results": out}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

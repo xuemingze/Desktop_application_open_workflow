@@ -20,6 +20,7 @@ import backup  # noqa: F401
 import image_match  # noqa: F401
 import mcp_embedded  # noqa: F401
 import workflow_panel  # noqa: F401
+import search_panel  # noqa: F401
 
 import os
 import sys

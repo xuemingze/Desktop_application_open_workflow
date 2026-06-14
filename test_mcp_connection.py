@@ -66,9 +66,19 @@ async def test_mcp():
                 print(f"✅ 搜索成功")
                 for content in result.content:
                     if hasattr(content, 'text'):
-                        print(f"  结果: {content.text[:800]}")
+                        print(f"  结果: {content.text[:1500]}")
             except Exception as e:
                 print(f"❌ 搜索失败: {e}")
+            
+            print("\n启动 4月明细...")
+            try:
+                result = await session.call_tool("launch_shortcut", {"name": "4月明细"})
+                print(f"✅ 调用成功")
+                for content in result.content:
+                    if hasattr(content, 'text'):
+                        print(f"  返回: {content.text[:200]}")
+            except Exception as e:
+                print(f"❌ 启动失败: {e}")
 
 try:
     asyncio.run(test_mcp())
