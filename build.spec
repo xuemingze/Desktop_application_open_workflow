@@ -83,7 +83,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='桌面自动化助手',
+    name='桌面自动化助手',  # 默认名, build.bat/build.ps1 会重命名为 -vYYYY.MM.DD.exe
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

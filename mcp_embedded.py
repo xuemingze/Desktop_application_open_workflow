@@ -227,6 +227,37 @@ class MCPEmbeddedServer(QThread):
                         "required": ["name"],
                     },
                 ),
+                Tool(
+                    name="search_local_files",
+                    description="极速本地文件搜索 (基于 Everything,毫秒级全盘扫描)。"
+                                "支持语法: *.py / ext:md RAG / size:>10MB / dm:today / '完整名'",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Everything 搜索语法,例如: '*.py', 'ext:md RAG', 'size:>10MB'",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "返回数量上限 (默认 50,最大 10000)",
+                                "default": 50,
+                            },
+                            "path": {
+                                "type": "string",
+                                "description": "限定搜索目录 (可选),例如 'C:\\\\Users\\\\'",
+                            },
+                            "sort": {
+                                "type": "string",
+                                "description": "排序: date_modified_desc / date_modified_asc / "
+                                                "name_asc / name_desc / size_desc / size_asc / "
+                                                "path_asc / path_desc / extension_asc / extension_desc",
+                                "default": "date_modified_desc",
+                            },
+                        },
+                        "required": ["query"],
+                    },
+                ),
             ]
 
         @server.call_tool()
@@ -269,6 +300,38 @@ class MCPEmbeddedServer(QThread):
                             {"ok": False, "error": "缺少 name"}, ensure_ascii=False))]
                     result = launch_shortcut_sync(n)
                     return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+
+                elif name == "search_local_files":
+                    q = arguments.get("query", "").strip()
+                    if not q:
+                        return [TextContent(type="text", text=json.dumps(
+                            {"ok": False, "error": "缺少 query"}, ensure_ascii=False))]
+                    limit = min(int(arguments.get("limit", 50)), 10000)
+                    path = arguments.get("path", "").strip()
+                    sort = arguments.get("sort", "date_modified_desc")
+
+                    try:
+                        from search_panel import SecureStore, EverythingConfig, EverythingHTTP
+                        store = SecureStore("desktop_auto")
+                        user = store.load("everything_http_user") or ""
+                        pwd = store.load("everything_http_pass") or ""
+                        cfg = EverythingConfig(port=16259, username=user, password=pwd)
+                        backend = EverythingHTTP(cfg)
+                        results = backend.search(q, limit=limit, path=path, sort=sort)
+                        return [TextContent(type="text", text=json.dumps(
+                            {"ok": True, "query": q, "count": len(results),
+                             "results": [
+                                {"name": r.name, "path": r.path, "full_path": r.full_path,
+                                 "size": r.size, "type": r.type,
+                                 "date_modified": r.date_modified, "extension": r.extension}
+                                for r in results
+                             ]},
+                            ensure_ascii=False, indent=2))]
+                    except Exception as e:
+                        return [TextContent(type="text", text=json.dumps(
+                            {"ok": False, "error": str(e),
+                             "hint": "请先在桌面助手 -> 🔍文件搜索 -> 🔧设置 里配置 Everything HTTP"},
+                            ensure_ascii=False))]
 
                 else:
                     return [TextContent(type="text", text=json.dumps(

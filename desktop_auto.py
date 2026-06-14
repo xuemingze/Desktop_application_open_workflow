@@ -26,6 +26,11 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 
+# 确保脚本所在目录在 sys.path 首位 (便携 Python 可能不加)
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+
 # 0. 环境自检: 缺包时用当前 python 自动装,避免 ModuleNotFoundError
 # 打包后 (PyInstaller) 不需要这个检查,直接跳过
 def _ensure_dependencies() -> None:
@@ -1110,6 +1115,14 @@ class MainWindow(QMainWindow):
         # 添加到选项卡
         self.right_tabs.addTab(quick_tab, "🚀 快速启动")
         self.right_tabs.addTab(workflow_tab, "🔄 工作流")
+
+        # === Tab 3: 文件搜索 ===
+        try:
+            from search_panel import SearchPanel
+            self.search_panel = SearchPanel(self)
+            self.right_tabs.addTab(self.search_panel, "🔍 文件搜索")
+        except Exception as e:
+            log.warning(f"文件搜索标签加载失败: {e}")
 
         # 设置选项卡
         right_layout = QVBoxLayout(right)
