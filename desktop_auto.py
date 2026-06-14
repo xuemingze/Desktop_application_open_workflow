@@ -168,8 +168,16 @@ def scan_desktop_shortcuts() -> list[ShortcutInfo]:
     return out
 
 
+# 运行时目录(支持 EXE 打包:用 EXE 所在目录而不是临时解压目录)
+import sys as _sys
+if getattr(_sys, 'frozen', False):
+    RUNTIME_DIR = Path(_sys.executable).parent
+else:
+    RUNTIME_DIR = Path(__file__).parent
+
+
 # 自定义应用管理
-CUSTOM_APPS_FILE = Path(__file__).parent / "custom_apps.json"
+CUSTOM_APPS_FILE = RUNTIME_DIR / "custom_apps.json"
 
 
 def load_custom_apps() -> list[dict]:
@@ -1300,7 +1308,7 @@ class MainWindow(QMainWindow):
 
     # ---- 7.2 列表操作 ----
     # 状态文件:记录「一键启动」开启的 PID,关闭时只关这些
-    STATE_FILE = Path("launch_state.json")
+    STATE_FILE = RUNTIME_DIR / "launch_state.json"
 
     def _load_state(self) -> dict:
         if self.STATE_FILE.exists():
