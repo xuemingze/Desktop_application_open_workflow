@@ -179,7 +179,7 @@ def install_shortcut() -> bool:
         sc.WorkingDirectory = str(menu_script.parent)
         sc.IconLocation = str(icon) if icon.exists() else ""
         sc.Description = "桌面自动化助手 (启动/停止)"
-        sc.WindowStyle = 7  # 最小化启动 (后台)
+        sc.WindowStyle = 1  # 正常窗口 (0=隐藏, 1=默认, 3=最大化, 7=最小化)
         sc.save()
         print(f"✅ 菜单快捷方式: {menu_path}")
 

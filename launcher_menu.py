@@ -50,11 +50,30 @@ def show_dialog() -> str:
         app = QApplication.instance() or QApplication(sys.argv)
         app.setApplicationName("桌面助手启动器")
 
-        dlg = QDialog()
+        # 强制创建顶层 + 置顶窗口
+        dlg = QDialog(None, Qt.Window | Qt.WindowStaysOnTopHint)
         dlg.setWindowTitle("桌面自动化助手 - 启动器")
         dlg.setFixedSize(360, 280)
+        dlg.setWindowFlags(
+            Qt.Window |
+            Qt.WindowStaysOnTopHint |
+            Qt.WindowSystemMenuHint |
+            Qt.WindowTitleHint
+        )
         if ICON_PATH.exists():
             dlg.setWindowIcon(QIcon(str(ICON_PATH)))
+
+        # 创建后立即抢焦点 + 置顶
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        # Windows 上需要调 native API 抢占前台
+        try:
+            import ctypes
+            ctypes.windll.user32.AllowSetForegroundWindow(-1)  # 允许任何进程
+            ctypes.windll.user32.SetForegroundWindow(int(dlg.winId()))
+        except Exception:
+            pass
 
         layout = QVBoxLayout(dlg)
 
@@ -123,12 +142,27 @@ def show_result(action: int) -> None:
 
     try:
         from PySide6.QtWidgets import (QApplication, QMessageBox)
+        from PySide6.QtCore import Qt
         from PySide6.QtGui import QIcon
 
         app = QApplication.instance() or QApplication(sys.argv)
         if ICON_PATH.exists():
             QApplication.setWindowIcon(QIcon(str(ICON_PATH)))
-        QMessageBox.information(None, "启动器", msg)
+        # 创建置顶 + 抢焦点的消息框
+        box = QMessageBox()
+        box.setWindowTitle("启动器")
+        box.setText(msg)
+        box.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
+        box.show()
+        box.raise_()
+        box.activateWindow()
+        try:
+            import ctypes
+            ctypes.windll.user32.AllowSetForegroundWindow(-1)
+            ctypes.windll.user32.SetForegroundWindow(int(box.winId()))
+        except Exception:
+            pass
+        box.exec()
     except ImportError:
         print(f"\n{msg}\n")
 
