@@ -88,6 +88,24 @@ async def test_mcp():
             except Exception as e:
                 print(f"❌ 失败: {e}")
 
+            # 测试 search_local_files 查找 dist 文件夹
+            print("\n[BONUS] 调用 search_local_files (查找 dist 文件夹)...")
+            try:
+                result = await session.call_tool("search_local_files", {
+                    "query": "*.exe",
+                    "path": r"C:\Users\Administrator\Desktop\控制电脑\dist",
+                    "limit": 20
+                })
+                text = result.content[0].text if result.content else ""
+                import json
+                data = json.loads(text) if text.strip().startswith("{") else {}
+                count = data.get("count", 0)
+                print(f"✅ 搜到 {count} 个结果")
+                for r in data.get("results", [])[:10]:
+                    print(f"  - {r.get('name', '?')} (路径: {r.get('path', '?')})")
+            except Exception as e:
+                print(f"❌ 失败: {e}")
+
 
 try:
     asyncio.run(test_mcp())

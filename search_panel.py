@@ -171,13 +171,18 @@ class EverythingHTTP:
 
     def search(self, query: str, limit: int = 100, offset: int = 0,
                sort: str = "date_modified_desc", path: str = "") -> list[FileResult]:
+        # 关键: Everything HTTP 的 path 参数是子串匹配,不是目录限定
+        # 正确做法: 用 <目录路径> 语法限定到该目录下
+        if path:
+            # 去掉路径结尾的 \ 或 /,避免双重反斜杠
+            path_clean = path.rstrip("\\/").replace("/", "\\")
+            # 目录限定语法: <路径> 包含在 q 里
+            query = f"<{path_clean}> {query}" if query else f"<{path_clean}>"
         params = {
             "q": query, "limit": limit, "offset": offset,
             "sort": sort, "json": 1,
             "path_column": 1,  # 返回完整路径
         }
-        if path:
-            params["path"] = path
         data = self._request(params)
         return [FileResult(
             name=item.get("name", ""),
