@@ -153,7 +153,7 @@ def restart() -> bool:
 
 
 def install_shortcut() -> bool:
-    """在桌面创建快捷方式 (一键启动/关闭)"""
+    """在桌面创建快捷方式 (点击弹出菜单对话框)"""
     try:
         import win32com.client  # noqa: F401
         from pathlib import Path as _P
@@ -165,47 +165,23 @@ def install_shortcut() -> bool:
             # 开发模式,可能不在 venv 里
             pyw = py_dir / "python.exe"
 
-        script = _P(__file__).absolute()
+        menu_script = (_P(__file__).parent / "launcher_menu.py").absolute()
         icon = _P(__file__).parent / "app_icon.ico"
         desktop = _P.home() / "Desktop"
 
         shell = win32com.client.Dispatch("WScript.Shell")
 
-        # 1. 启动快捷方式
-        start_path = desktop / "桌面助手-启动.lnk"
-        sc = shell.CreateShortCut(str(start_path))
+        # 1. 桌面助手 快捷方式 (弹出菜单对话框)
+        menu_path = desktop / "桌面助手.lnk"
+        sc = shell.CreateShortCut(str(menu_path))
         sc.TargetPath = str(pyw)
-        sc.Arguments = f'"{script}" start'
-        sc.WorkingDirectory = str(script.parent)
+        sc.Arguments = f'"{menu_script}"'
+        sc.WorkingDirectory = str(menu_script.parent)
         sc.IconLocation = str(icon) if icon.exists() else ""
-        sc.Description = "启动桌面自动化助手"
+        sc.Description = "桌面自动化助手 (启动/停止)"
         sc.WindowStyle = 7  # 最小化启动 (后台)
         sc.save()
-        print(f"✅ 启动快捷方式: {start_path}")
-
-        # 2. 关闭快捷方式
-        stop_path = desktop / "桌面助手-关闭.lnk"
-        sc = shell.CreateShortCut(str(stop_path))
-        sc.TargetPath = str(pyw)
-        sc.Arguments = f'"{script}" stop'
-        sc.WorkingDirectory = str(script.parent)
-        sc.IconLocation = str(icon) if icon.exists() else ""
-        sc.Description = "关闭桌面自动化助手"
-        sc.WindowStyle = 7
-        sc.save()
-        print(f"✅ 关闭快捷方式: {stop_path}")
-
-        # 3. 状态快捷方式
-        status_path = desktop / "桌面助手-状态.lnk"
-        sc = shell.CreateShortCut(str(status_path))
-        sc.TargetPath = str(pyw)
-        sc.Arguments = f'"{script}" status'
-        sc.WorkingDirectory = str(script.parent)
-        sc.IconLocation = str(icon) if icon.exists() else ""
-        sc.Description = "查看桌面助手运行状态"
-        sc.WindowStyle = 7
-        sc.save()
-        print(f"✅ 状态快捷方式: {status_path}")
+        print(f"✅ 菜单快捷方式: {menu_path}")
 
         return True
     except Exception as e:
@@ -217,7 +193,7 @@ def uninstall_shortcut() -> bool:
     """删除桌面的桌面助手快捷方式"""
     desktop = Path.home() / "Desktop"
     removed = 0
-    for name in ("桌面助手-启动.lnk", "桌面助手-关闭.lnk", "桌面助手-状态.lnk"):
+    for name in ("桌面助手.lnk", "桌面助手-启动.lnk", "桌面助手-关闭.lnk", "桌面助手-状态.lnk"):
         p = desktop / name
         if p.exists():
             try:

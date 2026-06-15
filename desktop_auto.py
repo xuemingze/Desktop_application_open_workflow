@@ -21,6 +21,7 @@ import image_match  # noqa: F401
 import mcp_embedded  # noqa: F401
 import workflow_panel  # noqa: F401
 import search_panel  # noqa: F401
+import tools_tab  # noqa: F401
 
 import os
 import sys
@@ -1078,38 +1079,7 @@ class MainWindow(QMainWindow):
         clean_box.setMinimumHeight(130)
         rv.addWidget(clean_box)
 
-        # ===== MCP Server 控制区 =====
-        mcp_box = QGroupBox("🤖 MCP Server (AI 接入)")
-        mv = QVBoxLayout(mcp_box)
-        self.lbl_mcp_status = QLabel("状态: 未启动")
-        self.lbl_mcp_status.setStyleSheet("color: #666; font-size: 11px;")
-        mv.addWidget(self.lbl_mcp_status)
-        mcp_btn_row = QHBoxLayout()
-        self.btn_start_mcp = QPushButton("▶ 启动 MCP Server")
-        self.btn_start_mcp.setStyleSheet(
-            "QPushButton { background:#10b981; color:white; font-weight:bold; padding:6px; }"
-            "QPushButton:hover { background:#059669; }"
-            "QPushButton:disabled { background:#9ca3af; }"
-        )
-        self.btn_stop_mcp = QPushButton("⏹ 停止")
-        self.btn_stop_mcp.setStyleSheet(
-            "QPushButton { background:#dc2626; color:white; font-weight:bold; padding:6px; }"
-            "QPushButton:hover { background:#b91c1c; }"
-            "QPushButton:disabled { background:#9ca3af; }"
-        )
-        self.btn_stop_mcp.setEnabled(False)
-        mcp_btn_row.addWidget(self.btn_start_mcp)
-        mcp_btn_row.addWidget(self.btn_stop_mcp)
-        mv.addLayout(mcp_btn_row)
-        mcp_help = QLabel("💡 启动后,AI 客户端可通过 stdio 调用 4 个工具:\n"
-                          "  • list_workflows  列出工作流\n"
-                          "  • list_shortcuts   列出桌面快捷方式\n"
-                          "  • run_workflow     执行工作流\n"
-                          "  • launch_shortcut  启动快捷方式")
-        mcp_help.setStyleSheet("color: #888; font-size: 10px;")
-        mcp_help.setWordWrap(True)
-        mv.addWidget(mcp_help)
-        rv.addWidget(mcp_box)
+        # ===== (MCP Server 控制已转移到【工具】标签页) =====
 
         # === Tab 2: 工作流 ===
         from workflow_panel import WorkflowEditor
@@ -1122,6 +1092,13 @@ class MainWindow(QMainWindow):
         # 添加到选项卡
         self.right_tabs.addTab(quick_tab, "🚀 快速启动")
         self.right_tabs.addTab(workflow_tab, "🔄 工作流")
+        # === Tab 4: 工具 (MCP server 控制 + 简介) ===
+        try:
+            from tools_tab import ToolsTab
+            self.tools_tab = ToolsTab(self)
+            self.right_tabs.addTab(self.tools_tab, "🛠️ 工具")
+        except Exception as e:
+            log.warning(f"工具标签加载失败: {e}")
 
         # === Tab 3: 文件搜索 ===
         try:
@@ -1213,8 +1190,7 @@ class MainWindow(QMainWindow):
         self.btn_stop.clicked.connect(self.stop_action)
         # btn_onekey_start / btn_onekey_stop 已替换为工作流面板
         self.btn_cleanup.clicked.connect(self.cleanup_residuals)
-        self.btn_start_mcp.clicked.connect(self._start_mcp_server)
-        self.btn_stop_mcp.clicked.connect(self._stop_mcp_server)
+        # MCP server 控制已转移到【工具】标签页
 
         # 启动时自动扫描
         self.refresh_shortcuts()
@@ -1260,63 +1236,6 @@ class MainWindow(QMainWindow):
             return
         self.coord_status.setText(f"⏱ {n} 秒后捕捉...")
         QTimer.singleShot(1000, lambda: self._quick_capture_countdown(n - 1))
-
-    def _start_mcp_server(self):
-        """启动 MCP server (子进程方式)
-        启动子进程用 --mcp 模式,子进程负责 stdio 通信,
-        主 GUI 进程不被占用,AI 客户端连接子进程的 stdio。
-        """
-        import subprocess
-        import sys as _sys
-        if hasattr(self, 'mcp_proc') and self.mcp_proc and self.mcp_proc.poll() is None:
-            self._append_log(f"[MCP] 已在运行 (PID={self.mcp_proc.pid})")
-            return
-
-        # 决定怎么启动: 打包后用 exe, 源码用 python
-        if getattr(_sys, 'frozen', False):
-            cmd = [_sys.executable, '--mcp']
-        else:
-            cmd = [_sys.executable, 'desktop_auto.py', '--mcp']
-
-        self._append_log(f"[MCP] 启动子进程: {cmd[0]} {cmd[1:]}")
-        try:
-            self.mcp_proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                creationflags=0x08000000,  # CREATE_NO_WINDOW
-            )
-            self._append_log(f"[MCP] ✅ 启动成功, PID={self.mcp_proc.pid}")
-            self._append_log(f"[MCP] 💡 AI 客户端可连接此子进程的 stdio")
-            self.btn_start_mcp.setEnabled(False)
-            self.btn_stop_mcp.setEnabled(True)
-            self.lbl_mcp_status.setText(f"状态: 运行中 (PID={self.mcp_proc.pid})")
-            self.lbl_mcp_status.setStyleSheet("color: #10b981; font-weight: bold; font-size: 11px;")
-        except Exception as e:
-            self._append_log(f"[MCP] ❌ 启动失败: {e}")
-
-    def _stop_mcp_server(self):
-        """停止 MCP server 子进程"""
-        if hasattr(self, 'mcp_proc') and self.mcp_proc:
-            try:
-                self.mcp_proc.terminate()
-                self.mcp_proc.wait(2000)
-                self._append_log("[MCP] ⏹ 子进程已停止")
-            except Exception as e:
-                self._append_log(f"[MCP] 停止失败: {e}")
-            self.mcp_proc = None
-        self.btn_start_mcp.setEnabled(True)
-        self.btn_stop_mcp.setEnabled(False)
-        self.lbl_mcp_status.setText("状态: 已停止")
-        self.lbl_mcp_status.setStyleSheet("color: #666; font-size: 11px;")
-
-    def _on_mcp_log(self, msg: str):
-        self._append_log(f"[MCP] {msg}")
-
-    def _on_mcp_status(self, running: bool, msg: str):
-        # 子进程模式下不使用
-        pass
 
     def _on_worker_log(self, msg: str) -> None:
         self._append_log(msg)
