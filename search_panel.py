@@ -209,7 +209,7 @@ class EverythingHTTP:
 # ---------------------------------------------------------------------------
 # 2. Everything 检测工具
 # ---------------------------------------------------------------------------
-EVERYTHING_DOWNLOAD_URL = "https://www.voidtools.com/Everything-1.5.0.x64.zip"
+EVERYTHING_DOWNLOAD_URL = "https://www.voidtools.com/zh-cn/downloads/"
 EVERYTHING_COMMON_PATHS = [
     r"D:\Everything\Everything.exe",
     r"C:\Program Files\Everything\Everything.exe",
@@ -432,7 +432,7 @@ class SetupWizard(QDialog):
 
         btn_open_voidtools = QPushButton("🌐 打开 voidtools 官网")
         btn_open_voidtools.clicked.connect(lambda: QDesktopServices.openUrl(
-            __import__("PySide6").QtCore.QUrl("https://www.voidtools.com/")))
+            __import__("PySide6").QtCore.QUrl("https://www.voidtools.com/zh-cn/downloads/")))
         layout.addWidget(btn_open_voidtools)
 
         note = QLabel(

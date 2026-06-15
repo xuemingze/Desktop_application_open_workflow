@@ -50,6 +50,8 @@ datas = [
     ('mcp_embedded.py', '.'),
     ('workflows.json', '.'),
     ('samples', 'samples'),
+    # mcp/jsonschema 依赖的数据文件 (schemas 必须随包,否则 jsonschema_specifications 加载失败)
+    ('.venv/Lib/site-packages/jsonschema_specifications/schemas', 'jsonschema_specifications/schemas'),
     ('app_icon.ico', '.'),  # 应用图标
     ('app_icon_512_v2.png', '.'),  # README 用图标
 ]
