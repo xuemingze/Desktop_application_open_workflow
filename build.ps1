@@ -32,7 +32,8 @@ try {
         if ($digits.Length -gt 4) { $digits = $digits.Substring(0, 4) }
         $TimeStr = "-$digits"
     } else {
-        $TimeStr = ""
+        # 自动使用当前时间作为时间后缀
+        $TimeStr = "-" + (Get-Date -Format "HHmm")
     }
 
     $Tag = "$Date$TimeStr"
