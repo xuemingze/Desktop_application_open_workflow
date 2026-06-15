@@ -210,12 +210,13 @@ class StepExecutor:
             return False
         path = params.get("path", "").strip()
         limit = int(params.get("limit", 10))
-        action = params.get("action", "log")  # log / open_first / save_var
+        action = params.get("action", "log")  # log / open_first / open_with / ...
+        program = params.get("program", "").strip()
+        args = params.get("args", "").strip()
 
         log_func(f"  搜索: {query}" + (f" (限定: {path})" if path else ""))
 
         try:
-            # 懒加载: 避免 PyInstaller 打额外的依赖
             from search_panel import search_everything
             result = search_everything(query, limit=limit, sort="date", path=path)
             if not isinstance(result, dict):
@@ -231,29 +232,176 @@ class StepExecutor:
             if len(results) > 5:
                 log_func(f"    ...还有 {len(results)-5} 个")
 
-            if action == "open_first" and results:
-                first = results[0]
-                target_path = first.get("path", "")
-                # path 可能是目录,需要拼接 name
-                if not target_path or not Path(target_path).is_file():
-                    target_path = str(Path(target_path) / first.get("name", "")) if target_path else ""
-                if target_path and Path(target_path).exists():
-                    import os
-                    os.startfile(target_path)
-                    log_func(f"  已打开: {target_path}")
-                else:
-                    log_func(f"  无法打开: 文件不存在 ({target_path})")
-            elif action == "save_var":
-                # TODO: 保存到工作流变量(供后续步骤使用)
-                log_func(f"  TODO: 保存 {len(results)} 个结果到工作流变量")
+            if not results or action == "log":
+                return True
 
-            return True
+            # 决定要操作的文件路径
+            first = results[0]
+            target_path = first.get("path", "")
+            # path 可能是目录,需要拼接 name
+            if not target_path or not Path(target_path).is_file():
+                if target_path:
+                    target_path = str(Path(target_path) / first.get("name", ""))
+            if not target_path or not Path(target_path).exists():
+                log_func(f"  无法定位文件: {target_path}")
+                return False
+
+            return StepExecutor._exec_open_action(action, target_path, program, args, log_func)
         except ImportError:
             log_func("  搜索模块未安装 (需要 search_panel.py 和 Everything)")
             return False
         except Exception as e:
             log_func(f"  搜索出错: {e}")
             return False
+
+    @staticmethod
+    def _exec_open_action(action: str, file_path: str, program: str, args: str, log_func) -> bool:
+        """根据 action 打开文件。file_path 必须是已确认存在的本地路径。"""
+        import os
+        import subprocess
+        import shutil
+        import time
+
+        try:
+            if action == "open_first":
+                # 默认应用打开
+                os.startfile(file_path)
+                log_func(f"  ✅ 已用默认应用打开: {file_path}")
+                return True
+
+            elif action == "open_notepad":
+                # 用记事本打开
+                notepad = r"C:\Windows\System32\notepad.exe"
+                if not Path(notepad).exists():
+                    # 尝试 notepad++
+                    notepad_pp = r"C:\Program Files\Notepad++\notepad++.exe"
+                    if Path(notepad_pp).exists():
+                        notepad = notepad_pp
+                # 文档: 优先记事本; 二进制/图片: 弹提示
+                if not StepExecutor._is_text_file(file_path):
+                    log_func(f"  ⚠️ {file_path} 不是文本文件,仍用记事本打开可能乱码")
+                subprocess.Popen([notepad, file_path], creationflags=0x08000000)  # CREATE_NO_WINDOW
+                time.sleep(0.5)
+                log_func(f"  ✅ 已用记事本打开: {file_path}")
+                return True
+
+            elif action == "open_photo":
+                # Windows 10/11 自带照片应用
+                photo_app = r"C:\Program Files\WindowsApps\Microsoft.Windows.Photos_*\Photos.exe"
+                # 退而求其次: rstart 关联
+                os.startfile(file_path)
+                log_func(f"  ✅ 已打开图片(默认应用): {file_path}")
+                return True
+
+            elif action == "explorer_select":
+                # 在文件资源管理器中选中
+                subprocess.run(
+                    ["explorer", "/select,", file_path],
+                    creationflags=0x08000000
+                )
+                log_func(f"  ✅ 已在资源管理器中选中: {file_path}")
+                return True
+
+            elif action == "copy_path":
+                # 复制路径到剪贴板
+                try:
+                    import pyperclip
+                    pyperclip.copy(file_path)
+                    log_func(f"  ✅ 已复制路径到剪贴板: {file_path}")
+                except ImportError:
+                    # 退而求其次: 用 tkinter
+                    try:
+                        import tkinter as tk
+                        r = tk.Tk()
+                        r.withdraw()
+                        r.clipboard_clear()
+                        r.clipboard_append(file_path)
+                        r.update()
+                        r.destroy()
+                        log_func(f"  ✅ 已复制路径到剪贴板: {file_path}")
+                    except Exception as e:
+                        log_func(f"  ❌ 复制失败: {e}")
+                        return False
+                return True
+
+            elif action == "open_with":
+                # 用指定程序打开
+                if not program:
+                    log_func("  ❌ open_with 需要指定程序路径")
+                    return False
+                # 解析程序: 可能是简短名称 (excel.exe) 或完整路径
+                resolved_prog = StepExecutor._resolve_program(program)
+                if not resolved_prog:
+                    log_func(f"  ❌ 找不到程序: {program}")
+                    return False
+                # 构造命令
+                cmd = [resolved_prog]
+                # 添加额外参数
+                if args:
+                    import shlex
+                    try:
+                        cmd.extend(shlex.split(args))
+                    except Exception:
+                        cmd.extend(args.split())
+                # 最后是被打开的文件
+                cmd.append(file_path)
+                log_func(f"  启动: {' '.join(cmd)}")
+                subprocess.Popen(cmd, creationflags=0x08000000)
+                time.sleep(0.3)
+                log_func(f"  ✅ 已用 {Path(resolved_prog).name} 打开: {file_path}")
+                return True
+
+            elif action == "save_var":
+                # TODO: 保存到工作流变量
+                log_func(f"  TODO: 保存 {file_path} 到工作流变量")
+                return True
+
+            else:
+                log_func(f"  ⚠️ 未知动作: {action}")
+                return False
+        except Exception as e:
+            log_func(f"  ❌ 执行动作失败: {e}")
+            return False
+
+    @staticmethod
+    def _is_text_file(file_path: str, sniff_bytes: int = 4096) -> bool:
+        """简单判断文件是否是文本 (没有 NUL 字节)"""
+        try:
+            with open(file_path, "rb") as f:
+                chunk = f.read(sniff_bytes)
+            if not chunk:
+                return True  # 空文件当作文本
+            # 如果超过 1% 的字节是 NUL (\x00),认为不是文本
+            nul_count = chunk.count(b"\x00")
+            return nul_count / len(chunk) < 0.01
+        except Exception:
+            return False
+
+    @staticmethod
+    def _resolve_program(program: str) -> str:
+        """解析程序路径: 短名 (excel.exe) → 全路径"""
+        from shutil import which
+        # 1. 已经是全路径
+        if Path(program).is_file():
+            return str(Path(program))
+        # 2. 试试 which 找 PATH 里
+        found = which(program)
+        if found:
+            return found
+        # 3. 试试常见路径
+        common_dirs = [
+            r"C:\Program Files\Microsoft Office\root\Office16",
+            r"C:\Program Files (x86)\Microsoft Office\root\Office16",
+            r"C:\Program Files\WPS Office",
+            r"C:\Program Files (x86)\WPS Office",
+            r"C:\Windows\System32",
+        ]
+        name = Path(program).name
+        for d in common_dirs:
+            candidate = Path(d) / name
+            if candidate.exists():
+                return str(candidate)
+        return ""
 
 
 # ============================================================
@@ -554,8 +702,14 @@ class WorkflowEditor(QWidget):
         lrow.addWidget(QLabel("  发现后动作:"))
         self.search_action_combo = QComboBox()
         self.search_action_combo.addItem("仅输出到日志", "log")
-        self.search_action_combo.addItem("打开第一个结果", "open_first")
-        self.search_action_combo.addItem("保存到变量 (供后续步骤用)", "save_var")
+        self.search_action_combo.addItem("⏵ 打开第一个结果 (默认应用)", "open_first")
+        self.search_action_combo.addItem("📝 用记事本打开", "open_notepad")
+        self.search_action_combo.addItem("🖼 在相册/图片查看器打开", "open_photo")
+        self.search_action_combo.addItem("📁 在文件资源管理器中选中", "explorer_select")
+        self.search_action_combo.addItem("📋 复制路径到剪贴板", "copy_path")
+        self.search_action_combo.addItem("💾 保存到变量 (供后续步骤用)", "save_var")
+        self.search_action_combo.addItem("🛠 用指定程序打开 (例: excel.exe / wps.exe)", "open_with")
+        self.search_action_combo.currentIndexChanged.connect(self._on_search_action_change)
         lrow.addWidget(self.search_action_combo)
         lrow.addStretch()
         sw.addLayout(lrow)
@@ -564,6 +718,33 @@ class WorkflowEditor(QWidget):
         self.search_help.setStyleSheet("color: #888; font-size: 10px; padding: 2px 0;")
         self.search_help.setWordWrap(True)
         sw.addWidget(self.search_help)
+
+        # ===== 「用指定程序打开」专属参数 =====
+        # 动作: open_with
+        self.search_op_program_row = QWidget()
+        self.search_op_program_row.setVisible(False)  # 默认隐藏
+        prow2 = QHBoxLayout(self.search_op_program_row)
+        prow2.setContentsMargins(0, 0, 0, 0)
+        prow2.addWidget(QLabel("程序路径:"))
+        self.search_program_edit = QLineEdit()
+        self.search_program_edit.setPlaceholderText("例: excel.exe  /  wps.exe  /  C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE")
+        prow2.addWidget(self.search_program_edit, 1)
+        btn_browse_prog = QPushButton("📂")
+        btn_browse_prog.setFixedWidth(32)
+        btn_browse_prog.clicked.connect(self._browse_search_program)
+        prow2.addWidget(btn_browse_prog)
+        sw.addWidget(self.search_op_program_row)
+
+        # 动作: open_with / open_first 都可以加参数
+        self.search_op_args_row = QWidget()
+        self.search_op_args_row.setVisible(False)  # 默认隐藏
+        arow = QHBoxLayout(self.search_op_args_row)
+        arow.setContentsMargins(0, 0, 0, 0)
+        arow.addWidget(QLabel("额外参数:"))
+        self.search_args_edit = QLineEdit()
+        self.search_args_edit.setPlaceholderText("可选, 例: /readonly  /  --view  /  多个用空格分隔")
+        arow.addWidget(self.search_args_edit, 1)
+        sw.addWidget(self.search_op_args_row)
         dv.addWidget(self.search_widget)
 
         # 加个 stretch 让可见控件贴顶
@@ -726,6 +907,27 @@ class WorkflowEditor(QWidget):
             idx = self.search_action_combo.findData(action)
             if idx >= 0:
                 self.search_action_combo.setCurrentIndex(idx)
+            self.search_program_edit.setText(params.get("program", ""))
+            self.search_args_edit.setText(params.get("args", ""))
+
+    def _browse_search_program(self):
+        """浏览选择程序"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择程序",
+            self.search_program_edit.text() or "C:\\Program Files",
+            "可执行文件 (*.exe *.bat *.cmd);;所有文件 (*.*)"
+        )
+        if path:
+            self.search_program_edit.setText(path)
+
+    def _on_search_action_change(self, idx):
+        """切换发现后动作时,显示/隐藏动作专属参数"""
+        action = self.search_action_combo.currentData()
+        # 隐藏所有专属参数容器
+        if hasattr(self, 'search_op_program_row'):
+            self.search_op_program_row.setVisible(action == "open_with")
+        if hasattr(self, 'search_op_args_row'):
+            self.search_op_args_row.setVisible(action in ("open_with", "open_first"))
 
     def _on_type_change(self, idx):
         """切换步骤类型,显示对应控件"""
@@ -944,6 +1146,8 @@ class WorkflowEditor(QWidget):
                 "path": self.search_path_edit.text(),
                 "limit": self.search_limit_spin.value(),
                 "action": self.search_action_combo.currentData(),
+                "program": self.search_program_edit.text(),
+                "args": self.search_args_edit.text(),
             }
         wf_name = self._current_workflow
         if wf_name in self.workflows:
