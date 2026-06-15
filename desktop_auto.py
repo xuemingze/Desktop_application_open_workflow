@@ -82,43 +82,44 @@ _ensure_dependencies()
 def _cli_router() -> None:
     """
     命令行参数路由网关
-    
+
     处理 --install-shortcut / --remove-shortcut 等无头任务,
     执行完毕后直接 sys.exit(), 不加载 GUI。
     """
     args = [a.lower() for a in sys.argv[1:]]
-    
+
     if not args:
         return
-    
+
     if any(a in args for a in ('--install-shortcut', '--install')):
         _do_install_shortcut()
         sys.exit(0)
-    
+
     if any(a in args for a in ('--remove-shortcut', '--uninstall')):
         _do_remove_shortcut()
         sys.exit(0)
-    
+
     if '--mcp' in args:
         return
-    
-    # --silent-task 是桌面快捷方式入口: 不在这里退出,交给 main() 的单实例逻辑处理。
-    # 如果没有实例在运行,正常打开 GUI;如果已有实例,切换到已有窗口后退出。
+
+    # --replace 是桌面快捷方式入口: 先关闭旧实例,再启动新 GUI。
+
+    # 如果没有实例在运行,正常打开 GUI;如果已有实例,先关闭旧窗口再开新窗口。
 
 def _do_install_shortcut() -> None:
-    """在桌面创建快捷方式, 目标指向当前 EXE 并携带 --silent-task 参数"""
+    """在桌面创建快捷方式, 目标指向当前 EXE 并携带 --replace 参数"""
     try:
         import win32com.client
         desktop = Path.home() / "Desktop"
         exe_path = sys.executable
         icon_path = Path(__file__).parent / "app_icon.ico"
-        
+
         shell = win32com.client.Dispatch("WScript.Shell")
-        
+
         shortcut_path = desktop / "桌面助手.lnk"
         sc = shell.CreateShortCut(str(shortcut_path))
         sc.TargetPath = str(exe_path)
-        sc.Arguments = "--silent-task"
+        sc.Arguments = "--replace"
         sc.WorkingDirectory = str(Path(exe_path).parent)
         if icon_path.exists():
             sc.IconLocation = str(icon_path)
@@ -229,15 +230,15 @@ def _try_acquire_single_instance() -> bool:
     """
     try:
         from PySide6.QtCore import QSharedMemory, QSystemSemaphore
-        
+
         semaphore = QSystemSemaphore("desktop_auto_semaphore", 1)
         semaphore.acquire()
-        
+
         shared_mem = QSharedMemory("desktop_auto_single_instance")
         if shared_mem.attach():
             semaphore.release()
             return False
-        
+
         if not shared_mem.create(1):
             # 极少数情况下 create 失败但并非已有实例,保守允许启动,避免锁异常导致打不开。
             semaphore.release()
@@ -646,7 +647,7 @@ class LaunchWorker(QThread):
     def _launch_desktop_click(self) -> None:
         info = self.info
         self.log_signal.emit(f"🖱️ 鼠标双击桌面图标: {info.name}")
-        
+
         # B. 先用截图模板匹配(最精准)
         try:
             self._launch_desktop_click_by_image(info)
@@ -654,7 +655,7 @@ class LaunchWorker(QThread):
             return
         except Exception as e:
             self.log_signal.emit(f"   ⚠️ 模板匹配失败: {e}")
-        
+
         # A. 走 IShellFolder API 拿真实图标位置
         logical_idx = None
         try:
@@ -768,7 +769,7 @@ class LaunchWorker(QThread):
             EnumChildWindows(progman, cb_fn, 0)
         else:
             self.log_signal.emit(f"   ⚠️ Progman 未找到")
-        
+
         if not defvw_container['hwnd']:
             self.log_signal.emit(f"   🔍 Progman 下没找到 SysListView32,枚举 WorkerW...")
 
@@ -780,7 +781,7 @@ class LaunchWorker(QThread):
                 return not bool(defvw_container['hwnd'])
 
             user32.EnumWindows(EnumChildProc(cb_top), 0)
-        
+
         defvw = defvw_container['hwnd']
         self.log_signal.emit(f"   📋 ListView 查找结果: hwnd={defvw}")
         if not defvw:
@@ -819,7 +820,7 @@ class LaunchWorker(QThread):
 
         # 计算 lParam: 低位 x,高位 y
         lparam = (pt.y << 16) | (pt.x & 0xFFFF)
-        
+
         # 纯后台点击: 发送消息到 SysListView32 窗口
         self.log_signal.emit(f"   🖱️ 后台双击 (SendMessage) hwnd={hex(defvw)}")
         # 发送双击消息序列 (模拟真实双击)
@@ -830,7 +831,7 @@ class LaunchWorker(QThread):
         SendMessage(defvw, WM_LBUTTONDBLCLK, MK_LBUTTON, lparam)
         time.sleep(0.05)
         SendMessage(defvw, WM_LBUTTONUP, 0, lparam)
-        
+
         self.log_signal.emit(f"   ✅ 后台双击完成")
         return target_logical_idx
 
@@ -856,14 +857,14 @@ class LaunchWorker(QThread):
             raise FileNotFoundError(
                 f"请先用「截图框选」工具对桌面 {info.name} 图标截一张图,保存到 samples/ 目录"
             )
-        
+
         # 最小化所有窗口,露出干净桌面
         self.log_signal.emit(f"   🪟 最小化所有窗口露出桌面...")
         import pyautogui
         pyautogui.hotkey('win', 'd')  # Win+D 显示桌面
         import time
         time.sleep(0.5)
-        
+
         self.log_signal.emit(f"   找到 {len(candidates)} 个模板,开始匹配...")
         for c in candidates:
             try:
@@ -873,7 +874,7 @@ class LaunchWorker(QThread):
                 debug_path = Path("samples") / "_debug_screen.png"
                 screen.save(str(debug_path))
                 self.log_signal.emit(f"   📸 全屏截图已保存: {debug_path}")
-                
+
                 box = pyautogui.locateOnScreen(str(c), confidence=0.6)  # 降低阈值
                 if box:
                     center = pyautogui.center(box)
@@ -952,7 +953,7 @@ class LaunchWorker(QThread):
                     EnumChildWindows(hwnd, cb_fn, 0)
                 return not bool(defvw_container['hwnd'])
             user32.EnumWindows(EnumChildProc(cb_top), 0)
-        
+
         defvw = defvw_container['hwnd']
 
         # 拿 ListView 屏幕坐标
@@ -976,7 +977,7 @@ class LaunchWorker(QThread):
         pt_x = 20 + col * COL_W + 16  # 客户区坐标(图标中心)
         pt_y = 20 + row * ROW_H + 16
         self.log_signal.emit(f"   📍 网格估算 (idx={logical_idx}, col={col}, row={row})")
-        
+
         if defvw:
             # 纯后台点击: 给 SysListView32 发送 WM_LBUTTONDBLCLK 消息
             WM_LBUTTONDOWN = 0x0201
@@ -984,7 +985,7 @@ class LaunchWorker(QThread):
             WM_LBUTTONDBLCLK = 0x0203
             MK_LBUTTON = 0x0001
             lparam = (pt_y << 16) | (pt_x & 0xFFFF)
-            
+
             self.log_signal.emit(f"   🖱️ C段后台双击 (SendMessage) hwnd={hex(defvw)}")
             SendMessage(defvw, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
             time.sleep(0.05)
@@ -1023,7 +1024,7 @@ class LaunchWorker(QThread):
                 self.log_signal.emit(f"   ⚠️ 快捷方式解析失败: {e}")
         elif self.info.target:
             target_exe = Path(self.info.target).name.lower()
-        
+
         self.log_signal.emit(f"   🔍 查找进程名: {target_exe}")
 
         # 1) 首选: 用 psutil 按可执行文件名找进程,且需要「持续存活」才算
@@ -1085,7 +1086,7 @@ class LaunchWorker(QThread):
         except Exception:
             pass
 
-        # 3) 最后退化: 固定等一下,让用户感知“程序启动了”
+        # 3) 最后退化: 固定等一下,让用户感知"程序启动了"
         self.log_signal.emit("⚠️ 未命中进程/窗口,固定等待 2s")
         time.sleep(2)
 
@@ -1094,7 +1095,7 @@ class LaunchWorker(QThread):
         self.log_signal.emit("📝 开始键鼠交互(记事本)")
         time.sleep(1)
         pyperclip.copy(
-            "这是通过 Python 自动模拟键鼠输入的测试文本！\n"
+            "这是通过 Python 自动模拟键鼠输入的测试文本!\n"
             "支持中文、换行、快捷键 Ctrl+S / Ctrl+V"
         )
         pyautogui.hotkey("ctrl", "v")
@@ -1112,7 +1113,7 @@ class LaunchWorker(QThread):
 class SnippingWindow(QWidget):
     """全屏覆盖窗口,鼠标拖拽框选一块区域并保存为 PNG。
 
-    关键: 统一使用“逻辑坐标” (DPI-缩放后),避免在 125%/150% 屏幕上坐标偏移。
+    关键: 统一使用"逻辑坐标" (DPI-缩放后),避免在 125%/150% 屏幕上坐标偏移。
     截图时拿真实物理像素,但画到 widget 上时按 devicePixelRatio 缩放。
     保存时使用选中区在物理像素图中的子区域(坐标*ratio)。
     """
@@ -1479,10 +1480,13 @@ class MainWindow(QMainWindow):
     def _handle_ipc_message(self, data: dict) -> None:
         """处理新进程转发来的任务。"""
         argv = data.get("argv", [])
+        args = [str(a).lower() for a in argv]
+        if "--close-main" in args:
+            self._append_log("[IPC] 收到关闭命令, 退出主窗口...")
+            QApplication.quit()
+            return
         self._append_log(f"[IPC] 收到任务: {argv}")
         self._activate_self()
-        # 当前 --silent-task 的语义是“启动/切换到主窗口”。后续可在这里扩展更多动作。
-        args = [str(a).lower() for a in argv]
         if "--install-shortcut" in args or "--install" in args:
             _do_install_shortcut()
         elif "--remove-shortcut" in args or "--uninstall" in args:
@@ -1576,6 +1580,7 @@ class MainWindow(QMainWindow):
         self.shortcuts = scan_desktop_shortcuts()
         for sc in self.shortcuts:
             item = QListWidgetItem(f"{sc.name}   →   {sc.target}")
+            item.setToolTip("双击打开,如打开失败,使用快速启动")
             self.list_widget.addItem(item)
         self._append_log(f"🔍 扫描到 {len(self.shortcuts)} 个快捷方式")
         if self.shortcuts:
@@ -1718,6 +1723,19 @@ class MainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             return
 
+        # ---- 文档类快捷方式: 自动打开所在目录 ----
+        DOC_EXTENSIONS = {
+            ".doc", ".docx", ".pdf", ".xls", ".xlsx", ".ppt", ".pptx",
+            ".txt", ".csv", ".rtf", ".odt", ".ods", ".odp",
+            ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".ico",
+            ".mp3", ".mp4", ".avi", ".mkv", ".mov", ".zip", ".rar", ".7z",
+        }
+        target_path = Path(sc.target)
+        if target_path.exists() and target_path.suffix.lower() in DOC_EXTENSIONS:
+            self._append_log(f"📂 文档类快捷方式,打开所在目录: {target_path.parent}")
+            subprocess.Popen(["explorer", "/select,", str(target_path)])
+            return
+
         mode = (
             "desktop" if self.radio_desktop.isChecked()
             else "direct" if self.radio_direct.isChecked()
@@ -1753,7 +1771,7 @@ class MainWindow(QMainWindow):
             self.worker.quit()
             self.worker.wait(2000)
             self._append_log("⏹ 已请求停止 worker")
-        
+
         # 再杀掉已启动的目标进程
         sc = self._current()
         if sc:
@@ -1770,7 +1788,7 @@ class MainWindow(QMainWindow):
                     target_exe = Path(sc.target).name.lower()
                 else:
                     target_exe = sc.name.lower() + ".exe"
-                
+
                 import psutil
                 killed = []
                 for p in psutil.process_iter(['pid', 'name']):
@@ -1786,7 +1804,7 @@ class MainWindow(QMainWindow):
                     self._append_log(f"⏹ 未找到运行中的进程: {target_exe}")
             except Exception as e:
                 self._append_log(f"⚠️ 终止进程失败: {e}")
-        
+
         self.btn_run.setEnabled(True)
         self.btn_stop.setEnabled(False)
 
@@ -1981,13 +1999,19 @@ def main() -> int:
     if "--mcp" in sys.argv:
         return _run_mcp_only()
 
-    # 单实例检查: 如果已有实例在运行, 通过 IPC 转发任务后退出
-    if not _try_acquire_single_instance():
+    # --replace: 关闭旧实例后启动新 GUI(不进行单实例检查,由 --replace 自行处理关闭旧实例)
+    if "--replace" in sys.argv:
+        print("[单实例] --replace 模式: 关闭旧实例后启动新 GUI")
+        _forward_to_running_instance([sys.executable, "--close-main"])
+        print("[单实例] 已发送关闭命令, 等待旧实例退出...")
+        time.sleep(0.8)
+        print("[单实例] 等待完毕, 准备启动新 GUI")
+    elif not _try_acquire_single_instance():
         print("[单实例] 已有实例在运行, 通过 IPC 转发任务...")
         _forward_to_running_instance(sys.argv)
         print("[单实例] 任务已转发, 当前进程退出")
         sys.exit(0)
-    
+
     app = QApplication(sys.argv)
     app.setApplicationName("桌面自动化助手")
     # 设置应用图标
@@ -2025,7 +2049,7 @@ def _run_mcp_only() -> int:
 
     from mcp_embedded import scan_desktop_shortcuts, load_workflows, run_workflow_sync, launch_shortcut_sync
     from search_panel import search_everything
-    
+
     try:
         from mcp.server import Server
         from mcp.server.stdio import stdio_server

@@ -161,7 +161,7 @@ def _find_packaged_exe() -> Optional[Path]:
 
 
 def install_shortcut() -> bool:
-    """在桌面创建快捷方式 (目标指向 EXE 自身 + --silent-task 参数)。"""
+    """在桌面创建快捷方式 (目标指向 EXE 自身 + --replace 参数，启动前先关闭旧实例)。"""
     try:
         import win32com.client
 
@@ -180,7 +180,7 @@ def install_shortcut() -> bool:
         shell = win32com.client.Dispatch("WScript.Shell")
         sc = shell.CreateShortCut(str(shortcut_path))
         sc.TargetPath = str(exe_path)
-        sc.Arguments = "--silent-task"
+        sc.Arguments = "--replace"
         sc.WorkingDirectory = str(exe_path.parent)
         sc.IconLocation = str(icon) if icon.exists() else str(exe_path)
         sc.Description = "桌面自动化助手"
@@ -189,7 +189,7 @@ def install_shortcut() -> bool:
 
         print(f"✅ 桌面快捷方式: {shortcut_path}")
         print(f"   目标: {exe_path}")
-        print("   参数: --silent-task")
+        print("   参数: --replace")
         return True
     except Exception as e:
         print(f"❌ 创建失败: {e}")

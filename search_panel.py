@@ -32,7 +32,8 @@ from PySide6.QtWidgets import (
     QComboBox, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QMessageBox, QGroupBox, QRadioButton, QButtonGroup, QFileDialog,
     QDialog, QDialogButtonBox, QFormLayout, QCheckBox, QSpinBox,
-    QProgressDialog, QPlainTextEdit, QFrame, QSizePolicy, QToolButton
+    QProgressDialog, QPlainTextEdit, QFrame, QSizePolicy, QToolButton,
+    QApplication
 )
 
 # ---------------------------------------------------------------------------
@@ -326,7 +327,7 @@ def is_http_port_open(host: str = "127.0.0.1", port: int = 16259) -> bool:
 class SetupWizard(QDialog):
     """首次使用引导向导"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, start_page: int = 0):
         super().__init__(parent)
         self.setWindowTitle("🔧 文件搜索 - 设置向导")
         self.setMinimumSize(700, 500)
@@ -335,6 +336,7 @@ class SetupWizard(QDialog):
         self.username = ""
         self.password = ""
         self.config = EverythingConfig()
+        self._start_page = start_page
 
         # 步骤切换用 stackedWidget
         from PySide6.QtWidgets import QStackedWidget
@@ -374,6 +376,9 @@ class SetupWizard(QDialog):
         self.btn_test.clicked.connect(self._on_test)
         self._update_nav()
         QTimer.singleShot(100, self._detect_everything_auto)
+        if self._start_page > 0:
+            self.stack.setCurrentIndex(self._start_page)
+            self._update_nav()
 
     # ---- Page 1: Everything 路径 ----
     def _build_page1(self) -> QWidget:
@@ -872,6 +877,9 @@ class SearchPanel(QWidget):
         self.lbl_result_count = QLabel("就绪")
         info_row.addWidget(self.lbl_result_count)
         info_row.addStretch()
+        btn_clear = QPushButton("🗑 清空")
+        btn_clear.clicked.connect(self._clear_results)
+        info_row.addWidget(btn_clear)
 
         # 操作按钮
         btn_open = QPushButton("📂 打开")
@@ -923,15 +931,15 @@ class SearchPanel(QWidget):
             self.lbl_status.setText(f"🟢 {msg}")
             self.lbl_status.setStyleSheet("color: green; font-size: 13px; font-weight: bold;")
         elif "401" in msg or "鉴权" in msg:
-            self.lbl_status.setText("🟡 HTTP 需要密码,点击 [设置] 配置")
+            self.lbl_status.setText("🟡 HTTP需要密码，点击[搜索]输入")
             self.lbl_status.setStyleSheet("color: orange; font-size: 13px;")
         else:
             self.lbl_status.setText(f"🔴 {msg}")
             self.lbl_status.setStyleSheet("color: red; font-size: 13px;")
 
-    def _open_setup(self):
-        """打开设置向导"""
-        wizard = SetupWizard(self)
+    def _open_setup(self, jump_to_auth: bool = False):
+        """打开设置向导，jump_to_auth=True 时直接跳到账号密码页"""
+        wizard = SetupWizard(self, start_page=2 if jump_to_auth else 0)
         if wizard.exec() == QDialog.Accepted:
             self.backend = EverythingHTTP(wizard.get_config())
             self._refresh_status()
@@ -983,12 +991,8 @@ class SearchPanel(QWidget):
         self.lbl_result_count.setText(f"❌ 错误: {err}")
         self.lbl_result_count.setStyleSheet("color: red; font-size: 13px;")
         if "401" in err or "鉴权" in err:
-            reply = QMessageBox.question(
-                self, "需要鉴权",
-                "Everything HTTP 需要密码。\n是否打开设置重新配置?",
-                QMessageBox.Yes | QMessageBox.No)
-            if reply == QMessageBox.Yes:
-                self._open_setup()
+            # HTTP 需要密码，直接跳到账号密码页
+            self._open_setup(jump_to_auth=True)
 
     def _populate_table(self, results: list):
         self.table.setSortingEnabled(False)
@@ -1016,6 +1020,14 @@ class SearchPanel(QWidget):
     def _selected_results(self) -> list:
         rows = set(idx.row() for idx in self.table.selectedIndexes())
         return [self.results[r] for r in sorted(rows) if r < len(self.results)]
+
+    def _clear_results(self):
+        """清空搜索结果"""
+        self.results = []
+        self.table.setRowCount(0)
+        self.lbl_result_count.setText("已清空")
+        self.lbl_result_count.setStyleSheet("color: gray; font-size: 13px;")
+
 
     def _on_open_selected(self):
         selected = self._selected_results()
