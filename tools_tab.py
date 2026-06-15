@@ -169,9 +169,33 @@ class ToolsTab(QWidget):
         return mcp_box
 
     def _build_mcp_docs_box(self) -> QGroupBox:
-        """MCP 工具简介区"""
-        docs_box = QGroupBox(f"📚 MCP 工具简介 (共 {len(MCP_TOOLS_DOCS)} 个)")
+        """MCP 工具简介区 (可展开/折叠)"""
+        self.mcp_docs_expanded = True
+        docs_box = QGroupBox()
         dv = QVBoxLayout(docs_box)
+        dv.setContentsMargins(8, 4, 8, 8)
+
+        # 标题 + 折叠按钮
+        header_row = QHBoxLayout()
+        title = QLabel(f"📚 MCP 工具简介 (共 {len(MCP_TOOLS_DOCS)} 个)")
+        title.setStyleSheet("font-weight: bold; font-size: 13px; color: #1e40af;")
+        header_row.addWidget(title)
+        header_row.addStretch()
+        self.btn_toggle_docs = QPushButton("▲ 折叠")
+        self.btn_toggle_docs.setFixedWidth(80)
+        self.btn_toggle_docs.setStyleSheet(
+            "QPushButton { padding: 4px 8px; font-size: 11px; }"
+            "QPushButton:hover { background:#e0e7ff; }"
+        )
+        self.btn_toggle_docs.clicked.connect(self._toggle_mcp_docs)
+        header_row.addWidget(self.btn_toggle_docs)
+        dv.addLayout(header_row)
+
+        # 简介容器 (可隐藏)
+        self.mcp_docs_container = QWidget()
+        container_layout = QVBoxLayout(self.mcp_docs_container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(6)
 
         for tool in MCP_TOOLS_DOCS:
             tool_frame = QFrame()
@@ -183,9 +207,9 @@ class ToolsTab(QWidget):
             tf.setContentsMargins(8, 6, 8, 6)
 
             # 标题
-            title = QLabel(f"<b>{tool['name']}</b> — {tool['title']}")
-            title.setStyleSheet("color: #2563eb; font-size: 12px;")
-            tf.addWidget(title)
+            title_lbl = QLabel(f"<b>{tool['name']}</b> — {tool['title']}")
+            title_lbl.setStyleSheet("color: #2563eb; font-size: 12px;")
+            tf.addWidget(title_lbl)
 
             # 参数
             param = QLabel(f"参数: <code>{tool['params']}</code>")
@@ -209,9 +233,21 @@ class ToolsTab(QWidget):
             ex.setWordWrap(True)
             tf.addWidget(ex)
 
-            dv.addWidget(tool_frame)
+            container_layout.addWidget(tool_frame)
 
+        dv.addWidget(self.mcp_docs_container)
         return docs_box
+
+    def _toggle_mcp_docs(self) -> None:
+        """展开/折叠 MCP 简介"""
+        if self.mcp_docs_expanded:
+            self.mcp_docs_container.setVisible(False)
+            self.btn_toggle_docs.setText("▼ 展开")
+            self.mcp_docs_expanded = False
+        else:
+            self.mcp_docs_container.setVisible(True)
+            self.btn_toggle_docs.setText("▲ 折叠")
+            self.mcp_docs_expanded = True
 
     def _build_launcher_box(self) -> QGroupBox:
         """启动器信息"""

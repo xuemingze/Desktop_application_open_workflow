@@ -90,6 +90,8 @@ class StepExecutor:
                 return StepExecutor._key_press(params, log_func)
             elif step_type == "click_coords":
                 return StepExecutor._click_coords(params, log_func)
+            elif step_type == "search_file":
+                return StepExecutor._search_file(params, log_func)
             else:
                 log_func(f"  未知步骤类型: {step_type}")
                 return False
@@ -199,6 +201,60 @@ class StepExecutor:
             pyautogui.click(x, y, button="left")
         return True
 
+    @staticmethod
+    def _search_file(params, log_func) -> bool:
+        """使用 Everything HTTP 搜索本地文件"""
+        query = params.get("query", "").strip()
+        if not query:
+            log_func("  搜索词为空,跳过")
+            return False
+        path = params.get("path", "").strip()
+        limit = int(params.get("limit", 10))
+        action = params.get("action", "log")  # log / open_first / save_var
+
+        log_func(f"  搜索: {query}" + (f" (限定: {path})" if path else ""))
+
+        try:
+            # 懒加载: 避免 PyInstaller 打额外的依赖
+            from search_panel import search_everything
+            result = search_everything(query, limit=limit, sort="date", path=path)
+            if not isinstance(result, dict):
+                log_func(f"  搜索返回格式错误: {type(result).__name__}")
+                return False
+            if not result.get("ok"):
+                log_func(f"  搜索失败: {result.get('error', '未知错误')}")
+                return False
+            results = result.get("results", [])
+            log_func(f"  找到 {len(results)} 个结果:")
+            for i, r in enumerate(results[:5], 1):
+                log_func(f"    {i}. {r.get('name', '?')}  ({r.get('path', '?')})")
+            if len(results) > 5:
+                log_func(f"    ...还有 {len(results)-5} 个")
+
+            if action == "open_first" and results:
+                first = results[0]
+                target_path = first.get("path", "")
+                # path 可能是目录,需要拼接 name
+                if not target_path or not Path(target_path).is_file():
+                    target_path = str(Path(target_path) / first.get("name", "")) if target_path else ""
+                if target_path and Path(target_path).exists():
+                    import os
+                    os.startfile(target_path)
+                    log_func(f"  已打开: {target_path}")
+                else:
+                    log_func(f"  无法打开: 文件不存在 ({target_path})")
+            elif action == "save_var":
+                # TODO: 保存到工作流变量(供后续步骤使用)
+                log_func(f"  TODO: 保存 {len(results)} 个结果到工作流变量")
+
+            return True
+        except ImportError:
+            log_func("  搜索模块未安装 (需要 search_panel.py 和 Everything)")
+            return False
+        except Exception as e:
+            log_func(f"  搜索出错: {e}")
+            return False
+
 
 # ============================================================
 # 工作流 Worker
@@ -250,6 +306,7 @@ class WorkflowEditor(QWidget):
         ("click_image", "截图匹配点击"),
         ("key_press", "按键输入"),
         ("click_coords", "坐标点击"),
+        ("search_file", "文件搜索"),
     ]
 
     def __init__(self, parent=None):
@@ -467,6 +524,48 @@ class WorkflowEditor(QWidget):
         cw.addLayout(capture_row)
         dv.addWidget(self.coord_widget)
 
+        # ============ 文件搜索 专用控件 ============
+        self.search_widget = QWidget()
+        self.search_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        sw = QVBoxLayout(self.search_widget)
+        sw.setContentsMargins(0, 0, 0, 0)
+        sw.setSpacing(4)
+        # 查询词
+        qrow = QHBoxLayout()
+        qrow.addWidget(QLabel("搜索词:"))
+        self.search_query_edit = QLineEdit()
+        self.search_query_edit.setPlaceholderText("如: 4月明细, 报告*.pdf, ext:docx")
+        qrow.addWidget(self.search_query_edit, 1)
+        sw.addLayout(qrow)
+        # 可选限定目录
+        prow = QHBoxLayout()
+        prow.addWidget(QLabel("限定目录:"))
+        self.search_path_edit = QLineEdit()
+        self.search_path_edit.setPlaceholderText("可选, 例: C:\\Users\\Public")
+        prow.addWidget(self.search_path_edit, 1)
+        sw.addLayout(prow)
+        # 限制结果数
+        lrow = QHBoxLayout()
+        lrow.addWidget(QLabel("最大结果:"))
+        self.search_limit_spin = QSpinBox()
+        self.search_limit_spin.setRange(1, 1000)
+        self.search_limit_spin.setValue(10)
+        lrow.addWidget(self.search_limit_spin)
+        lrow.addWidget(QLabel("  发现后动作:"))
+        self.search_action_combo = QComboBox()
+        self.search_action_combo.addItem("仅输出到日志", "log")
+        self.search_action_combo.addItem("打开第一个结果", "open_first")
+        self.search_action_combo.addItem("保存到变量 (供后续步骤用)", "save_var")
+        lrow.addWidget(self.search_action_combo)
+        lrow.addStretch()
+        sw.addLayout(lrow)
+        # 帮助
+        self.search_help = QLabel("💡 使用 Everything 搜索本地文件。需要本机安装 Everything 并关闭 HTTP 鉴权。")
+        self.search_help.setStyleSheet("color: #888; font-size: 10px; padding: 2px 0;")
+        self.search_help.setWordWrap(True)
+        sw.addWidget(self.search_help)
+        dv.addWidget(self.search_widget)
+
         # 加个 stretch 让可见控件贴顶
         dv.addStretch(1)
 
@@ -619,6 +718,14 @@ class WorkflowEditor(QWidget):
             idx = self.click_combo.findData(click_type)
             if idx >= 0:
                 self.click_combo.setCurrentIndex(idx)
+        elif step_type == "search_file":
+            self.search_query_edit.setText(params.get("query", ""))
+            self.search_path_edit.setText(params.get("path", ""))
+            self.search_limit_spin.setValue(params.get("limit", 10))
+            action = params.get("action", "log")
+            idx = self.search_action_combo.findData(action)
+            if idx >= 0:
+                self.search_action_combo.setCurrentIndex(idx)
 
     def _on_type_change(self, idx):
         """切换步骤类型,显示对应控件"""
@@ -628,6 +735,7 @@ class WorkflowEditor(QWidget):
         self.image_widget.setVisible(step_type == "click_image")
         self.key_widget.setVisible(step_type == "key_press")
         self.coord_widget.setVisible(step_type == "click_coords")
+        self.search_widget.setVisible(step_type == "search_file")
 
     def _on_launch_select(self, idx):
         path = self.launch_combo.itemData(idx) or ""
@@ -829,6 +937,13 @@ class WorkflowEditor(QWidget):
                 "x": self.x_spin.value(),
                 "y": self.y_spin.value(),
                 "click_type": self.click_combo.currentData()
+            }
+        elif step["type"] == "search_file":
+            step["params"] = {
+                "query": self.search_query_edit.text(),
+                "path": self.search_path_edit.text(),
+                "limit": self.search_limit_spin.value(),
+                "action": self.search_action_combo.currentData(),
             }
         wf_name = self._current_workflow
         if wf_name in self.workflows:

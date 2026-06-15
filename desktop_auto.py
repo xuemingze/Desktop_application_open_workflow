@@ -1089,6 +1089,14 @@ class MainWindow(QMainWindow):
         wv.setContentsMargins(0, 0, 0, 0)
         wv.addWidget(self.workflow_editor)
 
+        # === Tab 2: 文件搜索 ===
+        try:
+            from search_panel import SearchPanel
+            self.search_panel = SearchPanel(self)
+            self.right_tabs.addTab(self.search_panel, "🔍 文件搜索")
+        except Exception as e:
+            log.warning(f"文件搜索标签加载失败: {e}")
+
         # 添加到选项卡
         self.right_tabs.addTab(quick_tab, "🚀 快速启动")
         self.right_tabs.addTab(workflow_tab, "🔄 工作流")
@@ -1099,14 +1107,6 @@ class MainWindow(QMainWindow):
             self.right_tabs.addTab(self.tools_tab, "🛠️ 工具")
         except Exception as e:
             log.warning(f"工具标签加载失败: {e}")
-
-        # === Tab 3: 文件搜索 ===
-        try:
-            from search_panel import SearchPanel
-            self.search_panel = SearchPanel(self)
-            self.right_tabs.addTab(self.search_panel, "🔍 文件搜索")
-        except Exception as e:
-            log.warning(f"文件搜索标签加载失败: {e}")
 
         # 设置选项卡
         right_layout = QVBoxLayout(right)
