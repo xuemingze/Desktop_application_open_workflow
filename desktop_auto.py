@@ -1208,6 +1208,8 @@ class MainWindow(QMainWindow):
             "QListWidget::item { height: 26px; padding: 2px; }"
         )
         self.list_widget.itemSelectionChanged.connect(self._on_select)
+        # 双击启动应用 (与「执行」按钮行为一致)
+        self.list_widget.itemDoubleClicked.connect(self.run_action)
 
         # ===== 右侧:控制面板 =====
         self.info_label = QLabel("选中一个快捷方式", self)
