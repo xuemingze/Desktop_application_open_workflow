@@ -551,8 +551,12 @@ class LaunchWorker(QThread):
     # ---- 5.1 直接启动 (Popen 方式) ----
     def _launch_direct(self) -> None:
         info = self.info
-        if not info.target or not Path(info.target).exists():
-            raise FileNotFoundError(f"目标程序不存在: {info.target}")
+        if not info.target:
+            QMessageBox.warning(None, "提示", f"快捷方式目标路径为空: {info.name}\n请重新扫描或检查快捷方式是否有效。")
+            return
+        if not Path(info.target).exists():
+            QMessageBox.warning(None, "提示", f"目标程序不存在: {info.target}\n请检查快捷方式是否指向有效路径。")
+            return
         self.log_signal.emit(f"🚀 直接启动 (Popen): {info.target}")
         # Electron / 资源敏感型应用必须传 cwd,否则找不到资源崩
         # 优先用快捷方式里的 WorkingDirectory,退化用 target 所在目录
@@ -1710,6 +1714,7 @@ class MainWindow(QMainWindow):
         if not sc:
             QMessageBox.warning(self, "提示", "请先选择一个快捷方式")
             return
+        self._append_log(f"[启动] 双击: {sc.name} → {sc.target}")
         if self.worker and self.worker.isRunning():
             return
 
