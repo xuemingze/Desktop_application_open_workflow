@@ -1,0 +1,527 @@
+"""AI 感知 - 主标签页（GUI 集成）
+
+包含 4 个子面板：
+1. 总开关 + 传感器选择（剪贴板/窗口/文件/进程）
+2. 嗅探规则编辑（含启用/禁用）
+3. 进程黑名单编辑
+4. 后端设置 + 实时活动日志
+
+装配 ContextSensorManager + Gatekeeper + ToastManager + ContextAgent
+"""
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime
+from pathlib import Path
+
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QCheckBox, QPushButton,
+    QLabel, QListWidget, QListWidgetItem, QLineEdit, QTextEdit, QSpinBox,
+    QFormLayout, QTabWidget, QFileDialog, QMessageBox, QComboBox,
+)
+
+from context_sensor import ContextSensorManager, ContextCapsule
+from context_gatekeeper import Gatekeeper, SniffRule, DEFAULT_PROCESS_BLACKLIST, DEFAULT_SNIFF_RULES
+from context_toast import ToastManager, ToastIntent, ToastBubble
+from context_agent import ContextAgent, EchoBackend, OpenAICompatibleBackend
+
+
+CONFIG_FILE = Path.home() / "context_aware_config.json"
+
+
+class ContextTab(QWidget):
+    """AI 感知主标签页"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._enabled = False
+        self._sensor_manager = ContextSensorManager()
+        self._gatekeeper = Gatekeeper()
+        self._toast_manager = ToastManager(self)
+        self._agent = ContextAgent(backend=EchoBackend(), parent=self)
+
+        self._config = self._load_config()
+
+        # 应用配置
+        if "blacklist_extra" in self._config:
+            for app in self._config["blacklist_extra"]:
+                self._gatekeeper.add_to_blacklist(app)
+        if "rule_overrides" in self._config:
+            for r in self._config["rule_overrides"]:
+                self._gatekeeper.toggle_rule(r["name"], r["enabled"])
+
+        # 信号连接
+        self._sensor_manager.captured.connect(self._on_capsule)
+        self._toast_manager.toast_clicked.connect(self._on_toast_clicked)
+        self._agent.intent_ready.connect(self._toast_manager.show_toast)
+        self._agent.log_signal.connect(self._append_log)
+
+        self._build_ui()
+        self._refresh_rule_list()
+        self._refresh_blacklist_list()
+
+    # ---- UI 构建 ----
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
+
+        # 顶部：总开关
+        top = QHBoxLayout()
+        self.master_switch = QCheckBox("🟢 启用上下文感知")
+        self.master_switch.setFont(QFont("", 11, QFont.Bold))
+        self.master_switch.toggled.connect(self._on_master_toggle)
+        top.addWidget(self.master_switch)
+
+        top.addStretch()
+        self.status_label = QLabel("已停止")
+        self.status_label.setStyleSheet("color: #888;")
+        top.addWidget(self.status_label)
+        root.addLayout(top)
+
+        # 子标签页
+        sub = QTabWidget()
+
+        # === Tab 1: 感知行为 ===
+        sub.addTab(self._build_sensor_panel(), "🎛️ 感知行为")
+
+        # === Tab 2: 嗅探规则 ===
+        sub.addTab(self._build_rules_panel(), "📋 嗅探规则")
+
+        # === Tab 3: 进程黑名单 ===
+        sub.addTab(self._build_blacklist_panel(), "🚫 进程黑名单")
+
+        # === Tab 4: 后端设置 ===
+        sub.addTab(self._build_backend_panel(), "⚙️ 后端")
+
+        # === Tab 5: 活动日志 ===
+        sub.addTab(self._build_log_panel(), "📊 日志")
+
+        root.addWidget(sub, stretch=1)
+
+    def _build_sensor_panel(self) -> QWidget:
+        """感知行为面板——选择启用哪些传感器"""
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        gb = QGroupBox("传感器（多选）")
+        v = QVBoxLayout(gb)
+
+        self.chk_clipboard = QCheckBox("📋 剪贴板监听（推荐开启，零开销）")
+        self.chk_clipboard.setChecked(True)
+        v.addWidget(self.chk_clipboard)
+
+        self.chk_window = QCheckBox("🪟 前台窗口切换监听")
+        self.chk_window.setChecked(True)
+        v.addWidget(self.chk_window)
+
+        self.chk_file = QCheckBox("📁 文件系统监视（手动添加目录）")
+        self.chk_file.setChecked(False)
+        v.addWidget(self.chk_file)
+
+        self.chk_process = QCheckBox("⚙️ 进程启动/退出监听")
+        self.chk_process.setChecked(False)
+        v.addWidget(self.chk_process)
+
+        layout.addWidget(gb)
+
+        # 文件监视路径
+        path_gb = QGroupBox("文件监视路径")
+        pv = QVBoxLayout(path_gb)
+        path_row = QHBoxLayout()
+        self.path_list = QListWidget()
+        self.path_list.setMaximumHeight(120)
+        path_row.addWidget(self.path_list, stretch=1)
+
+        btn_col = QVBoxLayout()
+        btn_add = QPushButton("➕ 添加目录")
+        btn_add.clicked.connect(self._on_add_path)
+        btn_rm = QPushButton("➖ 移除选中")
+        btn_rm.clicked.connect(self._on_rm_path)
+        btn_col.addWidget(btn_add)
+        btn_col.addWidget(btn_rm)
+        btn_col.addStretch()
+        path_row.addLayout(btn_col)
+        pv.addLayout(path_row)
+        layout.addWidget(path_gb)
+
+        # 行为按钮
+        btn_row = QHBoxLayout()
+        btn_test = QPushButton("🧪 测试剪贴板捕获")
+        btn_test.clicked.connect(self._on_test_capture)
+        btn_clear_toasts = QPushButton("🧹 清除所有气泡")
+        btn_clear_toasts.clicked.connect(self._toast_manager.stop_all)
+        btn_row.addWidget(btn_test)
+        btn_row.addWidget(btn_clear_toasts)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        layout.addStretch()
+        return w
+
+    def _build_rules_panel(self) -> QWidget:
+        """嗅探规则面板——启用/禁用 + 自定义"""
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        info = QLabel("💡 只有当剪贴板内容命中下方任一规则时，才会被发送到 AI 推理。\n"
+                     "取消勾选可禁用对应规则。")
+        info.setStyleSheet("color: #666;")
+        layout.addWidget(info)
+
+        self.rule_list = QListWidget()
+        self.rule_list.setMaximumHeight(280)
+        layout.addWidget(self.rule_list)
+
+        # 自定义规则
+        custom_gb = QGroupBox("添加自定义规则")
+        cv = QFormLayout(custom_gb)
+        self.rule_name_input = QLineEdit()
+        self.rule_name_input.setPlaceholderText("规则名称，如 Git 仓库路径")
+        self.rule_pattern_input = QLineEdit()
+        self.rule_pattern_input.setPlaceholderText("正则表达式，如 ^git@")
+        cv.addRow("名称:", self.rule_name_input)
+        cv.addRow("正则:", self.rule_pattern_input)
+        btn_row = QHBoxLayout()
+        btn_add = QPushButton("➕ 添加")
+        btn_add.clicked.connect(self._on_add_rule)
+        btn_rm = QPushButton("➖ 删除选中")
+        btn_rm.clicked.connect(self._on_rm_rule)
+        btn_row.addWidget(btn_add)
+        btn_row.addWidget(btn_rm)
+        btn_row.addStretch()
+        cv.addRow("", _wrap(btn_row))
+        layout.addWidget(custom_gb)
+
+        layout.addStretch()
+        return w
+
+    def _build_blacklist_panel(self) -> QWidget:
+        """进程黑名单面板"""
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        warn = QLabel("🛡️ 黑名单中的进程绝对不会被感知（剪贴板内容不会进入 AI 链路）。\n"
+                     "密码管理器、SSH 私钥工具等建议加入。")
+        warn.setStyleSheet("color: #c00;")
+        layout.addWidget(warn)
+
+        self.blacklist_list = QListWidget()
+        self.blacklist_list.setMaximumHeight(280)
+        layout.addWidget(self.blacklist_list)
+
+        add_gb = QGroupBox("添加进程")
+        av = QHBoxLayout(add_gb)
+        self.blacklist_input = QLineEdit()
+        self.blacklist_input.setPlaceholderText("进程名，如 1Password.exe")
+        av.addWidget(self.blacklist_input, stretch=1)
+        btn_add = QPushButton("➕ 添加")
+        btn_add.clicked.connect(self._on_add_blacklist)
+        btn_rm = QPushButton("➖ 移除选中")
+        btn_rm.clicked.connect(self._on_rm_blacklist)
+        av.addWidget(btn_add)
+        av.addWidget(btn_rm)
+        layout.addWidget(add_gb)
+
+        layout.addStretch()
+        return w
+
+    def _build_backend_panel(self) -> QWidget:
+        """后端 AI 设置面板"""
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        gb = QGroupBox("AI 后端")
+        f = QFormLayout(gb)
+
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItems(["EchoBackend (本地测试，不发请求)",
+                                    "OpenAI 兼容 (Hermes/Qianlia/本地模型)"])
+        f.addRow("后端类型:", self.backend_combo)
+
+        self.base_url_input = QLineEdit("http://127.0.0.1:11434/v1")
+        f.addRow("Base URL:", self.base_url_input)
+
+        self.api_key_input = QLineEdit("EMPTY")
+        f.addRow("API Key:", self.api_key_input)
+
+        self.model_input = QLineEdit("qwen2.5:7b")
+        f.addRow("Model:", self.model_input)
+
+        self.timeout_spin = QSpinBox()
+        self.timeout_spin.setRange(1, 60)
+        self.timeout_spin.setValue(5)
+        self.timeout_spin.setSuffix(" 秒")
+        f.addRow("超时:", self.timeout_spin)
+
+        layout.addWidget(gb)
+
+        btn_row = QHBoxLayout()
+        btn_apply = QPushButton("💾 应用设置")
+        btn_apply.clicked.connect(self._on_apply_backend)
+        btn_test = QPushButton("🧪 测试连通")
+        btn_test.clicked.connect(self._on_test_backend)
+        btn_row.addWidget(btn_apply)
+        btn_row.addWidget(btn_test)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        # 工作流交互说明
+        info_gb = QGroupBox("工作流交互")
+        iv = QVBoxLayout(info_gb)
+        info = QLabel("• 气泡点击后会调用 AI 推荐的工具（MCP 工具或工作流）\n"
+                     "• 当前支持的工具：search_local_files / run_workflow / launch_shortcut\n"
+                     "• 推荐工作流需要先在「工作流」标签页创建\n"
+                     "• 整个过程可在「日志」标签页查看实时活动")
+        iv.addWidget(info)
+        layout.addWidget(info_gb)
+
+        layout.addStretch()
+        return w
+
+    def _build_log_panel(self) -> QWidget:
+        """实时活动日志面板"""
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        row = QHBoxLayout()
+        btn_clear = QPushButton("🧹 清空")
+        btn_clear.clicked.connect(lambda: self.log_view.clear())
+        row.addWidget(btn_clear)
+        row.addStretch()
+
+        self.log_count_label = QLabel("0 条记录")
+        row.addWidget(self.log_count_label)
+        layout.addLayout(row)
+
+        self.log_view = QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setMaximumHeight(400)
+        layout.addWidget(self.log_view)
+
+        layout.addStretch()
+        return w
+
+    # ---- 总开关 ----
+    def _on_master_toggle(self, checked: bool):
+        self._enabled = checked
+        if checked:
+            modes = {
+                "clipboard": self.chk_clipboard.isChecked(),
+                "window": self.chk_window.isChecked(),
+                "file": self.chk_file.isChecked(),
+                "process": self.chk_process.isChecked(),
+            }
+            self._sensor_manager.start(modes)
+            self.status_label.setText("🟢 运行中")
+            self.status_label.setStyleSheet("color: #0a0;")
+            self._append_log(f"[系统] 上下文感知已启动，启用模式: {modes}")
+        else:
+            self._sensor_manager.stop_all()
+            self.status_label.setText("⚪ 已停止")
+            self.status_label.setStyleSheet("color: #888;")
+            self._append_log("[系统] 上下文感知已停止")
+
+    # ---- 胶囊事件 ----
+    def _on_capsule(self, capsule: ContextCapsule):
+        """接收到 ContextCapsule，过滤后送 AI 推理"""
+        self._append_log(f"[{capsule.source}] {capsule.foreground_window or '(无窗口)'} | "
+                        f"内容前30字: {capsule.clipboard_text[:30]!r}")
+        result = self._gatekeeper.check(capsule)
+        if not result.passed:
+            self._append_log(f"[拦截] {result.blocked_reason}")
+            return
+
+        self._append_log(f"[放行] 命中规则: {result.rule_name}")
+        # 剪贴板事件需要送到 AI；其他事件直接放行
+        if capsule.source == "clipboard":
+            self._agent.process(capsule)
+
+    def _on_toast_clicked(self, intent: ToastIntent):
+        """用户点击了气泡"""
+        self._append_log(f"[点击] 用户接受推荐: {intent.suggested_action}({intent.action_param})")
+        # TODO: 调用 MCP 工具——这部分可以接入 workflow_panel 或 tools_tab
+        QMessageBox.information(
+            self, "推荐动作",
+            f"意图: {intent.intent}\n\n"
+            f"建议动作: {intent.suggested_action}\n"
+            f"参数: {intent.action_param}"
+        )
+
+    # ---- 测试 ----
+    def _on_test_capture(self):
+        from PySide6.QtGui import QGuiApplication
+        text = QGuiApplication.clipboard().text() or ""
+        if not text:
+            QMessageBox.warning(self, "测试失败", "剪贴板为空，请先复制一些内容")
+            return
+        cap = ContextCapsule(
+            source="clipboard",
+            clipboard_text=text,
+            foreground_window="(测试)",
+            foreground_app="test.exe",
+        )
+        self._on_capsule(cap)
+
+    # ---- 路径管理 ----
+    def _on_add_path(self):
+        d = QFileDialog.getExistingDirectory(self, "选择要监视的目录")
+        if d:
+            self._sensor_manager.file.add_path(d)
+            self._refresh_path_list()
+            self._append_log(f"[文件] 添加监视路径: {d}")
+
+    def _on_rm_path(self):
+        item = self.path_list.currentItem()
+        if item:
+            path = item.text()
+            self._sensor_manager.file._watcher.removePath(path)
+            self._refresh_path_list()
+
+    def _refresh_path_list(self):
+        self.path_list.clear()
+        for p in self._sensor_manager.file.watched_paths():
+            self.path_list.addItem(p)
+
+    # ---- 规则管理 ----
+    def _refresh_rule_list(self):
+        self.rule_list.clear()
+        for rule in self._gatekeeper.get_rules():
+            text = f"{'✅' if rule.enabled else '⬜'} {rule.name}  |  {rule.pattern}"
+            item = QListWidgetItem(text)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if rule.enabled else Qt.Unchecked)
+            item.setData(Qt.UserRole, rule.name)
+            self.rule_list.addItem(item)
+
+    def _on_add_rule(self):
+        name = self.rule_name_input.text().strip()
+        pattern = self.rule_pattern_input.text().strip()
+        if not name or not pattern:
+            return
+        try:
+            import re as _re
+            _re.compile(pattern)
+        except _re.error as e:
+            QMessageBox.warning(self, "正则错误", f"正则表达式不合法: {e}")
+            return
+        self._gatekeeper.add_rule(name, pattern)
+        self.rule_name_input.clear()
+        self.rule_pattern_input.clear()
+        self._refresh_rule_list()
+        self._save_config()
+
+    def _on_rm_rule(self):
+        item = self.rule_list.currentItem()
+        if item:
+            name = item.data(Qt.UserRole)
+            self._gatekeeper.remove_rule(name)
+            self._refresh_rule_list()
+            self._save_config()
+
+    # ---- 黑名单管理 ----
+    def _refresh_blacklist_list(self):
+        self.blacklist_list.clear()
+        for app in self._gatekeeper.get_blacklist():
+            self.blacklist_list.addItem(app)
+
+    def _on_add_blacklist(self):
+        app = self.blacklist_input.text().strip()
+        if app:
+            self._gatekeeper.add_to_blacklist(app)
+            self.blacklist_input.clear()
+            self._refresh_blacklist_list()
+            self._save_config()
+
+    def _on_rm_blacklist(self):
+        item = self.blacklist_list.currentItem()
+        if item:
+            self._gatekeeper.remove_from_blacklist(item.text())
+            self._refresh_blacklist_list()
+            self._save_config()
+
+    # ---- 后端 ----
+    def _on_apply_backend(self):
+        if self.backend_combo.currentIndex() == 0:
+            backend = EchoBackend()
+        else:
+            backend = OpenAICompatibleBackend(
+                base_url=self.base_url_input.text().strip(),
+                api_key=self.api_key_input.text().strip(),
+                model=self.model_input.text().strip(),
+            )
+        self._agent.set_backend(backend)
+        QMessageBox.information(self, "应用成功", "AI 后端已切换")
+        self._append_log(f"[后端] 切换到: {type(backend).__name__}")
+
+    def _on_test_backend(self):
+        backend = OpenAICompatibleBackend(
+            base_url=self.base_url_input.text().strip(),
+            api_key=self.api_key_input.text().strip(),
+            model=self.model_input.text().strip(),
+        )
+        result = backend.infer("你是一个测试 AI。", "ping", timeout=self.timeout_spin.value())
+        if result:
+            QMessageBox.information(self, "连通成功", f"后端响应:\n{result[:200]}")
+        else:
+            QMessageBox.warning(self, "连通失败", "后端无响应，请检查 URL/Key/Model")
+
+    # ---- 日志 ----
+    def _append_log(self, msg: str):
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.log_view.append(f"[{ts}] {msg}")
+        # 限制行数
+        if self.log_view.document().blockCount() > 500:
+            cursor = self.log_view.textCursor()
+            cursor.movePosition(cursor.Start)
+            cursor.movePosition(cursor.Down, cursor.KeepAnchor, 100)
+            cursor.removeSelectedText()
+            cursor.deleteChar()
+        self.log_count_label.setText(f"{self.log_view.document().blockCount()} 条记录")
+
+    # ---- 配置持久化 ----
+    def _load_config(self) -> dict:
+        if CONFIG_FILE.exists():
+            try:
+                return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+        return {}
+
+    def _save_config(self):
+        cfg = {
+            "blacklist_extra": self._gatekeeper.get_blacklist(),
+            "rule_overrides": [
+                {"name": r.name, "enabled": r.enabled}
+                for r in self._gatekeeper.get_rules()
+            ],
+            "backend": {
+                "type": self.backend_combo.currentIndex(),
+                "base_url": self.base_url_input.text(),
+                "api_key": self.api_key_input.text(),
+                "model": self.model_input.text(),
+                "timeout": self.timeout_spin.value(),
+            },
+        }
+        try:
+            CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            self._append_log(f"[配置] 保存失败: {e}")
+
+    def shutdown(self):
+        self._append_log("[系统] 关闭中...")
+        self._save_config()
+        self._sensor_manager.stop_all()
+        self._toast_manager.stop_all()
+        self._agent.shutdown()
+
+
+def _wrap(layout):
+    """QHBoxLayout 包成 QWidget 便于嵌入 QFormLayout"""
+    from PySide6.QtWidgets import QWidget
+    w = QWidget()
+    w.setLayout(layout)
+    return w

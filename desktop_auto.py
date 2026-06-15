@@ -1375,6 +1375,14 @@ class MainWindow(QMainWindow):
         except Exception as e:
             log.warning(f"工具标签加载失败: {e}")
 
+        # === Tab 5: AI 感知 (上下文感知系统) ===
+        try:
+            from context_tab import ContextTab
+            self.context_tab = ContextTab(self)
+            self.right_tabs.addTab(self.context_tab, "🧠 AI 感知")
+        except Exception as e:
+            log.warning(f"AI 感知标签加载失败: {e}")
+
         # 设置选项卡
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
@@ -1510,6 +1518,12 @@ class MainWindow(QMainWindow):
         if self.ipc_server:
             self.ipc_server.stop()
             self.ipc_server.wait(1000)
+        # 关闭 AI 感知标签页（释放 QThread 等资源）
+        try:
+            if hasattr(self, "context_tab") and self.context_tab:
+                self.context_tab.shutdown()
+        except Exception:
+            pass
         super().closeEvent(event)
 
     def _capture_coord_for_quick(self):
