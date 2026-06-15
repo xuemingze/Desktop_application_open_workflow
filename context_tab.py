@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +28,10 @@ from context_sensor import ContextSensorManager, ContextCapsule
 from context_gatekeeper import Gatekeeper, SniffRule, DEFAULT_PROCESS_BLACKLIST, DEFAULT_SNIFF_RULES
 from context_toast import ToastManager, ToastIntent, ToastBubble
 from context_agent import ContextAgent, EchoBackend, OpenAICompatibleBackend
+from proactive_sniff import (
+    ProactiveScheduler, ProactiveRunner, QuestionGenerator,
+    UserProfile, ProactiveQuestion,
+)
 
 
 CONFIG_FILE = Path.home() / "context_aware_config.json"
@@ -42,6 +47,13 @@ class ContextTab(QWidget):
         self._gatekeeper = Gatekeeper()
         self._toast_manager = ToastManager(self)
         self._agent = ContextAgent(backend=EchoBackend(), parent=self)
+        # 主动嗅探
+        self._proactive_history = deque(maxlen=100)
+        self._proactive_generator = QuestionGenerator(self._agent._backend)
+        self._proactive_scheduler = ProactiveScheduler(
+            self._proactive_generator, self._proactive_history, parent=self
+        )
+        self._proactive_runner = ProactiveRunner(self._proactive_scheduler, self._toast_manager, parent=self)
 
         self._config = self._load_config()
 
@@ -97,7 +109,10 @@ class ContextTab(QWidget):
         # === Tab 4: 后端设置 ===
         sub.addTab(self._build_backend_panel(), "⚙️ 后端")
 
-        # === Tab 5: 活动日志 ===
+        # === Tab 5: 主动嗅探 ===
+        sub.addTab(self._build_proactive_panel(), "🎯 主动嗅探")
+
+        # === Tab 6: 活动日志 ===
         sub.addTab(self._build_log_panel(), "📊 日志")
 
         root.addWidget(sub, stretch=1)
@@ -278,6 +293,90 @@ class ContextTab(QWidget):
                      "• 整个过程可在「日志」标签页查看实时活动")
         iv.addWidget(info)
         layout.addWidget(info_gb)
+
+        layout.addStretch()
+        return w
+
+    def _build_proactive_panel(self) -> QWidget:
+        """主动嗅探面板——用户档案 + 每日次数 + 调度状态"""
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        # 顶部：开关
+        top = QHBoxLayout()
+        self.proactive_switch = QCheckBox("🎯 启用主动嗅探")
+        self.proactive_switch.setFont(QFont("", 11, QFont.Bold))
+        self.proactive_switch.toggled.connect(self._on_proactive_toggle)
+        top.addWidget(self.proactive_switch)
+        top.addStretch()
+        layout.addLayout(top)
+
+        # 每日次数
+        count_gb = QGroupBox("每日主动次数")
+        cv = QFormLayout(count_gb)
+        self.daily_count_spin = QSpinBox()
+        self.daily_count_spin.setRange(0, 20)
+        self.daily_count_spin.setValue(3)
+        self.daily_count_spin.setSuffix(" 次/天")
+        self.daily_count_spin.valueChanged.connect(self._on_daily_count_change)
+        cv.addRow("次数:", self.daily_count_spin)
+
+        self.proactive_status = QLabel("状态: 未启动")
+        self.proactive_status.setStyleSheet("color: #888;")
+        cv.addRow("", self.proactive_status)
+        layout.addWidget(count_gb)
+
+        # 用户档案
+        profile_gb = QGroupBox("用户档案（驱动话题主题）")
+        pv = QFormLayout(profile_gb)
+        self.profile_hobbies = QLineEdit()
+        self.profile_hobbies.setPlaceholderText("例如：爬山、摄影、围棋")
+        self.profile_hobbies.textChanged.connect(self._on_profile_change)
+        pv.addRow("爱好:", self.profile_hobbies)
+
+        self.profile_interests = QLineEdit()
+        self.profile_interests.setPlaceholderText("例如：AI、加密货币、独立游戏")
+        self.profile_interests.textChanged.connect(self._on_profile_change)
+        pv.addRow("兴趣:", self.profile_interests)
+
+        self.profile_learning = QLineEdit()
+        self.profile_learning.setPlaceholderText("例如：Rust 编程、系统设计")
+        self.profile_learning.textChanged.connect(self._on_profile_change)
+        pv.addRow("学习:", self.profile_learning)
+
+        self.profile_work = QLineEdit()
+        self.profile_work.setPlaceholderText("例如：桌面自动化、Python 后端")
+        self.profile_work.textChanged.connect(self._on_profile_change)
+        pv.addRow("工作:", self.profile_work)
+
+        layout.addWidget(profile_gb)
+
+        # 历史问题
+        history_gb = QGroupBox("最近问过的问题")
+        hv = QVBoxLayout(history_gb)
+        self.proactive_history_view = QListWidget()
+        self.proactive_history_view.setMaximumHeight(150)
+        hv.addWidget(self.proactive_history_view)
+        btn_row = QHBoxLayout()
+        btn_now = QPushButton("💡 现在生成一个")
+        btn_now.clicked.connect(self._on_proactive_now)
+        btn_clear = QPushButton("🧹 清空历史")
+        btn_clear.clicked.connect(self._on_proactive_clear)
+        btn_row.addWidget(btn_now)
+        btn_row.addWidget(btn_clear)
+        btn_row.addStretch()
+        hv.addLayout(btn_row)
+        layout.addWidget(history_gb)
+
+        # 提示
+        info = QLabel("💡 问题会像聊天一样在右下角弹出气泡，可以点击互动或忽略 5 秒后自动消失。")
+        info.setStyleSheet("color: #666;")
+        layout.addWidget(info)
+
+        # 加载配置 + 启动状态轮询
+        self._load_proactive_config()
+        self._proactive_scheduler.log_signal.connect(self._append_log)
+        self._proactive_scheduler.schedule_updated.connect(self._on_proactive_status_update)
 
         layout.addStretch()
         return w
@@ -516,7 +615,112 @@ class ContextTab(QWidget):
         self._save_config()
         self._sensor_manager.stop_all()
         self._toast_manager.stop_all()
+        try:
+            self._proactive_scheduler.stop()
+        except Exception:
+            pass
         self._agent.shutdown()
+
+    # ---- 主动嗅探面板逻辑 ----
+    def _on_proactive_toggle(self, checked: bool):
+        if checked:
+            # 检查档案是否为空
+            if self._proactive_scheduler.profile().is_empty():
+                QMessageBox.warning(self, "提示", "请先填写用户档案（爱好/兴趣/学习/工作），否则话题主题会随机。")
+            self._proactive_scheduler.start()
+        else:
+            self._proactive_scheduler.stop()
+
+    def _on_daily_count_change(self, value: int):
+        self._proactive_scheduler.set_daily_count(value)
+        self._save_proactive_config()
+
+    def _on_profile_change(self):
+        profile = UserProfile(
+            hobbies=self.profile_hobbies.text(),
+            interests=self.profile_interests.text(),
+            learning=self.profile_learning.text(),
+            work=self.profile_work.text(),
+        )
+        self._proactive_scheduler.set_profile(profile)
+        self._save_proactive_config()
+
+    def _on_proactive_now(self):
+        """立即触发一次生成（调试用）"""
+        profile = self._proactive_scheduler.profile()
+        for attempt in range(3):
+            q = self._proactive_generator.generate(profile, list(self._proactive_history))
+            if q is None:
+                QMessageBox.warning(self, "生成失败", "后端无响应")
+                return
+            if not self._proactive_scheduler._is_duplicate(q):
+                self._proactive_history.append(q)
+                self._refresh_proactive_history()
+                # 显示为 toast
+                intent = ToastIntent(
+                    intent=f"主动嗅探 - {q.category}",
+                    message=q.text,
+                    suggested_action="proactive_question",
+                    action_param=q.category,
+                )
+                self._toast_manager.show_toast(intent)
+                return
+
+    def _on_proactive_clear(self):
+        self._proactive_history.clear()
+        self._refresh_proactive_history()
+        self._append_log("[主动嗅探] 历史已清空")
+
+    def _on_proactive_status_update(self, status: dict):
+        if not status["enabled"]:
+            self.proactive_status.setText("状态: 未启动")
+            self.proactive_status.setStyleSheet("color: #888;")
+            return
+        next_str = status.get("next_in") or "今天剩余次数已用完"
+        self.proactive_status.setText(
+            f"状态: 运行中 | 已问 {status['fired']}/{status['total']} | 下次: {next_str}"
+        )
+        self.proactive_status.setStyleSheet("color: #0a0;")
+
+    def _refresh_proactive_history(self):
+        self.proactive_history_view.clear()
+        for q in reversed(list(self._proactive_history)[-20:]):
+            icon = {"work": "💼", "study": "📚", "hobby": "🎮", "chat": "💬"}.get(q.category, "💬")
+            ts = datetime.fromtimestamp(q.timestamp).strftime("%H:%M")
+            self.proactive_history_view.addItem(f"{icon} [{ts}] {q.text}")
+
+    def _load_proactive_config(self):
+        cfg = self._config
+        pa = cfg.get("proactive", {})
+        if "daily_count" in pa:
+            self.daily_count_spin.setValue(pa["daily_count"])
+        prof = pa.get("profile", {})
+        self.profile_hobbies.setText(prof.get("hobbies", ""))
+        self.profile_interests.setText(prof.get("interests", ""))
+        self.profile_learning.setText(prof.get("learning", ""))
+        self.profile_work.setText(prof.get("work", ""))
+        # 初始化 scheduler 中的 profile
+        self._proactive_scheduler.set_profile(UserProfile(
+            hobbies=self.profile_hobbies.text(),
+            interests=self.profile_interests.text(),
+            learning=self.profile_learning.text(),
+            work=self.profile_work.text(),
+        ))
+        self._proactive_scheduler.set_daily_count(self.daily_count_spin.value())
+
+    def _save_proactive_config(self):
+        if "proactive" not in self._config:
+            self._config["proactive"] = {}
+        self._config["proactive"] = {
+            "daily_count": self.daily_count_spin.value(),
+            "profile": {
+                "hobbies": self.profile_hobbies.text(),
+                "interests": self.profile_interests.text(),
+                "learning": self.profile_learning.text(),
+                "work": self.profile_work.text(),
+            },
+        }
+        self._save_config()
 
 
 def _wrap(layout):
