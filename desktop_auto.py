@@ -32,11 +32,13 @@ import ctypes
 import logging
 import json
 import subprocess
+import threading
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 
 _SINGLE_INSTANCE_MEMORY = None
+_IPC_PIPE_NAME = r"\\.\pipe\desktop_auto_assistant_ipc"
 
 # 确保脚本所在目录在 sys.path 首位 (便携 Python 可能不加)
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -142,7 +144,45 @@ def _do_silent_task(args: list[str]) -> None:
 
 
 def _forward_to_running_instance(argv: list[str]) -> bool:
-    """已有实例运行时,尽量把主窗口切到前台。"""
+    """已有实例运行时,通过命名管道把任务发送给主实例。"""
+    payload = {
+        "argv": argv,
+        "cwd": os.getcwd(),
+        "pid": os.getpid(),
+        "time": time.time(),
+    }
+    data = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+    try:
+        import win32file
+        import win32pipe
+
+        # 等待主实例管道就绪,最多 1.5s
+        try:
+            win32pipe.WaitNamedPipe(_IPC_PIPE_NAME, 1500)
+        except Exception:
+            pass
+        handle = win32file.CreateFile(
+            _IPC_PIPE_NAME,
+            win32file.GENERIC_WRITE,
+            0,
+            None,
+            win32file.OPEN_EXISTING,
+            0,
+            None,
+        )
+        try:
+            win32file.WriteFile(handle, data)
+        finally:
+            win32file.CloseHandle(handle)
+        print("[单实例] 已通过命名管道转发任务")
+        return True
+    except Exception as e:
+        print(f"[单实例] 命名管道转发失败,回退到前台激活: {e}")
+        return _activate_existing_window()
+
+
+def _activate_existing_window() -> bool:
+    """回退方案: 找到主窗口并切到前台。"""
     try:
         import win32con
         import win32gui
@@ -174,7 +214,7 @@ def _forward_to_running_instance(argv: list[str]) -> bool:
         print(f"[单实例] 已切换到窗口: {win32gui.GetWindowText(hwnd)}")
         return True
     except Exception as e:
-        print(f"[单实例] 转发/激活失败: {e}")
+        print(f"[单实例] 前台激活失败: {e}")
         return False
 
 
@@ -383,6 +423,86 @@ def remove_custom_app(target: str) -> bool:
 # ---------------------------------------------------------------------------
 # 5. 启动程序(后台线程跑,UI 不卡)
 # ---------------------------------------------------------------------------
+class IPCServerThread(QThread):
+    """主实例命名管道 IPC 服务线程。"""
+
+    message_signal = Signal(dict)
+    log_signal = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._stop_event = threading.Event()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        # 连接一次管道,唤醒阻塞中的 ConnectNamedPipe
+        try:
+            _forward_to_running_instance([sys.executable, "--ipc-stop"])
+        except Exception:
+            pass
+
+    def run(self) -> None:
+        try:
+            import pywintypes
+            import win32file
+            import win32pipe
+        except Exception as e:
+            self.log_signal.emit(f"IPC 服务不可用: {e}")
+            return
+
+        self.log_signal.emit("IPC 命名管道服务已启动")
+        while not self._stop_event.is_set():
+            pipe = None
+            try:
+                pipe = win32pipe.CreateNamedPipe(
+                    _IPC_PIPE_NAME,
+                    win32pipe.PIPE_ACCESS_INBOUND,
+                    win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
+                    1,
+                    65536,
+                    65536,
+                    0,
+                    None,
+                )
+                try:
+                    win32pipe.ConnectNamedPipe(pipe, None)
+                except pywintypes.error as e:
+                    # 535 = ERROR_PIPE_CONNECTED,客户端已先连上,可继续读
+                    if getattr(e, "winerror", None) != 535:
+                        raise
+
+                chunks = []
+                while True:
+                    try:
+                        _hr, chunk = win32file.ReadFile(pipe, 65536)
+                        if chunk:
+                            chunks.append(chunk)
+                        if not chunk or chunk.endswith(b"\n"):
+                            break
+                    except pywintypes.error as e:
+                        # 109 = ERROR_BROKEN_PIPE
+                        if getattr(e, "winerror", None) == 109:
+                            break
+                        raise
+
+                raw = b"".join(chunks).decode("utf-8", errors="replace").strip()
+                if raw:
+                    data = json.loads(raw)
+                    argv = [str(a).lower() for a in data.get("argv", [])]
+                    if "--ipc-stop" not in argv:
+                        self.message_signal.emit(data)
+            except Exception as e:
+                if not self._stop_event.is_set():
+                    self.log_signal.emit(f"IPC 服务异常: {e}")
+            finally:
+                if pipe is not None:
+                    try:
+                        win32file.CloseHandle(pipe)
+                    except Exception:
+                        pass
+        self.log_signal.emit("IPC 命名管道服务已停止")
+
+
 class LaunchWorker(QThread):
     """执行启动 + 等待窗口 + 键鼠交互的工作线程"""
     log_signal = Signal(str)
@@ -1075,6 +1195,7 @@ class MainWindow(QMainWindow):
 
         self.shortcuts: list[ShortcutInfo] = []
         self.worker: Optional[LaunchWorker] = None
+        self.ipc_server: Optional[IPCServerThread] = None
         self.state: dict = self._load_state()  # 记忆上次启动的 PID
 
         # ===== 左侧:快捷方式列表 =====
@@ -1333,6 +1454,7 @@ class MainWindow(QMainWindow):
 
         # 启动时自动扫描
         self.refresh_shortcuts()
+        self._start_ipc_server()
 
     # ---- 7.1 日志桥接 ----
     def _append_log(self, msg: str) -> None:
@@ -1340,6 +1462,45 @@ class MainWindow(QMainWindow):
         # 自动滚到底
         sb = self.log_view.verticalScrollBar()
         sb.setValue(sb.maximum())
+
+    def _start_ipc_server(self) -> None:
+        """启动命名管道 IPC 服务,供后续实例转发任务。"""
+        self.ipc_server = IPCServerThread()
+        self.ipc_server.log_signal.connect(lambda m: self._append_log(f"[IPC] {m}"))
+        self.ipc_server.message_signal.connect(self._handle_ipc_message)
+        self.ipc_server.start()
+
+    def _handle_ipc_message(self, data: dict) -> None:
+        """处理新进程转发来的任务。"""
+        argv = data.get("argv", [])
+        self._append_log(f"[IPC] 收到任务: {argv}")
+        self._activate_self()
+        # 当前 --silent-task 的语义是“启动/切换到主窗口”。后续可在这里扩展更多动作。
+        args = [str(a).lower() for a in argv]
+        if "--install-shortcut" in args or "--install" in args:
+            _do_install_shortcut()
+        elif "--remove-shortcut" in args or "--uninstall" in args:
+            _do_remove_shortcut()
+
+    def _activate_self(self) -> None:
+        """把当前主窗口切到前台。"""
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        try:
+            import win32con
+            import win32gui
+            hwnd = int(self.winId())
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+
+    def closeEvent(self, event) -> None:
+        if self.ipc_server:
+            self.ipc_server.stop()
+            self.ipc_server.wait(1000)
+        super().closeEvent(event)
 
     def _capture_coord_for_quick(self):
         """快速启动面板的坐标捕捉: Win+D 显示桌面 -> 3秒倒计时 -> 捕捉"""
