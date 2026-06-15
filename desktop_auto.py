@@ -36,6 +36,8 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 
+_SINGLE_INSTANCE_MEMORY = None
+
 # 确保脚本所在目录在 sys.path 首位 (便携 Python 可能不加)
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPT_DIR not in sys.path:
@@ -72,7 +74,142 @@ def _ensure_dependencies() -> None:
             sys.exit(1)
 
 _ensure_dependencies()
+# ============================================================
+# CLI 参数路由网关 (必须在任何 GUI 初始化之前执行)
+# ============================================================
+def _cli_router() -> None:
+    """
+    命令行参数路由网关
+    
+    处理 --install-shortcut / --remove-shortcut 等无头任务,
+    执行完毕后直接 sys.exit(), 不加载 GUI。
+    """
+    args = [a.lower() for a in sys.argv[1:]]
+    
+    if not args:
+        return
+    
+    if any(a in args for a in ('--install-shortcut', '--install')):
+        _do_install_shortcut()
+        sys.exit(0)
+    
+    if any(a in args for a in ('--remove-shortcut', '--uninstall')):
+        _do_remove_shortcut()
+        sys.exit(0)
+    
+    if '--mcp' in args:
+        return
+    
+    # --silent-task 是桌面快捷方式入口: 不在这里退出,交给 main() 的单实例逻辑处理。
+    # 如果没有实例在运行,正常打开 GUI;如果已有实例,切换到已有窗口后退出。
 
+def _do_install_shortcut() -> None:
+    """在桌面创建快捷方式, 目标指向当前 EXE 并携带 --silent-task 参数"""
+    try:
+        import win32com.client
+        desktop = Path.home() / "Desktop"
+        exe_path = sys.executable
+        icon_path = Path(__file__).parent / "app_icon.ico"
+        
+        shell = win32com.client.Dispatch("WScript.Shell")
+        
+        shortcut_path = desktop / "桌面助手.lnk"
+        sc = shell.CreateShortCut(str(shortcut_path))
+        sc.TargetPath = str(exe_path)
+        sc.Arguments = "--silent-task"
+        sc.WorkingDirectory = str(Path(exe_path).parent)
+        if icon_path.exists():
+            sc.IconLocation = str(icon_path)
+        sc.Description = "桌面自动化助手"
+        sc.WindowStyle = 1
+        sc.save()
+        print(f"[CLI] 桌面快捷方式已创建: {shortcut_path}")
+    except Exception as e:
+        print(f"[CLI] 创建快捷方式失败: {e}")
+def _do_remove_shortcut() -> None:
+    """删除桌面快捷方式"""
+    desktop = Path.home() / "Desktop"
+    shortcut_path = desktop / "桌面助手.lnk"
+    if shortcut_path.exists():
+        shortcut_path.unlink()
+        print(f"[CLI] 已删除: {shortcut_path}")
+    else:
+        print(f"[CLI] 快捷方式不存在: {shortcut_path}")
+def _do_silent_task(args: list[str]) -> None:
+    """静默执行任务模式 (预留)。当前作为桌面快捷方式启动入口。"""
+    print("[CLI] 静默任务模式启动")
+    print("[CLI] 静默任务完成")
+
+
+def _forward_to_running_instance(argv: list[str]) -> bool:
+    """已有实例运行时,尽量把主窗口切到前台。"""
+    try:
+        import win32con
+        import win32gui
+
+        title_keyword = "桌面自动化助手"
+        matches = []
+
+        def enum_handler(hwnd, _):
+            if not win32gui.IsWindowVisible(hwnd):
+                return
+            title = win32gui.GetWindowText(hwnd)
+            if title_keyword in title:
+                matches.append(hwnd)
+
+        win32gui.EnumWindows(enum_handler, None)
+        if not matches:
+            print("[单实例] 未找到已运行窗口")
+            return False
+
+        hwnd = matches[0]
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        except Exception:
+            pass
+        try:
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+        print(f"[单实例] 已切换到窗口: {win32gui.GetWindowText(hwnd)}")
+        return True
+    except Exception as e:
+        print(f"[单实例] 转发/激活失败: {e}")
+        return False
+
+
+# ============================================================
+# 单实例锁 (QSharedMemory)
+# ============================================================
+def _try_acquire_single_instance() -> bool:
+    """
+    尝试获取单实例锁。
+    返回 True 表示当前进程是主实例, 可以继续加载 GUI。
+    返回 False 表示已有主实例在运行, 当前进程应退出。
+    """
+    try:
+        from PySide6.QtCore import QSharedMemory, QSystemSemaphore
+        
+        semaphore = QSystemSemaphore("desktop_auto_semaphore", 1)
+        semaphore.acquire()
+        
+        shared_mem = QSharedMemory("desktop_auto_single_instance")
+        if shared_mem.attach():
+            semaphore.release()
+            return False
+        
+        if not shared_mem.create(1):
+            # 极少数情况下 create 失败但并非已有实例,保守允许启动,避免锁异常导致打不开。
+            semaphore.release()
+            return True
+        # 必须挂到模块全局变量上,否则 QSharedMemory 对象被回收后锁会释放。
+        global _SINGLE_INSTANCE_MEMORY
+        _SINGLE_INSTANCE_MEMORY = shared_mem
+        semaphore.release()
+        return True
+    except Exception:
+        return True
+_cli_router()
 import pyautogui
 import pyperclip
 import win32com.client
@@ -1676,6 +1813,13 @@ def main() -> int:
     if "--mcp" in sys.argv:
         return _run_mcp_only()
 
+    # 单实例检查: 如果已有实例在运行, 通过 IPC 转发任务后退出
+    if not _try_acquire_single_instance():
+        print("[单实例] 已有实例在运行, 通过 IPC 转发任务...")
+        _forward_to_running_instance(sys.argv)
+        print("[单实例] 任务已转发, 当前进程退出")
+        sys.exit(0)
+    
     app = QApplication(sys.argv)
     app.setApplicationName("桌面自动化助手")
     # 设置应用图标

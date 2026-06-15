@@ -281,16 +281,23 @@ class ToolsTab(QWidget):
     # ------------------------------------------------------------------
     # MCP Server 控制
     # ------------------------------------------------------------------
-    def _get_exe_path(self) -> str:
-        """获取 EXE 路径"""
-        # 优先用 EXE 模式下的 sys.executable
-        if getattr(sys, 'frozen', False):
-            return sys.executable.replace("/", "\\\\")
-        # 开发模式: 用 dist 下的 EXE
+    def _find_latest_exe(self) -> Path | None:
+        """开发模式下查找 dist 中最新的 EXE。"""
         dist = Path(__file__).parent / "dist"
-        for f in dist.glob("*.exe"):
-            return str(f).replace("/", "\\\\")
-        return "<需要打包 EXE>"
+        exes = sorted(dist.glob("*.exe"), key=lambda p: p.stat().st_mtime, reverse=True)
+        return exes[0] if exes else None
+
+    def _get_exe_path_raw(self) -> str:
+        """获取 EXE 路径 (原始路径,用于创建快捷方式/启动进程)。"""
+        if getattr(sys, 'frozen', False):
+            return sys.executable
+        exe = self._find_latest_exe()
+        return str(exe) if exe else ""
+
+    def _get_exe_path(self) -> str:
+        """获取 EXE 路径 (显示用)。"""
+        exe = self._get_exe_path_raw()
+        return exe.replace("/", "\\\\") if exe else "<需要打包 EXE>"
 
     def _start_mcp_server(self) -> None:
         """启动 MCP server (子进程方式)"""
@@ -298,17 +305,10 @@ class ToolsTab(QWidget):
             self.lbl_mcp_status.setText(f"状态: 已在运行 (PID={self.mcp_proc.pid})")
             return
 
-        if getattr(sys, 'frozen', False):
-            # EXE 模式
-            exe = sys.executable
-        else:
-            # 开发模式: 找 dist 下的 EXE
-            dist = Path(__file__).parent / "dist"
-            exes = list(dist.glob("*.exe"))
-            if not exes:
-                self.lbl_mcp_status.setText("状态: ❌ 没找到 EXE, 请先打包")
-                return
-            exe = str(exes[0])
+        exe = self._get_exe_path_raw()
+        if not exe:
+            self.lbl_mcp_status.setText("状态: ❌ 没找到 EXE, 请先打包")
+            return
 
         try:
             self.mcp_proc = subprocess.Popen(
@@ -373,33 +373,57 @@ class ToolsTab(QWidget):
     # 启动器快捷方式
     # ------------------------------------------------------------------
     def _install_launcher_shortcut(self) -> None:
-        """创建桌面快捷方式"""
+        """创建桌面快捷方式 (直接指向 EXE + --silent-task)。"""
         try:
-            import subprocess as _sp
-            launcher = Path(__file__).parent / "launcher.py"
-            r = _sp.run(
-                [sys.executable, str(launcher), "install"],
-                capture_output=True, text=True, encoding="utf-8"
+            import win32com.client
+            from PySide6.QtWidgets import QMessageBox
+
+            exe_path = self._get_exe_path_raw()
+            if not exe_path:
+                self.lbl_mcp_status.setText("状态: ❌ 没找到 EXE, 请先打包")
+                QMessageBox.warning(self, "提示", "没找到 EXE,请先打包")
+                return
+
+            desktop = Path.home() / "Desktop"
+            icon_path = Path(__file__).parent / "app_icon.ico"
+            shortcut_path = desktop / "桌面助手.lnk"
+
+            shell = win32com.client.Dispatch("WScript.Shell")
+            sc = shell.CreateShortCut(str(shortcut_path))
+            sc.TargetPath = exe_path
+            sc.Arguments = "--silent-task"
+            sc.WorkingDirectory = str(Path(exe_path).parent)
+            sc.IconLocation = str(icon_path) if icon_path.exists() else exe_path
+            sc.Description = "桌面自动化助手"
+            sc.WindowStyle = 1
+            sc.save()
+
+            self.lbl_mcp_status.setText("状态: ✅ 桌面快捷方式已创建")
+            QMessageBox.information(
+                self, "成功",
+                "桌面快捷方式已创建!\n\n"
+                "双击「桌面助手」即可启动本程序。\n"
+                "如果程序已在运行,会自动切换到已运行窗口。"
             )
-            if r.returncode == 0:
-                self.lbl_mcp_status.setText("状态: ✅ 桌面快捷方式已创建")
-                # 提示
-                from PySide6.QtWidgets import QMessageBox
-                QMessageBox.information(self, "成功", "桌面快捷方式已创建!\n双击「桌面助手」即可使用")
-            else:
-                self.lbl_mcp_status.setText(f"状态: ❌ 创建失败: {r.stderr or r.stdout}")
         except Exception as e:
             self.lbl_mcp_status.setText(f"状态: ❌ 创建失败: {e}")
+            try:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.critical(self, "错误", f"创建快捷方式失败:\n{e}")
+            except Exception:
+                pass
 
     def _uninstall_launcher_shortcut(self) -> None:
-        """删除桌面快捷方式"""
+        """删除桌面快捷方式。"""
         try:
-            import subprocess as _sp
-            launcher = Path(__file__).parent / "launcher.py"
-            r = _sp.run(
-                [sys.executable, str(launcher), "uninstall"],
-                capture_output=True, text=True, encoding="utf-8"
-            )
-            self.lbl_mcp_status.setText("状态: 🗑 桌面快捷方式已删除")
+            from PySide6.QtWidgets import QMessageBox
+            shortcut_path = Path.home() / "Desktop" / "桌面助手.lnk"
+            if shortcut_path.exists():
+                shortcut_path.unlink()
+                self.lbl_mcp_status.setText("状态: 🗑 桌面快捷方式已删除")
+                QMessageBox.information(self, "成功", "桌面快捷方式已删除")
+            else:
+                self.lbl_mcp_status.setText("状态: ℹ️ 快捷方式不存在")
+                QMessageBox.information(self, "提示", "桌面快捷方式不存在")
         except Exception as e:
             self.lbl_mcp_status.setText(f"状态: ❌ 删除失败: {e}")

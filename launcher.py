@@ -17,6 +17,7 @@ import os
 import time
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 # Windows GBK 兼容: 强制 stdout 用 UTF-8
 if sys.platform == "win32":
@@ -152,37 +153,43 @@ def restart() -> bool:
     return start()
 
 
+def _find_packaged_exe() -> Optional[Path]:
+    """开发模式下查找 dist 中最新的 EXE。"""
+    dist = Path(__file__).parent / "dist"
+    exes = sorted(dist.glob("*.exe"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return exes[0] if exes else None
+
+
 def install_shortcut() -> bool:
-    """在桌面创建快捷方式 (点击弹出菜单对话框)"""
+    """在桌面创建快捷方式 (目标指向 EXE 自身 + --silent-task 参数)。"""
     try:
-        import win32com.client  # noqa: F401
-        from pathlib import Path as _P
+        import win32com.client
 
-        # 查找 pythonw.exe 路径
-        py_dir = _P(sys.executable).parent
-        pyw = py_dir / "pythonw.exe"
-        if not pyw.exists():
-            # 开发模式,可能不在 venv 里
-            pyw = py_dir / "python.exe"
+        if getattr(sys, "frozen", False):
+            exe_path = Path(sys.executable)
+        else:
+            exe_path = _find_packaged_exe()
+            if exe_path is None:
+                print("❌ 未找到 dist 下的 EXE,请先运行 build.bat/build.ps1 打包")
+                return False
 
-        menu_script = (_P(__file__).parent / "launcher_menu.py").absolute()
-        icon = _P(__file__).parent / "app_icon.ico"
-        desktop = _P.home() / "Desktop"
+        icon = Path(__file__).parent / "app_icon.ico"
+        desktop = Path.home() / "Desktop"
+        shortcut_path = desktop / "桌面助手.lnk"
 
         shell = win32com.client.Dispatch("WScript.Shell")
-
-        # 1. 桌面助手 快捷方式 (弹出菜单对话框)
-        menu_path = desktop / "桌面助手.lnk"
-        sc = shell.CreateShortCut(str(menu_path))
-        sc.TargetPath = str(pyw)
-        sc.Arguments = f'"{menu_script}"'
-        sc.WorkingDirectory = str(menu_script.parent)
-        sc.IconLocation = str(icon) if icon.exists() else ""
-        sc.Description = "桌面自动化助手 (启动/停止)"
-        sc.WindowStyle = 1  # 正常窗口 (0=隐藏, 1=默认, 3=最大化, 7=最小化)
+        sc = shell.CreateShortCut(str(shortcut_path))
+        sc.TargetPath = str(exe_path)
+        sc.Arguments = "--silent-task"
+        sc.WorkingDirectory = str(exe_path.parent)
+        sc.IconLocation = str(icon) if icon.exists() else str(exe_path)
+        sc.Description = "桌面自动化助手"
+        sc.WindowStyle = 1
         sc.save()
-        print(f"✅ 菜单快捷方式: {menu_path}")
 
+        print(f"✅ 桌面快捷方式: {shortcut_path}")
+        print(f"   目标: {exe_path}")
+        print("   参数: --silent-task")
         return True
     except Exception as e:
         print(f"❌ 创建失败: {e}")

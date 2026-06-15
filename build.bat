@@ -31,13 +31,20 @@ if "%~1"=="" (
 
 echo [BUILD] Tag: %TAG_DATE%%TAG_TIME%
 
-REM ---- 2. Check PyInstaller ----
-where pyinstaller >nul 2>&1
-if errorlevel 1 (
-    echo [ERR] PyInstaller not installed.
-    echo        Run: pip install pyinstaller
-    pause
-    exit /b 1
+REM ---- 2. Check PyInstaller (优先使用项目 venv) ----
+set "PYINSTALLER_CMD=pyinstaller"
+if exist ".venv\Scripts\pyinstaller.exe" (
+    set "PYINSTALLER_CMD=.venv\Scripts\pyinstaller.exe"
+    echo [INFO] Using venv PyInstaller: .venv\Scripts\pyinstaller.exe
+) else (
+    where pyinstaller >nul 2>&1
+    if errorlevel 1 (
+        echo [ERR] PyInstaller not installed.
+        echo        Run: pip install pyinstaller
+        pause
+        exit /b 1
+    )
+    echo [INFO] Using system PyInstaller
 )
 
 REM ---- 3. Clean old build cache ----
@@ -53,7 +60,7 @@ REM ---- 4. Run PyInstaller with tag name (does NOT overwrite) ----
 set "EXE_NAME=desktop-auto-v%TAG_DATE%%TAG_TIME%"
 echo [BUILD] Running PyInstaller ... Output: %EXE_NAME%.exe
 set "BUILD_EXE_NAME=%EXE_NAME%"
-pyinstaller build.spec --noconfirm --clean
+%PYINSTALLER_CMD% build.spec --noconfirm --clean
 
 if errorlevel 1 (
     echo [ERR] PyInstaller failed
