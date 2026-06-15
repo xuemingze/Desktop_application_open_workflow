@@ -1079,6 +1079,11 @@ class WorkflowEditor(QWidget):
         self.workflows[self._current_workflow]["steps"] = list(self._current_steps)
         self._save_to_file()
         self._refresh_step_list()
+        # 关键: 自动选中新添加的步骤,让“保存步骤修改”能找到 row
+        new_row = len(self._current_steps) - 1
+        if new_row >= 0:
+            self.step_list.setCurrentRow(new_row)
+            self._append_log(f"已添加新步骤,选中 row={new_row}")
 
     def _del_step(self):
         row = self.step_list.currentRow()
@@ -1115,6 +1120,7 @@ class WorkflowEditor(QWidget):
     def _save_step(self):
         row = self.step_list.currentRow()
         if row < 0 or row >= len(self._current_steps):
+            self._append_log(f"⚠️ 保存失败: 未选中步骤 (row={row}, total={len(self._current_steps)})")
             return
         step = self._current_steps[row]
         step["type"] = self.step_type_combo.currentData()
@@ -1150,11 +1156,16 @@ class WorkflowEditor(QWidget):
                 "args": self.search_args_edit.text(),
             }
         wf_name = self._current_workflow
-        if wf_name in self.workflows:
-            self.workflows[wf_name]["steps"] = list(self._current_steps)
-            self._save_to_file()
+        if not wf_name:
+            self._append_log(f"⚠️ 保存失败: 未选中工作流")
+            return
+        if wf_name not in self.workflows:
+            self._append_log(f"⚠️ 保存失败: 工作流 '{wf_name}' 不在 self.workflows")
+            return
+        self.workflows[wf_name]["steps"] = list(self._current_steps)
+        self._save_to_file()
         self._refresh_step_list()
-        self._append_log(f"步骤已保存: {step['name']}")
+        self._append_log(f"步骤已保存: {step['name']} (类型={step['type']})")
 
     def _run_workflow(self):
         row = self.wf_list.currentRow()
