@@ -15,10 +15,12 @@
 
 from __future__ import annotations
 
-# 提前 import 辅助模块,让 PyInstaller 能扫描到它们的依赖
+# 提前 import GUI 必需辅助模块,让 PyInstaller 能扫描到它们的依赖。
+# 注意: 不要在 GUI 普通启动时提前 import mcp_embedded。
+# mcp_embedded 会导入 mcp/jsonschema,在全新虚拟机/单 EXE 环境里一旦数据文件缺失会导致 GUI 启动直接崩溃。
+# MCP 只在 --mcp 模式或工具页实际需要时懒加载。
 import backup  # noqa: F401
 import image_match  # noqa: F401
-import mcp_embedded  # noqa: F401
 import workflow_panel  # noqa: F401
 import search_panel  # noqa: F401
 import tools_tab  # noqa: F401
@@ -1701,6 +1703,14 @@ def _run_mcp_only() -> int:
     """只运行 MCP server,不显示 GUI (用于 AI 客户端调用)"""
     import asyncio
     import json
+
+    # MCP 模式才应用兼容补丁/导入 MCP 依赖,避免普通 GUI 启动被 MCP 依赖拖崩。
+    try:
+        from mcp_patch import patch_jsonschema_specifications
+        patch_jsonschema_specifications()
+    except Exception as e:
+        print(f"[WARN] MCP 兼容补丁失败: {e}", file=sys.stderr)
+
     from mcp_embedded import scan_desktop_shortcuts, load_workflows, run_workflow_sync, launch_shortcut_sync
     from search_panel import search_everything
     

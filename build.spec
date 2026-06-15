@@ -41,20 +41,35 @@ hiddenimports = [
     'mcp.client',
     'mcp.client.stdio',
     'mcp.client.session',
+    'mcp_embedded',
+    'mcp_patch',
+    'jsonschema_specifications',
+    'jsonschema_specifications._core',
+    'referencing',
+    'referencing.jsonschema',
 ]
 
 # 数据文件: workflow_panel / image_match / workflows.json
+try:
+    from PyInstaller.utils.hooks import collect_data_files
+    jsonschema_spec_datas = collect_data_files('jsonschema_specifications')
+    print(f'[spec] jsonschema_specifications datas: {len(jsonschema_spec_datas)}')
+except Exception as e:
+    print(f'[spec] collect jsonschema_specifications datas failed: {e}')
+    jsonschema_spec_datas = [
+        ('.venv/Lib/site-packages/jsonschema_specifications/schemas', 'jsonschema_specifications/schemas'),
+    ]
+
 datas = [
     ('workflow_panel.py', '.'),
     ('image_match.py', '.'),
     ('mcp_embedded.py', '.'),
+    ('mcp_patch.py', '.'),
     ('workflows.json', '.'),
     ('samples', 'samples'),
-    # mcp/jsonschema 依赖的数据文件 (schemas 必须随包,否则 jsonschema_specifications 加载失败)
-    ('.venv/Lib/site-packages/jsonschema_specifications/schemas', 'jsonschema_specifications/schemas'),
     ('app_icon.ico', '.'),  # 应用图标
     ('app_icon_512_v2.png', '.'),  # README 用图标
-]
+] + jsonschema_spec_datas
 
 # 排除掉大且不需要的包
 excludes = [
@@ -107,7 +122,9 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='桌面自动化助手',  # 默认名, build.bat/build.ps1 会重命名为 -vYYYY.MM.DD.exe
+    # 默认名 = 桌面自动化助手; build.bat/build.ps1 会重命名为 -vYYYY.MM.DD[-HHMM].exe
+    # 也可直接指定环境变量 BUILD_TAG=YYYY.MM.DD-HHMM 来一次性生成带 tag 的 EXE
+    name=os.environ.get('BUILD_EXE_NAME', '桌面自动化助手'),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
