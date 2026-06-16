@@ -1620,6 +1620,11 @@ class MainWindow(QMainWindow):
         act_tools.triggered.connect(self._tray_open_tools)
         self._tray_menu.addAction(act_tools)
 
+        # 打开 AI 对话页
+        act_chat = QAction("💬  打开【AI对话】页", self)
+        act_chat.triggered.connect(self._tray_open_chat)
+        self._tray_menu.addAction(act_chat)
+
         self._tray_menu.addSeparator()
 
         act_quit = QAction("❌  退出", self)
@@ -1680,6 +1685,23 @@ class MainWindow(QMainWindow):
                         if "工具" in w.tabText(i):
                             w.setCurrentIndex(i)
                             return
+
+    def _tray_open_chat(self) -> None:
+        """从托盘打开【AI对话】页"""
+        self._show_from_tray()
+        if hasattr(self, "context_tab"):
+            from PySide6.QtWidgets import QTabWidget
+            # 切换到 AI 感知标签（父标签）
+            for i in range(self.right_tabs.count()):
+                if "AI" in self.right_tabs.tabText(i):
+                    self.right_tabs.setCurrentIndex(i)
+                    break
+            # 在 context_tab 中找到子 QTabWidget，切换到「AI 对话」
+            for sub in self.context_tab.findChildren(QTabWidget):
+                for j in range(sub.count()):
+                    if "AI 对话" in sub.tabText(j):
+                        sub.setCurrentIndex(j)
+                        return
 
     # ---- 窗口状态持久化 ----
     def _window_state_path(self) -> Path:
