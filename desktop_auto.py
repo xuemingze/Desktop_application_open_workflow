@@ -2174,7 +2174,82 @@ class MainWindow(QMainWindow):
 # ---------------------------------------------------------------------------
 # 8. 入口
 # ---------------------------------------------------------------------------
+def _maybe_relaunch_in_pythonw() -> None:
+    """如果是用 python.exe 启动的,重起到 pythonw.exe 避免黑控制台窗口
+
+    检测: sys.stdout 关联到控制台 (Windows 上 python.exe 启动会有 tty,pythonw.exe 没有)
+    """
+    if sys.platform != "win32":
+        return
+    # 跳过 MCP/单实例转发 模式
+    if any(a in sys.argv for a in ("--mcp", "--close-main")):
+        return
+    # 跳过 --replace 模式 (该模式依赖 print 输出调试)
+    if "--replace" in sys.argv:
+        return
+    # 检测是否有控制台
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        # ATTACH_PARENT_PROCESS = -1 (ATTACH_CONSOLE)
+        # 如果已附加到控制台,则 kernel32.GetConsoleWindow() 不为 0
+        has_console = kernel32.GetConsoleWindow() != 0
+    except Exception:
+        return
+    if not has_console:
+        return  # 本身是 pythonw.exe 启动的,不用重起
+    # 重起到 pythonw.exe
+    pyw = Path(sys.executable).with_name("pythonw.exe")
+    if not pyw.exists():
+        return
+    import subprocess
+    subprocess.Popen(
+        [str(pyw), __file__, *sys.argv[1:]],
+        cwd=str(Path(__file__).parent),
+        creationflags=0x08000000,  # DETACHED_PROCESS
+    )
+    sys.exit(0)
+
+def _silence_qt_warnings() -> None:
+    """屏蔽 Qt 在 Windows 上发到 stderr 的 DPI/字体警告
+
+    PySide6 6.x 在 Win10/11 上会试加载 MS Sans Serif / Modern / Roman / Script 等
+    几 95 时代老字体,找不到会发 DirectWrite 警告。这些是良性的,
+    装 PySide6 的应用控制台会被刷屏。用 qInstallMessageHandler 过滤掉。
+    """
+    try:
+        from PySide6.QtCore import qInstallMessageHandler, QtMsgType
+
+        _QUIET_PREFIXES = (
+            "qt.qpa.fonts: DirectWrite: CreateFontFaceFromHDC",
+            "qt.qpa.window: SetProcessDpiAwarenessContext",
+            "qt.qpa.fonts: QFont::setPointSize",
+        )
+
+        def _handler(mode, ctx, msg):
+            try:
+                m = str(msg)
+            except Exception:
+                return
+            for p in _QUIET_PREFIXES:
+                if m.startswith(p):
+                    return
+            # 其余警告 (QtWarningMsg / QtCriticalMsg) 仍然正常输出
+            try:
+                import sys as _sys
+                _sys.stderr.write(f"[Qt] {m}\n")
+                _sys.stderr.flush()
+            except Exception:
+                pass
+
+        qInstallMessageHandler(_handler)
+    except Exception:
+        pass
+
 def main() -> int:
+    # 如果是用 python.exe 启动的,重起到 pythonw.exe (避免黑控制台窗口)
+    _maybe_relaunch_in_pythonw()
+
     # MCP 模式: 不显示 GUI,作为 stdio server 运行
     if "--mcp" in sys.argv:
         return _run_mcp_only()
@@ -2194,6 +2269,8 @@ def main() -> int:
 
     app = QApplication(sys.argv)
     app.setApplicationName("桌面自动化助手")
+    # 屏蔽 Qt 的 DPI/字体警告 (PySide6 6.x 在 Win10+ 会刷屏)
+    _silence_qt_warnings()
     # 如果托盘可用,不要在最后一个窗口关闭时退出应用(避免关闭主窗口后进程退出)
     if QSystemTrayIcon.isSystemTrayAvailable():
         app.setQuitOnLastWindowClosed(False)
