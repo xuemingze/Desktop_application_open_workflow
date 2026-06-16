@@ -445,6 +445,12 @@ class ToolsTab(QWidget):
             ok, msg = enable_autostart()
         else:
             ok, msg = disable_autostart()
+        # 同步推到全局日志
+        try:
+            from log_bus import log_bus
+            log_bus.emit(f"[工具] 开机启动 {'启用' if checked else '停用'}: {msg.splitlines()[0] if msg else ''}")
+        except Exception:
+            pass
         # 显示结果到状态标签
         if ok:
             self.lbl_autostart_status.setText(f"状态: {msg}")
@@ -465,6 +471,11 @@ class ToolsTab(QWidget):
         cfg = self._load_global_config()
         cfg["start_in_background"] = bool(checked)
         self._save_global_config(cfg)
+        try:
+            from log_bus import log_bus
+            log_bus.emit(f"[工具] 默认后台运行 {'启用' if checked else '停用'}")
+        except Exception:
+            pass
         QTimer.singleShot(100, self._refresh_system_status)
 
     def _hide_main_to_tray(self) -> None:
@@ -524,11 +535,21 @@ class ToolsTab(QWidget):
             self.lbl_mcp_status.setStyleSheet("color: #16a34a; font-size: 12px; padding: 4px;")
             self.btn_start_mcp.setEnabled(False)
             self.btn_stop_mcp.setEnabled(True)
+            try:
+                from log_bus import log_bus
+                log_bus.emit(f"[工具] MCP server 启动成功 PID={self.mcp_proc.pid}")
+            except Exception:
+                pass
             # 定时检查状态
             QTimer.singleShot(2000, self._refresh_mcp_status)
         except Exception as e:
             self.lbl_mcp_status.setText(f"状态: ❌ 启动失败: {e}")
             self.lbl_mcp_status.setStyleSheet("color: #dc2626; font-size: 12px; padding: 4px;")
+            try:
+                from log_bus import log_bus
+                log_bus.emit(f"[工具] MCP server 启动失败: {e}")
+            except Exception:
+                pass
 
     def _stop_mcp_server(self) -> None:
         """停止 MCP server 子进程"""

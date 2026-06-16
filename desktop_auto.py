@@ -1490,6 +1490,18 @@ class MainWindow(QMainWindow):
         sb = self.log_view.verticalScrollBar()
         sb.setValue(sb.maximum())
 
+    def _setup_global_log_bus(self) -> None:
+        """订阅全局 log_bus,所有标签页/子系统的日志都会汇到这里"""
+        try:
+            from log_bus import log_bus
+            # 文件记录: 同目录下 desktop_auto.log
+            log_path = RUNTIME_DIR / "desktop_auto.log"
+            log_bus.set_log_file(str(log_path))
+            log_bus.log_signal.connect(self._append_log)
+            log_bus.emit("[全局日志] 已启用,文件: " + str(log_path))
+        except Exception as e:
+            self._append_log(f"[全局日志] 初始化失败: {e}")
+
     def _start_ipc_server(self) -> None:
         """启动命名管道 IPC 服务,供后续实例转发任务。"""
         self.ipc_server = IPCServerThread()
@@ -2295,6 +2307,8 @@ def main() -> int:
     """)
 
     win = MainWindow()
+    # 订阅全局日志总线 (主窗口)
+    win._setup_global_log_bus()
     # 判断是否需要默认后台运行
     start_in_background = "--background" in sys.argv or _is_default_background()
     if not start_in_background:

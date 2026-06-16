@@ -34,6 +34,51 @@ from proactive_sniff import (
 )
 from context_chat import ContextChatTab
 
+# ---------------------------------------------------------------------------
+# 后台 Worker: 拉取模型列表 (避免同步 HTTP 阻塞 UI)
+# ---------------------------------------------------------------------------
+class _ModelFetchWorker(QThread):
+    success = Signal(list)   # [model_id, ...]
+    failed = Signal(str)
+
+    def __init__(self, base_url: str, api_key: str, timeout: float = 4.0):
+        super().__init__()
+        self._base_url = base_url
+        self._api_key = api_key
+        self._timeout = max(2, min(timeout, 30))
+
+    def run(self):
+        try:
+            import urllib.request, json as _json
+            req = urllib.request.Request(
+                f"{self._base_url}/models",
+                headers={"Authorization": f"Bearer {self._api_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                data = _json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            self.failed.emit(str(e))
+            return
+        # 解析 (OpenAI 格式: {"object": "list", "data": [{"id": "..."}, ...]})
+        items = data.get("data") if isinstance(data, dict) else None
+        if not items and isinstance(data, list):
+            items = data
+        if not items:
+            self.failed.emit(f"响应格式不认识:\n{str(data)[:300]}")
+            return
+        ids = []
+        for it in items:
+            if isinstance(it, dict):
+                mid = it.get("id") or it.get("name") or it.get("model")
+                if mid:
+                    ids.append(str(mid))
+            elif isinstance(it, str):
+                ids.append(it)
+        if not ids:
+            self.failed.emit("未提取到任何模型 id")
+            return
+        self.success.emit(sorted(set(ids)))
+
 
 CONFIG_FILE = Path.home() / "context_aware_config.json"
 
@@ -610,78 +655,72 @@ class ContextTab(QWidget):
             QMessageBox.warning(self, "连通失败", "后端无响应，请检查 URL/Key/Model")
 
     def _on_fetch_models(self):
-        """从当前 Base URL + API Key 拉取可用模型列表 (OpenAI 协议 GET /v1/models)"""
+        """从当前 Base URL + API Key 拉取可用模型列表 (OpenAI 协议 GET /v1/models)
+
+        走 QThread,避免 urllib 同步阻塞 UI 造成「一直拉取中」的假象。
+        """
         base_url = self.base_url_input.text().strip().rstrip("/")
         api_key = self.api_key_input.text().strip() or "EMPTY"
         if not base_url:
             QMessageBox.warning(self, "提示", "请先填写 Base URL")
             return
 
+        if hasattr(self, "_model_fetch_worker") and self._model_fetch_worker and self._model_fetch_worker.isRunning():
+            QMessageBox.information(self, "提示", "上一次拉取还在进行中,请稍候...")
+            return
+
         self.btn_fetch_models.setEnabled(False)
         self.btn_fetch_models.setText("⏳ 拉取中...")
-        QApplication.processEvents()
-        self._append_log(f"[后端] 拉取模型: GET {base_url}/models")
+        self._append_log(f"[后端] 拉取模型: GET {base_url}/models (后台线程)")
 
-        try:
-            import urllib.request, json as _json
-            req = urllib.request.Request(
-                f"{base_url}/models",
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
-            with urllib.request.urlopen(req, timeout=self.timeout_spin.value()) as resp:
-                data = _json.loads(resp.read().decode("utf-8"))
-        except Exception as e:
-            self._append_log(f"[后端] 拉取模型失败: {e}")
-            QMessageBox.warning(self, "拉取失败", f"GET {base_url}/models 失败:\n{e}")
-            self.btn_fetch_models.setEnabled(True)
-            self.btn_fetch_models.setText("🔄 拉取模型列表")
-            return
+        self._model_fetch_worker = _ModelFetchWorker(base_url, api_key, timeout=self.timeout_spin.value())
+        self._model_fetch_worker.success.connect(self._on_fetch_models_ok)
+        self._model_fetch_worker.failed.connect(self._on_fetch_models_fail)
+        self._model_fetch_worker.finished.connect(self._on_fetch_models_finished)
+        self._model_fetch_worker.start()
 
-        # 解析 (OpenAI 格式: {"object": "list", "data": [{"id": "..."}, ...]})
-        items = data.get("data") if isinstance(data, dict) else None
-        if not items and isinstance(data, list):
-            items = data
-        if not items:
-            QMessageBox.warning(self, "拉取失败", f"响应格式不认识:\n{str(data)[:300]}")
-            self.btn_fetch_models.setEnabled(True)
-            self.btn_fetch_models.setText("🔄 拉取模型列表")
-            return
-
-        # 提取 id
-        ids = []
-        for it in items:
-            if isinstance(it, dict):
-                mid = it.get("id") or it.get("name") or it.get("model")
-                if mid:
-                    ids.append(str(mid))
-            elif isinstance(it, str):
-                ids.append(it)
-        if not ids:
-            QMessageBox.warning(self, "拉取失败", "未提取到任何模型 id")
-            return
-
-        # 去重 + 排序
-        ids = sorted(set(ids))
-        # 保留当前选中项
+    def _on_fetch_models_ok(self, ids: list):
         prev = self.model_input.currentText().strip()
         self.model_input.blockSignals(True)
         self.model_input.clear()
         self.model_input.addItems(ids)
-        # 恢复当前选中
         if prev and prev in ids:
             self.model_input.setCurrentText(prev)
         elif ids:
             self.model_input.setCurrentIndex(0)
         self.model_input.blockSignals(False)
-        self._append_log(f"[后端] 拉取到 {len(ids)} 个模型: {ids[:5]}{'...' if len(ids)>5 else ''}")
+        self._append_log(f"[后端] 拉取成功,共 {len(ids)} 个模型: {ids[:5]}{'...' if len(ids) > 5 else ''}")
         QMessageBox.information(self, "拉取成功", f"获取到 {len(ids)} 个模型, 已在下拉框中。\n请选择后点“应用设置”生效。")
+
+    def _on_fetch_models_fail(self, err: str):
+        self._append_log(f"[后端] 拉取模型失败: {err}")
+        # 提示中追加常见问题原因
+        hint = ""
+        if "actively refused" in err or "Connection refused" in err or "refused" in err.lower():
+            hint = "\n\n💡 提示:连接被拒绝,可能是后端服务没启动。\n  - Ollama: 请在另一个终端运行 `ollama serve`\n  - 本地代理: 检查代理是否在指定端口运行"
+        elif "timeout" in err.lower() or "timed out" in err.lower():
+            hint = "\n\n💡 提示:连接超时,请检查 URL 是否正确,服务是否可达。"
+        elif "Name or service not known" in err or "getaddrinfo failed" in err:
+            hint = "\n\n💡 提示:域名解析失败,请检查 Base URL 拼写。"
+        QMessageBox.warning(self, "拉取失败", f"{err}{hint}")
+
+    def _on_fetch_models_finished(self):
         self.btn_fetch_models.setEnabled(True)
         self.btn_fetch_models.setText("🔄 拉取模型列表")
+        if hasattr(self, "_model_fetch_worker"):
+            self._model_fetch_worker.deleteLater()
+            self._model_fetch_worker = None
 
     # ---- 日志 ----
     def _append_log(self, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")
         self.log_view.append(f"[{ts}] {msg}")
+        # 同步推到全局日志总线 (主窗口 + log 文件)
+        try:
+            from log_bus import log_bus
+            log_bus.emit(f"[AI感知] {msg}")
+        except Exception:
+            pass
         # 限制行数
         if self.log_view.document().blockCount() > 500:
             cursor = self.log_view.textCursor()
