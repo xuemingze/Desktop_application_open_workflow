@@ -97,6 +97,9 @@ class ContextTab(QWidget):
         self._toast_manager = ToastManager(self)
         self._agent = ContextAgent(backend=EchoBackend(), parent=self, infer_timeout=15.0)
         self._mini_chat_dialog = None
+        self._learning_toast_timers = {}
+        self._learning_toast_pending = {}
+        self._learning_toast_last_shown = {}
         # 主动嗅探
         self._proactive_history = deque(maxlen=100)
         self._proactive_generator = QuestionGenerator(self._agent._backend, timeout=15.0)
@@ -557,6 +560,10 @@ class ContextTab(QWidget):
             return
 
         self._append_log(f"[放行] 命中规则: {result.rule_name}")
+        # 学习类规则由本地规则直接生成 AI 任务，不再送 LLM 做意图判断，避免额外推荐/重复气泡
+        if capsule.source == "clipboard" and result.rule_name in ("英文文本", "学术词汇"):
+            self._fallback_toast_by_rule(capsule, result.rule_name)
+            return
         # 剪贴板事件: 先按规则兑底弹一条气泡, LLM 如果推荐更好会覆盖
         if capsule.source == "clipboard":
             self._agent.process(capsule)
@@ -645,29 +652,62 @@ class ContextTab(QWidget):
         QTimer.singleShot(4000, _show)
 
     def _show_learning_toast(self, rule_name: str, msg: str, prompt: str):
+        import time
+        # 学习规则容易在一次复制/选择时收到多个剪贴板片段：做 debounce，并保留更长的 prompt。
+        now = time.time()
+        last = self._learning_toast_last_shown.get(rule_name, 0)
+        if now - last < 3.0:
+            self._append_log(f"[学习规则] 去重跳过: {rule_name}")
+            return
+
+        pending = self._learning_toast_pending.get(rule_name)
+        if not pending or len(prompt) >= len(pending.get("prompt", "")):
+            self._learning_toast_pending[rule_name] = {"msg": msg, "prompt": prompt}
+
+        old_timer = self._learning_toast_timers.get(rule_name)
+        if old_timer:
+            try:
+                old_timer.stop()
+                old_timer.deleteLater()
+            except Exception:
+                pass
+
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+
         def _show():
             from log_bus import log_bus
-            log_bus.emit(f"[学习规则] 按规则「{rule_name}」生成推荐: {msg}")
+            data = self._learning_toast_pending.pop(rule_name, {"msg": msg, "prompt": prompt})
+            self._learning_toast_timers.pop(rule_name, None)
+            self._learning_toast_last_shown[rule_name] = time.time()
+            log_bus.emit(f"[学习规则] 按规则「{rule_name}」生成推荐: {data['msg']}")
             intent = ToastIntent(
                 intent=f"学习-{rule_name}",
-                message=msg,
+                message=data["msg"],
                 suggested_action="ai_prompt",
-                action_param=prompt,
+                action_param=data["prompt"],
             )
             self._toast_manager.show_toast(intent)
             self.toast_broadcast.emit(intent)
-        QTimer.singleShot(600, _show)
+            timer.deleteLater()
+
+        timer.timeout.connect(_show)
+        self._learning_toast_timers[rule_name] = timer
+        timer.start(900)
 
     def _on_toast_clicked(self, intent: ToastIntent):
         """用户点击了气泡 → 打开小聊天窗，并同步 AI 对话标签页记录"""
         self._append_log(f"[点击] 用户点击气泡: {intent.suggested_action}({intent.action_param})")
-        if hasattr(self, "context_chat_tab"):
-            self.context_chat_tab.on_action_executed(intent)
-        self._open_mini_chat(intent)
+        # 学习规则点击后只发送一条真实 AI 请求，不再额外追加“已接受推荐/点击气泡”两段记录
         if getattr(intent, "suggested_action", "") == "ai_prompt" and hasattr(self, "context_chat_tab"):
+            self._open_mini_chat(None)
             prompt = getattr(intent, "action_param", "") or ""
             if prompt:
                 self.context_chat_tab.send_text(prompt)
+            return
+        if hasattr(self, "context_chat_tab"):
+            self.context_chat_tab.on_action_executed(intent)
+        self._open_mini_chat(intent)
 
     # ---- 测试 ----
     def _on_test_capture(self):
