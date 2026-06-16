@@ -33,7 +33,7 @@ from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QTextEdit, QLineEdit, QGroupBox, QCheckBox, QSpinBox, QFormLayout,
-    QMessageBox,
+    QMessageBox, QDialog,
 )
 
 from context_agent import LLMBackend, OpenAICompatibleBackend, parse_intent_response
@@ -395,6 +395,7 @@ class ContextChatTab(QWidget):
 
     backend_changed = Signal(object)        # 让父级同步后端
     log_signal = Signal(str)                # 转发到 context_tab 主日志
+    html_appended = Signal(str)             # 同步给小聊天窗
 
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
@@ -493,6 +494,12 @@ class ContextChatTab(QWidget):
         self._backend = backend
 
     # ---- 用户发送 ----
+    def send_text(self, text: str):
+        """外部小聊天窗调用：复用主 AI 对话页的同一套发送/历史链路。"""
+        if text:
+            self.input_edit.setText(text)
+            self._on_send()
+
     def _on_send(self):
         if self._worker and self._worker.isRunning():
             return
@@ -666,6 +673,7 @@ class ContextChatTab(QWidget):
 
     def _append_html(self, html: str):
         self.chat_view.append(html)
+        self.html_appended.emit(html)
         # 滚到底
         sb = self.chat_view.verticalScrollBar()
         sb.setValue(sb.maximum())
@@ -677,3 +685,62 @@ class ContextChatTab(QWidget):
                 .replace("<", "&lt;")
                 .replace(">", "&gt;")
         )
+
+
+class MiniChatDialog(QDialog):
+    """点击气泡打开的小聊天窗。
+
+    它不复制 AI worker；所有发送都转交给主 ContextChatTab，
+    主标签页追加的 HTML 再通过 html_appended 同步回来。
+    """
+
+    def __init__(self, chat_tab: ContextChatTab, parent: QWidget = None):
+        super().__init__(parent)
+        self._chat_tab = chat_tab
+        self.setWindowTitle("💬 AI 小对话")
+        self.resize(520, 420)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+        self._build_ui()
+        self.chat_view.setHtml(chat_tab.chat_view.toHtml())
+        chat_tab.html_appended.connect(self._append_html)
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
+
+        self.chat_view = QTextEdit()
+        self.chat_view.setReadOnly(True)
+        self.chat_view.setStyleSheet(
+            "QTextEdit { background:#fafafa; border:1px solid #e5e7eb; border-radius:6px; padding:8px; }"
+        )
+        root.addWidget(self.chat_view, stretch=1)
+
+        row = QHBoxLayout()
+        self.input_edit = QLineEdit()
+        self.input_edit.setPlaceholderText("直接问我，例如：这个进程是什么？要不要打开相关资料？")
+        self.input_edit.returnPressed.connect(self._send)
+        row.addWidget(self.input_edit, stretch=1)
+        btn = QPushButton("发送")
+        btn.clicked.connect(self._send)
+        row.addWidget(btn)
+        root.addLayout(row)
+
+    def _append_html(self, html: str):
+        self.chat_view.append(html)
+        sb = self.chat_view.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _send(self):
+        text = self.input_edit.text().strip()
+        if not text:
+            return
+        self.input_edit.clear()
+        self._chat_tab.send_text(text)
+
+    def closeEvent(self, event):
+        try:
+            self._chat_tab.html_appended.disconnect(self._append_html)
+        except Exception:
+            pass
+        super().closeEvent(event)

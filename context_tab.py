@@ -32,7 +32,7 @@ from proactive_sniff import (
     ProactiveScheduler, ProactiveRunner, QuestionGenerator,
     UserProfile, ProactiveQuestion, BehaviorInterestMatcher,
 )
-from context_chat import ContextChatTab
+from context_chat import ContextChatTab, MiniChatDialog
 
 # ---------------------------------------------------------------------------
 # 后台 Worker: 拉取模型列表 (避免同步 HTTP 阻塞 UI)
@@ -96,6 +96,7 @@ class ContextTab(QWidget):
         self._gatekeeper = Gatekeeper()
         self._toast_manager = ToastManager(self)
         self._agent = ContextAgent(backend=EchoBackend(), parent=self, infer_timeout=15.0)
+        self._mini_chat_dialog = None
         # 主动嗅探
         self._proactive_history = deque(maxlen=100)
         self._proactive_generator = QuestionGenerator(self._agent._backend)
@@ -127,8 +128,7 @@ class ContextTab(QWidget):
         self._agent.intent_ready.connect(self.toast_broadcast.emit)
         self._agent.log_signal.connect(self._append_log)
         self._behavior_matcher.log_signal.connect(self._append_log)
-        self._behavior_matcher.triggered.connect(self._toast_manager.show_toast)
-        self._behavior_matcher.triggered.connect(self.toast_broadcast.emit)
+        self._behavior_matcher.triggered.connect(self._on_behavior_question)
 
         self._build_ui()
         self._refresh_rule_list()
@@ -207,8 +207,8 @@ class ContextTab(QWidget):
         self.chk_file.setChecked(False)
         v.addWidget(self.chk_file)
 
-        self.chk_process = QCheckBox("⚙️ 进程启动/退出监听")
-        self.chk_process.setChecked(False)
+        self.chk_process = QCheckBox("⚙️ 进程启动/退出监听（配合主动嗅探用户档案触发）")
+        self.chk_process.setChecked(True)
         v.addWidget(self.chk_process)
 
         layout.addWidget(gb)
@@ -520,7 +520,15 @@ class ContextTab(QWidget):
 
     # ---- 胶囊事件 ----
     def _on_capsule(self, capsule: ContextCapsule):
-        """接收到 ContextCapsule，过滤后送 AI 推理"""
+        """接收到 ContextCapsule，过滤后送 AI 推理
+
+        注意：process 启动/退出事件不走剪贴板规则，也不全量送 AI。
+        它由 BehaviorInterestMatcher 根据用户档案/行为关键词过滤后再主动推送，避免日志和 AI 请求噪声。
+        """
+        if capsule.source == "process":
+            # 行为匹配器通过独立 signal 连接会收到同一 capsule；这里不再全量记录/放行
+            return
+
         self._append_log(f"[{capsule.source}] {capsule.foreground_window or '(无窗口)'} | "
                         f"内容前30字: {capsule.clipboard_text[:30]!r}")
         result = self._gatekeeper.check(capsule)
@@ -533,6 +541,32 @@ class ContextTab(QWidget):
         if capsule.source == "clipboard":
             self._agent.process(capsule)
             self._fallback_toast_by_rule(capsule, result.rule_name)
+
+    def _on_behavior_question(self, q: ProactiveQuestion):
+        """行为兴趣触发器产出的问题 → 转成气泡 + 同步到 AI 对话页"""
+        # q 已在 BehaviorInterestMatcher 内写入 _proactive_history，这里只刷新 UI
+        self._refresh_proactive_history()
+        icon_map = {"work": "💼", "study": "📚", "hobby": "🎮", "chat": "💬"}
+        intent = ToastIntent(
+            intent=f"行为主动嗅探 - {q.category}",
+            message=f"{icon_map.get(q.category, '💬')} {q.text}",
+            suggested_action="open_chat",
+            action_param=q.category,
+        )
+        self._toast_manager.show_toast(intent)
+        self.toast_broadcast.emit(intent)
+
+    def _open_mini_chat(self, intent: ToastIntent | None = None):
+        """打开/激活小聊天窗，复用 AI 对话标签页的同一份记录。"""
+        if not hasattr(self, "context_chat_tab"):
+            return
+        if self._mini_chat_dialog is None or not self._mini_chat_dialog.isVisible():
+            self._mini_chat_dialog = MiniChatDialog(self.context_chat_tab, self)
+        self._mini_chat_dialog.show()
+        self._mini_chat_dialog.raise_()
+        self._mini_chat_dialog.activateWindow()
+        if intent is not None:
+            self.context_chat_tab.on_toast_clicked(intent)
 
     def _fallback_toast_by_rule(self, capsule: ContextCapsule, rule_name: str) -> None:
         """兑底: 根据嗅探规则名直接弹一条气泡,不依赖 LLM
@@ -575,26 +609,11 @@ class ContextTab(QWidget):
         QTimer.singleShot(4000, _show)
 
     def _on_toast_clicked(self, intent: ToastIntent):
-        """用户点击了气泡"""
-        self._append_log(f"[点击] 用户接受推荐: {intent.suggested_action}({intent.action_param})")
-        # 同步到 AI 对话页: 实际接受动作
+        """用户点击了气泡 → 打开小聊天窗，并同步 AI 对话标签页记录"""
+        self._append_log(f"[点击] 用户点击气泡: {intent.suggested_action}({intent.action_param})")
         if hasattr(self, "context_chat_tab"):
             self.context_chat_tab.on_action_executed(intent)
-        # TODO: 调用 MCP 工具——这部分可以接入 workflow_panel 或 tools_tab
-        # 注意: QMessageBox.information 是模态的,会卡主线程 → 改用非模态 show()
-        try:
-            box = QMessageBox(self)
-            box.setWindowTitle("推荐动作")
-            box.setText(
-                f"意图: {intent.intent}\n\n"
-                f"建议动作: {intent.suggested_action}\n"
-                f"参数: {intent.action_param}"
-            )
-            box.setWindowModality(Qt.NonModal)   # 非模态, 不阻塞主线程
-            box.setAttribute(Qt.WA_DeleteOnClose, True)
-            box.show()
-        except Exception as e:
-            self._append_log(f"[错误] 推荐气泡弹窗失败: {e}")
+        self._open_mini_chat(intent)
 
     # ---- 测试 ----
     def _on_test_capture(self):
@@ -859,6 +878,11 @@ class ContextTab(QWidget):
     # ---- 主动嗅探面板逻辑 ----
     def _on_proactive_toggle(self, checked: bool):
         if checked:
+            # 主动嗅探依赖窗口/进程行为；开启时自动确保进程监听勾选
+            if not self.chk_process.isChecked():
+                self.chk_process.setChecked(True)
+            if self._enabled:
+                self._sensor_manager.start({"process": True})
             # 检查档案是否为空
             if self._proactive_scheduler.profile().is_empty():
                 QMessageBox.warning(self, "提示", "请先填写用户档案（爱好/兴趣/学习/工作），否则话题主题会随机。")

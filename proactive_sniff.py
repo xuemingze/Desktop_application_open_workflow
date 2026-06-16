@@ -46,7 +46,7 @@ PROACTIVE_SYSTEM_PROMPT = """你是一个关心用户的朋友式桌宠。基于
 "category" 可选: work / study / hobby / chat
 """
 
-BEHAVIOR_SYSTEM_PROMPT = """你是一个关心用户的朋友式桌宠。用户刚刚打开了/关注了【{detected_topic}】，这是他们感兴趣的东西。
+BEHAVIOR_SYSTEM_PROMPT = """你是一个关心用户的朋友式桌宠。用户刚刚发生了一个与兴趣相关的桌面行为：【{detected_topic}】。
 
 【用户档案】
 {user_profile}
@@ -91,10 +91,55 @@ class UserProfile:
                    or self.learning.strip() or self.work.strip())
 
     def get_interest_keywords(self) -> list[str]:
-        """解析逗号分隔的兴趣关键词列表"""
-        if not self.interest_keywords.strip():
-            return []
-        return [kw.strip() for kw in self.interest_keywords.split(",") if kw.strip()]
+        """解析行为关键词列表。
+
+        不只使用“行为关键词”输入框，也会从用户档案里自动提取一些高价值关键词。
+        例如：档案里写了“游戏/独立游戏”，会自动匹配 Steam/Epic/常见游戏客户端进程。
+        """
+        keywords: list[str] = []
+
+        # 1. 显式行为关键词：逗号/中文逗号/分号分隔
+        if self.interest_keywords.strip():
+            keywords.extend([
+                kw.strip() for kw in re.split(r"[,，;；\n]+", self.interest_keywords)
+                if kw.strip()
+            ])
+
+        # 2. 从档案文本里抽取短词（避免太泛化，只取常见分隔符）
+        profile_text = "，".join([
+            self.hobbies.strip(), self.interests.strip(),
+            self.learning.strip(), self.work.strip(),
+        ])
+        for kw in re.split(r"[,，、;；/\s]+", profile_text):
+            kw = kw.strip()
+            if len(kw) >= 2:
+                keywords.append(kw)
+
+        # 3. 语义别名：用户写“游戏/独立游戏/电竞”等，自动匹配常见游戏客户端/进程名
+        alias_map = {
+            "游戏": ["steam", "steamwebhelper", "epic", "epicgameslauncher", "wegame", "tgp", "mihoyo", "hoyoplay", "hyp", "launcher", "yuanshen", "genshin", "wuthering", "鸣潮", "原神", "starrail", "zenless", "client-win64-shipping"],
+            "独立游戏": ["steam", "epic", "itch", "itch.io"],
+            "电竞": ["steam", "wegame", "valorant", "league", "lol", "cs2", "dota"],
+            "摄影": ["photoshop", "lightroom", "camera", "captureone"],
+            "设计": ["figma", "photoshop", "illustrator", "sketch"],
+            "编程": ["code.exe", "cursor", "pycharm", "webstorm", "idea64", "terminal", "powershell"],
+            "开发": ["code.exe", "cursor", "pycharm", "webstorm", "idea64", "terminal", "powershell"],
+            "AI": ["chatgpt", "claude", "cursor", "lobster", "ollama"],
+        }
+        lower_profile = profile_text.lower()
+        for trigger, aliases in alias_map.items():
+            if trigger.lower() in lower_profile:
+                keywords.extend(aliases)
+
+        # 去重，保序
+        seen = set()
+        out = []
+        for kw in keywords:
+            k = kw.lower()
+            if k and k not in seen:
+                seen.add(k)
+                out.append(kw)
+        return out
 
     def to_prompt(self) -> str:
         """转成给 AI 的档案字符串"""
@@ -160,7 +205,7 @@ class QuestionGenerator:
             now=datetime.now().strftime("%Y-%m-%d %H:%M"),
         )
 
-        raw = self._backend.infer(sys_prompt, f"用户打开了【{detected_topic}】，基于此生成一个问题")
+        raw = self._backend.infer(sys_prompt, f"用户行为：【{detected_topic}】，基于此生成一个问题")
         if not raw:
             return None
 
@@ -417,7 +462,11 @@ class BehaviorInterestMatcher(QObject):
         return self._enabled
 
     def on_capsule(self, capsule):
-        """当收到新的 ContextCapsule 时调用（外部槽）"""
+        """当收到新的 ContextCapsule 时调用（外部槽）
+
+        支持窗口/进程/文件/剪贴板。进程启动与退出不会直接全量发给 AI，
+        只有命中用户档案/行为关键词时才进入主动推理，避免噪声。
+        """
         if not self._enabled:
             return
 
@@ -425,42 +474,48 @@ class BehaviorInterestMatcher(QObject):
         if not keywords:
             return
 
+        source = getattr(capsule, "source", "") or ""
+        event_type = getattr(capsule, "event_type", "") or ""
+
         # 获取待检测文本
         process_name = getattr(capsule, "process_name", "") or ""
         window_title = getattr(capsule, "foreground_window", "") or ""
         window_app = getattr(capsule, "foreground_app", "") or ""
+        file_path = getattr(capsule, "file_path", "") or ""
+        clipboard_text = getattr(capsule, "clipboard_text", "") or ""
+
+        candidates = [
+            ("process", process_name),
+            ("window", window_title),
+            ("app", window_app),
+            ("file", file_path),
+            ("clipboard", clipboard_text[:120]),
+        ]
 
         for kw in keywords:
             kw_lower = kw.lower()
-            matched = False
             matched_text = ""
+            matched_kind = ""
+            for kind, text in candidates:
+                if text and kw_lower in text.lower():
+                    matched_text = text
+                    matched_kind = kind
+                    break
 
-            # 进程名匹配
-            if process_name and kw_lower in process_name.lower():
-                matched = True
-                matched_text = process_name
-            # 窗口标题匹配
-            elif window_title and kw_lower in window_title.lower():
-                matched = True
-                matched_text = window_title
-            # 窗口进程名匹配
-            elif window_app and kw_lower in window_app.lower():
-                matched = True
-                matched_text = window_app
-
-            if matched:
-                # 冷却检查
+            if matched_text:
+                # 冷却检查：同一关键词 + 同一进程事件分开冷却
+                cooldown_key = f"{kw_lower}:{source}:{event_type}:{matched_text.lower()}"
                 now = time.time()
-                last = self._cooldown.get(kw_lower, 0)
+                last = self._cooldown.get(cooldown_key, 0)
                 if now - last < self._cooldown_seconds:
                     self.log_signal.emit(f"[行为触发] {kw} 冷却中，跳过")
                     continue
 
-                self._cooldown[kw_lower] = now
-                self._fire_behavior_question(kw, matched_text)
+                self._cooldown[cooldown_key] = now
+                self._fire_behavior_question(kw, matched_text, source, event_type, matched_kind)
                 break  # 一次只触发一个关键词
 
-    def _fire_behavior_question(self, keyword: str, matched_text: str):
+    def _fire_behavior_question(self, keyword: str, matched_text: str, source: str = "", event_type: str = "", matched_kind: str = ""):
         """触发一次行为相关问题生成"""
         # 去重检查
         for prev in list(self._history)[-10:]:
@@ -468,8 +523,17 @@ class BehaviorInterestMatcher(QObject):
                 self.log_signal.emit(f"[行为触发] {keyword} 近期已问过，跳过")
                 return
 
+        event_desc = ""
+        if source == "process":
+            event_desc = "启动了" if event_type == "started" else "退出了" if event_type == "exited" else "进程事件"
+        elif source == "window":
+            event_desc = "切换到窗口"
+        elif source == "file":
+            event_desc = "文件变化"
+        detected_topic = f"{event_desc}{matched_text}（命中关键词：{keyword}）" if event_desc else f"{matched_text}（命中关键词：{keyword}）"
+
         q = self._generator.generate_behavior_question(
-            keyword, self._profile, list(self._history)
+            detected_topic, self._profile, list(self._history)
         )
         if q is None:
             self.log_signal.emit(f"[行为触发] {keyword} 生成失败（后端无响应）")
@@ -479,5 +543,5 @@ class BehaviorInterestMatcher(QObject):
         while len(self._history) > 100:
             self._history.popleft()
 
-        self.log_signal.emit(f"[行为触发] 检测到 {keyword} → {q.text}")
+        self.log_signal.emit(f"[行为触发] 检测到 {source or matched_kind}:{matched_text} / {keyword} → {q.text}")
         self.triggered.emit(q)
