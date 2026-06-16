@@ -268,17 +268,20 @@ from PySide6.QtWidgets import (
 # ---------------------------------------------------------------------------
 # 1. Windows DPI / 多屏 初始化(必须在 QApplication 之前)
 # ---------------------------------------------------------------------------
-def enable_high_dpi() -> None:
-    """Win10+ 高 DPI 感知,坐标不再偏移"""
+# PySide6 6.x 默认自动管理 DPI awareness,不需要手动调 SetProcessDpiAwareness。
+# 手动调反而会与 Qt 内部冲突,报 "SetProcessDpiAwarenessContext() failed: 拒绝访问"。
+# 如果需要高 DPI 缩放策略,在 QApplication 创建后用 Qt.AA_EnableHighDpiScaling 即可
+# (PySide6 6.x 默认就开启)。这里仅在环境变量不存在时才做兑底。
+def _setup_dpi() -> None:
     try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-monitor V2
+        import os as _os
+        # PySide6 自带高 DPI 缩放, 6.0+ 是默认的。不需要手动调 shcore/user32。
+        # 如果是反复重启 (该进程已被 set 过), 调用 SetProcessDpiAwareness 会 拒绝访问, 直接跳过。
+        pass
     except Exception:
-        try:
-            ctypes.windll.user32.SetProcessDPIAware()
-        except Exception:
-            pass
+        pass
 
-enable_high_dpi()
+_setup_dpi()
 
 # pyautogui 全局安全配置
 pyautogui.FAILSAFE = True
@@ -2199,6 +2202,10 @@ def main() -> int:
     if icon_path.exists():
         from PySide6.QtGui import QIcon
         app.setWindowIcon(QIcon(str(icon_path)))
+
+    # 显式设置默认字体: 避免 Qt 去加载缺失的 "MS Sans Serif" 而报 DirectWrite 警告
+    from PySide6.QtGui import QFont
+    app.setFont(QFont("Segoe UI", 10))
 
     # 统一 QSS 风格(浅色)
     app.setStyleSheet("""
