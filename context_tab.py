@@ -237,9 +237,12 @@ class ContextTab(QWidget):
         btn_row = QHBoxLayout()
         btn_test = QPushButton("🧪 测试剪贴板捕获")
         btn_test.clicked.connect(self._on_test_capture)
+        btn_test_toast = QPushButton("💬 测试气泡")
+        btn_test_toast.clicked.connect(self._on_test_toast)
         btn_clear_toasts = QPushButton("🧹 清除所有气泡")
         btn_clear_toasts.clicked.connect(self._toast_manager.stop_all)
         btn_row.addWidget(btn_test)
+        btn_row.addWidget(btn_test_toast)
         btn_row.addWidget(btn_clear_toasts)
         btn_row.addStretch()
         layout.addLayout(btn_row)
@@ -607,6 +610,17 @@ class ContextTab(QWidget):
             foreground_app="test.exe",
         )
         self._on_capsule(cap)
+
+    def _on_test_toast(self):
+        """直接测试气泡渲染链路，不经过 AI/规则。"""
+        intent = ToastIntent(
+            intent="测试气泡渲染",
+            message="这是一条测试气泡",
+            suggested_action="search_local_files",
+            action_param="toast test",
+        )
+        self._append_log("[Toast] 手动测试气泡")
+        self._toast_manager.show_toast(intent)
 
     # ---- 路径管理 ----
     def _on_add_path(self):

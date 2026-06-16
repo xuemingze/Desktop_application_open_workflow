@@ -225,17 +225,29 @@ class ToastManager(QObject):
 
     def show_toast(self, intent: ToastIntent):
         """显示一个新气泡"""
-        # 队列已满（maxlen=3 自动弹出最早），先让旧的淡出
-        if len(self._queue) >= 3:
-            oldest = self._queue[0]
-            oldest.fade_out()
-            # 注意：maxlen=3 会在 append 时自动丢弃最左侧元素
+        try:
+            from log_bus import log_bus
+            log_bus.emit(f"[Toast] show_toast: {intent.message} -> {intent.suggested_action}({intent.action_param})")
+        except Exception:
+            pass
+        try:
+            # 队列已满（maxlen=3 自动弹出最早），先让旧的淡出
+            if len(self._queue) >= 3:
+                oldest = self._queue[0]
+                oldest.fade_out()
+                # 注意：maxlen=3 会在 append 时自动丢弃最左侧元素
 
-        toast = ToastBubble(intent)
-        toast.closed.connect(self._on_toast_closed)
-        toast.clicked.connect(self.toast_clicked.emit)
-        self._queue.append(toast)
-        self._relayout(animate=True)
+            toast = ToastBubble(intent)
+            toast.closed.connect(self._on_toast_closed)
+            toast.clicked.connect(self.toast_clicked.emit)
+            self._queue.append(toast)
+            self._relayout(animate=True)
+        except Exception as e:
+            try:
+                from log_bus import log_bus
+                log_bus.emit(f"[Toast] 显示失败: {type(e).__name__}: {e}")
+            except Exception:
+                pass
 
     def stop_all(self):
         for t in list(self._queue):
@@ -251,10 +263,28 @@ class ToastManager(QObject):
 
     def _relayout(self, animate: bool = True):
         """重排所有气泡位置，从下往上堆叠"""
-        screen = self.screen().availableGeometry() if self.screen() else None
-        if screen is None:
-            from PySide6.QtWidgets import QApplication
-            screen = QApplication.primaryScreen().availableGeometry()
+        # ToastManager 是 QObject, 没有 self.screen(); 必须通过 QApplication 获取屏幕
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        screen_obj = None
+        if app is not None:
+            # 优先用当前激活窗口所在屏幕；RDP/多屏场景下 primaryScreen 可能不是用户正在看的屏幕
+            win = QApplication.activeWindow()
+            if win is not None and win.screen() is not None:
+                screen_obj = win.screen()
+            if screen_obj is None:
+                from PySide6.QtGui import QCursor
+                screen_obj = QApplication.screenAt(QCursor.pos())
+            if screen_obj is None:
+                screen_obj = QApplication.primaryScreen()
+        if screen_obj is None:
+            try:
+                from log_bus import log_bus
+                log_bus.emit("[Toast] 显示失败: 找不到可用屏幕")
+            except Exception:
+                pass
+            return
+        screen = screen_obj.availableGeometry()
 
         for i, toast in enumerate(self._queue):
             # i=0 是最底部，i 越大越靠上
