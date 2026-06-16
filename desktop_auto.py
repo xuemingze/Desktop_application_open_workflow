@@ -1385,7 +1385,15 @@ class MainWindow(QMainWindow):
             self.context_tab = ContextTab(self)
             self.right_tabs.addTab(self.context_tab, "🧠 AI 感知")
         except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
             log.warning(f"AI 感知标签加载失败: {e}")
+            # 暴露到全局日志, 便于查 bug
+            try:
+                from log_bus import log_bus
+                log_bus.emit(f"[加载] ❌ AI 感知 tab 加载失败: {e}\n{tb}")
+            except Exception:
+                pass
 
         # 设置选项卡
         right_layout = QVBoxLayout(right)
