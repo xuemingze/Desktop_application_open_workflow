@@ -2,15 +2,15 @@
 AI 对话标签页 - 集成 MCP 工具的聊天助手
 ========================================
 
-支持的能力（与 MCP server 一致）：
+支持的能力(与 MCP server 一致):
 - list_workflows / list_shortcuts / run_workflow / launch_shortcut / search_local_files
 
-实现方式：
-- 用户消息 → 拼系统提示（含工具说明）→ LLM
+实现方式:
+- 用户消息 → 拼系统提示(含工具说明)→ LLM
 - LLM 返回 JSON {"action": "tool_name", "args": {...}, "reply": "回复语"}
 - 解析 action 并调用对应本地函数
-- 把工具结果回填给 LLM，让 LLM 生成最终自然语言回复
-- 整个流程在 QThread 中跑，不阻塞 UI
+- 把工具结果回填给 LLM,让 LLM 生成最终自然语言回复
+- 整个流程在 QThread 中跑,不阻塞 UI
 """
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
-# 工具函数（与 MCP 工具一一对应）
+# 工具函数(与 MCP 工具一一对应)
 # ---------------------------------------------------------------------------
 TOOL_DEFINITIONS = [
     {
@@ -64,20 +64,28 @@ TOOL_DEFINITIONS = [
     {
         "name": "run_workflow",
         "description": "执行指定名称的工作流。需要 name 参数。",
-        "params": {"name": "工作流名称（字符串）"},
+        "params": {"name": "工作流名称(字符串)"},
     },
     {
         "name": "launch_shortcut",
-        "description": "启动指定名称的桌面快捷方式（应用）。需要 name 参数。",
-        "params": {"name": "应用名称（字符串，与桌面 .lnk 文件名一致）"},
+        "description": "启动指定名称的桌面快捷方式(应用)。需要 name 参数。",
+        "params": {"name": "应用名称(字符串,与桌面 .lnk 文件名一致)"},
     },
     {
         "name": "search_local_files",
         "description": "用 Everything 全盘搜索本地文件。需要 query 参数。",
         "params": {
             "query": "搜索词",
-            "limit": "返回结果数（默认 10）",
-            "path": "限定目录（可选）",
+            "limit": "返回结果数(默认 10)",
+            "path": "限定目录(可选)",
+        },
+    },
+    {
+        "name": "web_search",
+        "description": "联网搜索 (需要用户开启【联网】开关)。返回网页标题、链接、摘要列表。",
+        "params": {
+            "query": "搜索词",
+            "limit": "返回结果数(默认 5)",
         },
     },
 ]
@@ -136,6 +144,69 @@ def tool_search_local_files(query: str, limit: int = 10, path: str = "") -> dict
         return {"ok": False, "error": str(e)}
 
 
+def tool_web_search(query: str, limit: int = 5) -> dict:
+    """联网搜索 - 使用 DuckDuckGo HTML 接口 (免 key)
+
+    需用户开启【联网】开关。返回结果中会说明来源是网页。
+    """
+    if not _WEB_ENABLED:
+        return {"ok": False, "error": "联网开关未开启,请在 AI 对话页上方开启【联网】"}
+    try:
+        import urllib.request, urllib.parse, re as _re
+        q = urllib.parse.quote(query)
+        url = f"https://html.duckduckgo.com/html/?q={q}"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            html = r.read().decode("utf-8", errors="ignore")
+        # 解析结果块 (DDG HTML 页面)
+        results = []
+        # result__a 是标题, result__snippet 是摘要, result__url 是 URL
+        blocks = _re.findall(
+            r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?class="result__snippet"[^>]*>(.*?)</a>',
+            html, _re.DOTALL,
+        )
+        for href, title_html, snippet_html in blocks[:limit]:
+            # 去 HTML 标签
+            title = _re.sub(r"<[^>]+>", "", title_html).strip()
+            snippet = _re.sub(r"<[^>]+>", "", snippet_html).strip()
+            # DDG 链接 uddg= 是真实 URL
+            if "uddg=" in href:
+                m = _re.search(r"uddg=([^&]+)", href)
+                if m:
+                    href = urllib.parse.unquote(m.group(1))
+            results.append({
+                "title": title,
+                "url": href,
+                "snippet": snippet[:200],
+            })
+        return {"ok": True, "count": len(results), "results": results, "source": "DuckDuckGo"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# 联网开关 (运行时由 UI 切换)
+_WEB_ENABLED = False
+
+
+def set_web_enabled(enabled: bool) -> None:
+    global _WEB_ENABLED
+    _WEB_ENABLED = bool(enabled)
+    try:
+        from log_bus import log_bus
+        log_bus.emit(f"[AI对话] 联网 {'启用' if enabled else '停用'}")
+    except Exception:
+        pass
+
+
+def is_web_enabled() -> bool:
+    return _WEB_ENABLED
+
+
 TOOL_DISPATCH = {
     "list_workflows": lambda args: tool_list_workflows(),
     "list_shortcuts": lambda args: tool_list_shortcuts(),
@@ -143,6 +214,9 @@ TOOL_DISPATCH = {
     "launch_shortcut": lambda args: tool_launch_shortcut(args.get("name", "")),
     "search_local_files": lambda args: tool_search_local_files(
         args.get("query", ""), int(args.get("limit", 10)), args.get("path", "")
+    ),
+    "web_search": lambda args: tool_web_search(
+        args.get("query", ""), int(args.get("limit", 5))
     ),
 }
 
@@ -155,11 +229,11 @@ def build_chat_system_prompt() -> str:
         f"- {t['name']}: {t['description']} 参数: {json.dumps(t['params'], ensure_ascii=False)}"
         for t in TOOL_DEFINITIONS
     )
-    return f"""你是一个桌面自动化助手，运行在用户的 Windows 电脑上。用户会用自然语言跟你说话，你需要：
+    return f"""你是一个桌面自动化助手,运行在用户的 Windows 电脑上。用户会用自然语言跟你说话,你需要:
 1. 理解用户意图
 2. 决定是否需要调用工具
-3. 如果需要，**严格按 JSON 格式**输出工具调用指令
-4. 如果不需要（闲聊/确认/信息查询），直接给出友好回答
+3. 如果需要,**严格按 JSON 格式**输出工具调用指令
+4. 如果不需要(闲聊/确认/信息查询),直接给出友好回答
 
 【可用工具】
 {tools_text}
@@ -170,7 +244,7 @@ def build_chat_system_prompt() -> str:
 {{
   "action": "工具名",
   "args": {{ "参数名": "参数值" }},
-  "reply": "对用户说的话，告诉用户在做什么"
+  "reply": "对用户说的话,告诉用户在做什么"
 }}
 
 不需要工具时:
@@ -184,11 +258,13 @@ def build_chat_system_prompt() -> str:
 - 工具名必须从上面列表中选
 - args 里只放工具需要的参数
 - 工具调用不要嵌套，一次只调一个
-- 用户说"打开XX"/"启动XX" → 用 launch_shortcut
-- 用户说"执行XX工作流"/"跑XX流程" → 用 run_workflow
-- 用户说"找XX文件"/"搜XX" → 用 search_local_files
-- 用户说"列出工作流"/"看看工作流" → 用 list_workflows
-- 用户说"列出应用"/"桌面有啥" → 用 list_shortcuts
+- 用户说“打开XX”/“启动XX” → 用 launch_shortcut
+- 用户说“执行XX工作流”/“跑XX流程” → 用 run_workflow
+- 用户说“找XX文件”/“本地搜XX” → 用 search_local_files (仅本地 Everything)
+- 用户说“联网搜XX”/“百度一下”/“访问 XX 网站”/需联网才能获取信息的问题 → 用 web_search (需用户开启【联网】)
+- 用户说“列出工作流”/“看看工作流” → 用 list_workflows
+- 用户说“列出应用”/“桌面有啥” → 用 list_shortcuts
+- 如果用户问的问题需要联网但【联网】未开启，reply 里告诉用户“需要开启【联网】开关才能查询”
 """
 
 
@@ -196,7 +272,7 @@ def build_chat_system_prompt() -> str:
 # 后台 Worker
 # ---------------------------------------------------------------------------
 class ChatWorker(QThread):
-    """在独立线程跑：用户消息 → LLM → 解析 → 调工具 → LLM 总结"""
+    """在独立线程跑:用户消息 → LLM → 解析 → 调工具 → LLM 总结"""
 
     thinking = Signal(str)                # "正在思考..."
     tool_call = Signal(str, dict)          # 调用的工具名 + 参数
@@ -220,7 +296,7 @@ class ChatWorker(QThread):
                 {"role": "user", "content": self._user_msg}
             ]
 
-            # 第一轮：让 LLM 决定是否调工具
+            # 第一轮:让 LLM 决定是否调工具
             raw1 = self._chat(messages)
             if not raw1:
                 self.error.emit("后端无响应")
@@ -230,7 +306,7 @@ class ChatWorker(QThread):
             action = data1.get("action")
             reply = data1.get("reply", "").strip()
 
-            # 如果不调工具，直接显示
+            # 如果不调工具,直接显示
             if not action or action not in TOOL_DISPATCH:
                 if reply:
                     self.assistant_message.emit(reply)
@@ -247,11 +323,11 @@ class ChatWorker(QThread):
             result_str = json.dumps(result, ensure_ascii=False, indent=2)[:2000]
             self.tool_result.emit(action, result)
 
-            # 第二轮：让 LLM 总结
+            # 第二轮:让 LLM 总结
             messages.append({"role": "assistant", "content": raw1})
             messages.append({
                 "role": "user",
-                "content": f"工具 {action} 的结果:\n```json\n{result_str}\n```\n请基于这个结果给用户一个简洁友好的回答（100字内）。直接说人话，不要 JSON。"
+                "content": f"工具 {action} 的结果:\n```json\n{result_str}\n```\n请基于这个结果给用户一个简洁友好的回答(100字内)。直接说人话,不要 JSON。"
             })
 
             self.thinking.emit("正在生成回复...")
@@ -265,7 +341,7 @@ class ChatWorker(QThread):
                 self.assistant_message.emit(text)
             else:
                 # 后端失败也要给用户看个结果
-                self.assistant_message.emit(f"（已执行 {action}）\n结果: {result_str[:300]}")
+                self.assistant_message.emit(f"(已执行 {action})\n结果: {result_str[:300]}")
 
         except Exception as e:
             import traceback
@@ -326,13 +402,13 @@ class ContextChatTab(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
 
-        # 顶部：标题 + 提示
+        # 顶部:标题 + 提示
         top = QHBoxLayout()
-        title = QLabel("💬 AI 对话助手（可调用 MCP 工具）")
+        title = QLabel("💬 AI 对话助手(可调用 MCP 工具)")
         title.setFont(QFont("", 12, QFont.Bold))
         top.addWidget(title)
         top.addStretch()
-        hint = QLabel("支持：列出工作流 / 启动应用 / 跑工作流 / 搜文件")
+        hint = QLabel("支持:列出工作流 / 启动应用 / 跑工作流 / 搜文件")
         hint.setStyleSheet("color: #666; font-size: 11px;")
         top.addWidget(hint)
         root.addLayout(top)
@@ -373,6 +449,12 @@ class ContextChatTab(QWidget):
         self.chk_keep_history.setChecked(True)
         ctrl_row.addWidget(self.chk_keep_history)
 
+        # 联网开关 (默认关闭,避免无意访问网络)
+        self.chk_web = QCheckBox("🌐 联网")
+        self.chk_web.setToolTip("开启后,AI 可以调用 web_search 工具 (DuckDuckGo) 进行联网搜索")
+        self.chk_web.toggled.connect(self._on_web_toggle)
+        ctrl_row.addWidget(self.chk_web)
+
         ctrl_row.addStretch()
 
         btn_clear = QPushButton("🧹 清空")
@@ -389,13 +471,13 @@ class ContextChatTab(QWidget):
 
         # 欢迎语
         self._append_system(
-            "👋 你好！我是你的桌面自动化助手。\n"
-            "你可以让我：\n"
-            "  • 打开应用（例: '帮我打开微信'）\n"
-            "  • 执行工作流（例: '跑一下 zzz日常'）\n"
-            "  • 搜索文件（例: '搜一下 4月明细'）\n"
+            "👋 你好!我是你的桌面自动化助手。\n"
+            "你可以让我:\n"
+            "  • 打开应用(例: '帮我打开微信')\n"
+            "  • 执行工作流(例: '跑一下 zzz日常')\n"
+            "  • 搜索文件(例: '搜一下 4月明细')\n"
             "  • 列出工作流 / 桌面应用\n\n"
-            "💡 提示：先在「⚙️ 后端」标签页配好 LLM（默认 OpenAI 兼容协议）。"
+            "💡 提示:先在「⚙️ 后端」标签页配好 LLM(默认 OpenAI 兼容协议)。"
         )
 
     # ---- 后端接入 ----
@@ -413,7 +495,7 @@ class ContextChatTab(QWidget):
         if not isinstance(self._backend, OpenAICompatibleBackend) and not hasattr(self._backend, "base_url"):
             QMessageBox.warning(
                 self, "提示",
-                "当前后端不支持对话（请在「⚙️ 后端」选 OpenAI 兼容协议）。"
+                "当前后端不支持对话(请在「⚙️ 后端」选 OpenAI 兼容协议)。"
             )
             return
 
@@ -509,6 +591,57 @@ class ContextChatTab(QWidget):
         self.chat_view.clear()
         self._history.clear()
         self._append_system("🧹 已清空对话历史")
+
+    # ---- 联网开关 ----
+    def _on_web_toggle(self, checked: bool):
+        """同步到模块全局,LLM 拿到提示后可用 web_search 工具"""
+        from context_chat import set_web_enabled
+        set_web_enabled(checked)
+        state = "✅ 已开启 - AI 可调用 web_search 联网搜索" if checked else "❌ 已关闭 - 不可调用联网工具"
+        self._append_system(f"🌐 联网开关: {state}")
+
+    # ---- 与气泡同步 ----
+    def on_intent(self, intent):
+        """AI 推送了一条气泡 → 在聊天记录里同步显示
+
+        intent 是 context_toast.ToastIntent,有 intent/message/suggested_action/action_param
+        """
+        try:
+            msg = getattr(intent, "message", "") or ""
+            sug = getattr(intent, "suggested_action", "") or ""
+            param = getattr(intent, "action_param", "") or ""
+            tag = getattr(intent, "intent", "") or ""
+            text = msg
+            if sug:
+                text += f"\n\n[操作: {sug}" + (f" / {param}" if param else "") + "]"
+            # 用 assistant 气泡样式显示
+            self._append_assistant(f"💡 [主动推送 / {tag}]\n{text}")
+        except Exception as e:
+            self._append_system(f"❌ on_intent 出错: {e}")
+
+    def on_toast_clicked(self, intent):
+        """用户点击了某个气泡 → 记录用户的交互到聊天历史"""
+        try:
+            msg = getattr(intent, "message", "") or ""
+            sug = getattr(intent, "suggested_action", "") or ""
+            param = getattr(intent, "action_param", "") or ""
+            self._append_user(f"👆 点击了气泡 [操作: {sug}{' / ' + param if param else ''}]\n原消息: {msg}")
+        except Exception as e:
+            self._append_system(f"❌ on_toast_clicked 出错: {e}")
+
+    def on_action_executed(self, intent):
+        """context_tab 用户点击气泡后同步显示在聊天记录里"""
+        try:
+            msg = getattr(intent, "message", "") or ""
+            sug = getattr(intent, "suggested_action", "") or ""
+            param = getattr(intent, "action_param", "") or ""
+            self._append_assistant(
+                f"✅ [已接受推荐 / {sug}]\n"
+                f"原消息: {msg}\n"
+                f"参数: {param or '(无)'}"
+            )
+        except Exception as e:
+            self._append_system(f"❌ on_action_executed 出错: {e}")
 
     # ---- 显示辅助 ----
     def _append_user(self, text: str):

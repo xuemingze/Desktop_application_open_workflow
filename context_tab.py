@@ -86,6 +86,9 @@ CONFIG_FILE = Path.home() / "context_aware_config.json"
 class ContextTab(QWidget):
     """AI 感知主标签页"""
 
+    # AI 主动推送的气泡 (同步到 AI 对话 tab)
+    toast_broadcast = Signal(object)  # ToastIntent
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._enabled = False
@@ -119,10 +122,13 @@ class ContextTab(QWidget):
         self._sensor_manager.captured.connect(self._on_capsule)
         self._sensor_manager.captured.connect(self._behavior_matcher.on_capsule)
         self._toast_manager.toast_clicked.connect(self._on_toast_clicked)
+        # AI agent 推荐 → 走 toast + 广播到 AI 对话页 (同步)
         self._agent.intent_ready.connect(self._toast_manager.show_toast)
+        self._agent.intent_ready.connect(self.toast_broadcast.emit)
         self._agent.log_signal.connect(self._append_log)
         self._behavior_matcher.log_signal.connect(self._append_log)
         self._behavior_matcher.triggered.connect(self._toast_manager.show_toast)
+        self._behavior_matcher.triggered.connect(self.toast_broadcast.emit)
 
         self._build_ui()
         self._refresh_rule_list()
@@ -153,6 +159,17 @@ class ContextTab(QWidget):
         # === Tab 1: 感知行为 ===
         sub.addTab(self._build_sensor_panel(), "🎛️ 感知行为")
 
+        # === Tab 1: AI 对话 (调用 MCP 工具) — 默认第一项 ===
+        self.context_chat_tab = ContextChatTab(self)
+        self.context_chat_tab.log_signal.connect(self._append_log)
+        # 初始化时同步默认后端
+        self.context_chat_tab.set_backend(self._agent._backend)
+        # 同步 AI 主动推送 (气泡) 到对话页
+        self.toast_broadcast.connect(self.context_chat_tab.on_intent)
+        # 同步用户点击气泡
+        self._toast_manager.toast_clicked.connect(self.context_chat_tab.on_toast_clicked)
+        sub.addTab(self.context_chat_tab, "💬 AI 对话")
+
         # === Tab 2: 嗅探规则 ===
         sub.addTab(self._build_rules_panel(), "📋 嗅探规则")
 
@@ -165,14 +182,7 @@ class ContextTab(QWidget):
         # === Tab 5: 主动嗅探 ===
         sub.addTab(self._build_proactive_panel(), "🎯 主动嗅探")
 
-        # === Tab 6: AI 对话 (调用 MCP 工具) ===
-        self.context_chat_tab = ContextChatTab(self)
-        self.context_chat_tab.log_signal.connect(self._append_log)
-        # 初始化时同步默认后端
-        self.context_chat_tab.set_backend(self._agent._backend)
-        sub.addTab(self.context_chat_tab, "💬 AI 对话")
-
-        # === Tab 7: 活动日志 ===
+        # === Tab 6: 活动日志 ===
         sub.addTab(self._build_log_panel(), "📊 日志")
 
         root.addWidget(sub, stretch=1)
@@ -523,6 +533,9 @@ class ContextTab(QWidget):
     def _on_toast_clicked(self, intent: ToastIntent):
         """用户点击了气泡"""
         self._append_log(f"[点击] 用户接受推荐: {intent.suggested_action}({intent.action_param})")
+        # 同步到 AI 对话页: 实际接受动作
+        if hasattr(self, "context_chat_tab"):
+            self.context_chat_tab.on_action_executed(intent)
         # TODO: 调用 MCP 工具——这部分可以接入 workflow_panel 或 tools_tab
         QMessageBox.information(
             self, "推荐动作",
