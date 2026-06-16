@@ -30,7 +30,7 @@ from context_toast import ToastManager, ToastIntent, ToastBubble
 from context_agent import ContextAgent, EchoBackend, OpenAICompatibleBackend
 from proactive_sniff import (
     ProactiveScheduler, ProactiveRunner, QuestionGenerator,
-    UserProfile, ProactiveQuestion,
+    UserProfile, ProactiveQuestion, BehaviorInterestMatcher,
 )
 
 
@@ -54,6 +54,10 @@ class ContextTab(QWidget):
             self._proactive_generator, self._proactive_history, parent=self
         )
         self._proactive_runner = ProactiveRunner(self._proactive_scheduler, self._toast_manager, parent=self)
+        # 行为兴趣触发器——检测到匹配关键词时立即推送
+        self._behavior_matcher = BehaviorInterestMatcher(
+            self._proactive_generator, self._proactive_history, parent=self
+        )
 
         self._config = self._load_config()
 
@@ -67,9 +71,12 @@ class ContextTab(QWidget):
 
         # 信号连接
         self._sensor_manager.captured.connect(self._on_capsule)
+        self._sensor_manager.captured.connect(self._behavior_matcher.on_capsule)
         self._toast_manager.toast_clicked.connect(self._on_toast_clicked)
         self._agent.intent_ready.connect(self._toast_manager.show_toast)
         self._agent.log_signal.connect(self._append_log)
+        self._behavior_matcher.log_signal.connect(self._append_log)
+        self._behavior_matcher.triggered.connect(self._toast_manager.show_toast)
 
         self._build_ui()
         self._refresh_rule_list()
@@ -349,6 +356,15 @@ class ContextTab(QWidget):
         self.profile_work.textChanged.connect(self._on_profile_change)
         pv.addRow("工作:", self.profile_work)
 
+        self.profile_keywords = QLineEdit()
+        self.profile_keywords.setPlaceholderText("例如：鸣潮,原神,崩坏星穹铁道")
+        self.profile_keywords.textChanged.connect(self._on_profile_change)
+        pv.addRow("行为关键词:", self.profile_keywords)
+
+        kw_hint = QLabel("💡 当检测到窗口/进程名包含这些关键词时，立即推送相关话题（5分钟/次冷却）")
+        kw_hint.setStyleSheet("color: #888; font-size: 11px;")
+        pv.addRow("", kw_hint)
+
         layout.addWidget(profile_gb)
 
         # 历史问题
@@ -553,6 +569,8 @@ class ContextTab(QWidget):
                 model=self.model_input.text().strip(),
             )
         self._agent.set_backend(backend)
+        # 同步更新主动嗅探的问题生成器
+        self._proactive_generator.set_backend(backend)
         QMessageBox.information(self, "应用成功", "AI 后端已切换")
         self._append_log(f"[后端] 切换到: {type(backend).__name__}")
 
@@ -628,8 +646,10 @@ class ContextTab(QWidget):
             if self._proactive_scheduler.profile().is_empty():
                 QMessageBox.warning(self, "提示", "请先填写用户档案（爱好/兴趣/学习/工作），否则话题主题会随机。")
             self._proactive_scheduler.start()
+            self._behavior_matcher.set_enabled(True)
         else:
             self._proactive_scheduler.stop()
+            self._behavior_matcher.set_enabled(False)
 
     def _on_daily_count_change(self, value: int):
         self._proactive_scheduler.set_daily_count(value)
@@ -641,8 +661,10 @@ class ContextTab(QWidget):
             interests=self.profile_interests.text(),
             learning=self.profile_learning.text(),
             work=self.profile_work.text(),
+            interest_keywords=self.profile_keywords.text(),
         )
         self._proactive_scheduler.set_profile(profile)
+        self._behavior_matcher.set_profile(profile)
         self._save_proactive_config()
 
     def _on_proactive_now(self):
@@ -699,13 +721,17 @@ class ContextTab(QWidget):
         self.profile_interests.setText(prof.get("interests", ""))
         self.profile_learning.setText(prof.get("learning", ""))
         self.profile_work.setText(prof.get("work", ""))
-        # 初始化 scheduler 中的 profile
-        self._proactive_scheduler.set_profile(UserProfile(
+        self.profile_keywords.setText(prof.get("interest_keywords", ""))
+        # 初始化 scheduler 和 behavior_matcher 的 profile
+        user_profile = UserProfile(
             hobbies=self.profile_hobbies.text(),
             interests=self.profile_interests.text(),
             learning=self.profile_learning.text(),
             work=self.profile_work.text(),
-        ))
+            interest_keywords=self.profile_keywords.text(),
+        )
+        self._proactive_scheduler.set_profile(user_profile)
+        self._behavior_matcher.set_profile(user_profile)
         self._proactive_scheduler.set_daily_count(self.daily_count_spin.value())
 
     def _save_proactive_config(self):
@@ -718,6 +744,7 @@ class ContextTab(QWidget):
                 "interests": self.profile_interests.text(),
                 "learning": self.profile_learning.text(),
                 "work": self.profile_work.text(),
+                "interest_keywords": self.profile_keywords.text(),
             },
         }
         self._save_config()

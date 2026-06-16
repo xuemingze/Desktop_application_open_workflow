@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import random
 import re
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -45,6 +46,27 @@ PROACTIVE_SYSTEM_PROMPT = """你是一个关心用户的朋友式桌宠。基于
 "category" 可选: work / study / hobby / chat
 """
 
+BEHAVIOR_SYSTEM_PROMPT = """你是一个关心用户的朋友式桌宠。用户刚刚打开了/关注了【{detected_topic}】，这是他们感兴趣的东西。
+
+【用户档案】
+{user_profile}
+
+【检测到的行为】
+检测关键词：{detected_topic}
+
+【历史已问（避免重复）】
+{history}
+
+【当前时间】{now}
+
+要求：
+1. 基于用户兴趣和当前行为，想一个相关的朋友式问题或评论（10-20 字）
+2. 朋友聊天口吻（轻松自然，可以用 emoji）
+3. 必须输出 JSON 格式：
+{{"question": "哇你在玩鸣潮啊，最近抽到啥好角色了吗 🎮", "category": "hobby"}}
+"category" 可选: work / study / hobby / chat
+"""
+
 
 @dataclass
 class ProactiveQuestion:
@@ -62,10 +84,17 @@ class UserProfile:
     interests: str = ""      # "AI、加密货币、独立游戏"
     learning: str = ""       # "Rust 编程、系统设计"
     work: str = ""           # "桌面自动化、Python 后端"
+    interest_keywords: str = ""  # "鸣潮,原神,崩坏"（行为触发关键词）
 
     def is_empty(self) -> bool:
         return not (self.hobbies.strip() or self.interests.strip()
                    or self.learning.strip() or self.work.strip())
+
+    def get_interest_keywords(self) -> list[str]:
+        """解析逗号分隔的兴趣关键词列表"""
+        if not self.interest_keywords.strip():
+            return []
+        return [kw.strip() for kw in self.interest_keywords.split(",") if kw.strip()]
 
     def to_prompt(self) -> str:
         """转成给 AI 的档案字符串"""
@@ -87,6 +116,10 @@ class QuestionGenerator:
     """问题生成器——用 AI 后端生成朋友式问题"""
 
     def __init__(self, backend: LLMBackend):
+        self._backend = backend
+
+    def set_backend(self, backend: LLMBackend):
+        """热替换后端"""
         self._backend = backend
 
     def generate(self, profile: UserProfile, history: list[ProactiveQuestion]) -> Optional[ProactiveQuestion]:
@@ -114,6 +147,34 @@ class QuestionGenerator:
         return ProactiveQuestion(
             text=text,
             category=data.get("category", "chat"),
+            timestamp=datetime.now().timestamp(),
+        )
+
+    def generate_behavior_question(self, detected_topic: str, profile: UserProfile, history: list[ProactiveQuestion]) -> Optional[ProactiveQuestion]:
+        """基于检测到的行为生成一条即时问题（失败返回 None）"""
+        history_str = "\n".join(f"- {q.text}" for q in history[-10:]) or "（无）"
+        sys_prompt = BEHAVIOR_SYSTEM_PROMPT.format(
+            detected_topic=detected_topic,
+            user_profile=profile.to_prompt(),
+            history=history_str,
+            now=datetime.now().strftime("%Y-%m-%d %H:%M"),
+        )
+
+        raw = self._backend.infer(sys_prompt, f"用户打开了【{detected_topic}】，基于此生成一个问题")
+        if not raw:
+            return None
+
+        data = parse_intent_response(raw)
+        if not data:
+            return None
+
+        text = (data.get("question") or "").strip()
+        if not text:
+            return None
+
+        return ProactiveQuestion(
+            text=text,
+            category=data.get("category", "hobby"),
             timestamp=datetime.now().timestamp(),
         )
 
@@ -319,3 +380,104 @@ class ProactiveRunner(QObject):
             action_param=q.category,
         )
         self._toast_manager.show_toast(intent)
+
+
+# ---------------------------------------------------------------------------
+# 行为兴趣触发器（Behavior-Interest Matcher）
+# ---------------------------------------------------------------------------
+class BehaviorInterestMatcher(QObject):
+    """监听上下文胶囊，当检测到用户行为匹配兴趣关键词时，立即触发主动对话"""
+
+    triggered = Signal(ProactiveQuestion)  # 匹配到兴趣时立即触发
+    log_signal = Signal(str)
+
+    def __init__(self, generator: QuestionGenerator,
+                 history: deque[ProactiveQuestion],
+                 parent=None):
+        super().__init__(parent)
+        self._generator = generator
+        self._history = history
+        self._profile = UserProfile()
+        # 冷却字典：{keyword: 上次触发时间戳}
+        self._cooldown: dict[str, float] = {}
+        self._cooldown_seconds = 300  # 5 分钟冷却
+        self._enabled = False
+
+    def set_profile(self, profile: UserProfile):
+        self._profile = profile
+
+    def set_enabled(self, enabled: bool):
+        self._enabled = enabled
+        if enabled:
+            self.log_signal.emit("[行为触发] 已启用")
+        else:
+            self.log_signal.emit("[行为触发] 已停用")
+
+    def is_enabled(self) -> bool:
+        return self._enabled
+
+    def on_capsule(self, capsule):
+        """当收到新的 ContextCapsule 时调用（外部槽）"""
+        if not self._enabled:
+            return
+
+        keywords = self._profile.get_interest_keywords()
+        if not keywords:
+            return
+
+        # 获取待检测文本
+        process_name = getattr(capsule, "process_name", "") or ""
+        window_title = getattr(capsule, "foreground_window", "") or ""
+        window_app = getattr(capsule, "foreground_app", "") or ""
+
+        for kw in keywords:
+            kw_lower = kw.lower()
+            matched = False
+            matched_text = ""
+
+            # 进程名匹配
+            if process_name and kw_lower in process_name.lower():
+                matched = True
+                matched_text = process_name
+            # 窗口标题匹配
+            elif window_title and kw_lower in window_title.lower():
+                matched = True
+                matched_text = window_title
+            # 窗口进程名匹配
+            elif window_app and kw_lower in window_app.lower():
+                matched = True
+                matched_text = window_app
+
+            if matched:
+                # 冷却检查
+                now = time.time()
+                last = self._cooldown.get(kw_lower, 0)
+                if now - last < self._cooldown_seconds:
+                    self.log_signal.emit(f"[行为触发] {kw} 冷却中，跳过")
+                    continue
+
+                self._cooldown[kw_lower] = now
+                self._fire_behavior_question(kw, matched_text)
+                break  # 一次只触发一个关键词
+
+    def _fire_behavior_question(self, keyword: str, matched_text: str):
+        """触发一次行为相关问题生成"""
+        # 去重检查
+        for prev in list(self._history)[-10:]:
+            if keyword.lower() in prev.text.lower():
+                self.log_signal.emit(f"[行为触发] {keyword} 近期已问过，跳过")
+                return
+
+        q = self._generator.generate_behavior_question(
+            keyword, self._profile, list(self._history)
+        )
+        if q is None:
+            self.log_signal.emit(f"[行为触发] {keyword} 生成失败（后端无响应）")
+            return
+
+        self._history.append(q)
+        while len(self._history) > 100:
+            self._history.popleft()
+
+        self.log_signal.emit(f"[行为触发] 检测到 {keyword} → {q.text}")
+        self.triggered.emit(q)
