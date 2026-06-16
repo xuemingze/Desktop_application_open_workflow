@@ -80,7 +80,13 @@ class _ModelFetchWorker(QThread):
         self.success.emit(sorted(set(ids)))
 
 
-CONFIG_FILE = Path.home() / "context_aware_config.json"
+USER_DATA_DIR = Path.home() / "桌面自动化助手"
+if not USER_DATA_DIR.exists():
+    try:
+        USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+CONFIG_FILE = USER_DATA_DIR / "context_aware_config.json"
 
 
 class ContextTab(QWidget):

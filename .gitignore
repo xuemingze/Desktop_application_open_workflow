@@ -46,3 +46,8 @@ fusion-experiment-ontology/
 
 # 备份目录 (本地保留,用户说“整理”才删)
 backups/
+
+# 运行数据 (本机产生,带用户本地路径/隐私, 默认不入仓)
+workflows.json
+custom_apps.json
+window_state.json

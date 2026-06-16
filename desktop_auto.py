@@ -372,9 +372,38 @@ if getattr(_sys, 'frozen', False):
 else:
     RUNTIME_DIR = Path(__file__).parent
 
+# 用户数据根目录: 所有运行时文件统一放这里,避免误删和散落各处
+# 路径: C:\Users\<user>\桌面自动化助手\
+USER_DATA_DIR = Path.home() / "桌面自动化助手"
+# 启动时自动创建目录(如果不存在)
+if not USER_DATA_DIR.exists():
+    try:
+        USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass  # 权限不足时降级到 exe 同目录
+
+# 迁移旧文件到新目录(只迁移一次,新目录已有文件时忽略)
+def _migrate_old_file(old_path: Path) -> None:
+    if old_path.exists():
+        new_path = USER_DATA_DIR / old_path.name
+        if not new_path.exists():
+            try:
+                import shutil
+                shutil.copy2(old_path, new_path)
+                log.info(f"[迁移] {old_path.name} -> {USER_DATA_DIR}")
+            except Exception:
+                pass
+
+if USER_DATA_DIR.exists():
+    _migrate_old_file(Path.home() / "context_aware_config.json")
+    _migrate_old_file(RUNTIME_DIR / "workflows.json")
+    _migrate_old_file(RUNTIME_DIR / "custom_apps.json")
+    _migrate_old_file(RUNTIME_DIR / "window_state.json")
+    _migrate_old_file(RUNTIME_DIR / "desktop_auto.log")
+
 
 # 自定义应用管理
-CUSTOM_APPS_FILE = RUNTIME_DIR / "custom_apps.json"
+CUSTOM_APPS_FILE = USER_DATA_DIR / "custom_apps.json"
 
 
 def load_custom_apps() -> list[dict]:
@@ -1503,7 +1532,7 @@ class MainWindow(QMainWindow):
         try:
             from log_bus import log_bus
             # 文件记录: 同目录下 desktop_auto.log
-            log_path = RUNTIME_DIR / "desktop_auto.log"
+            log_path = USER_DATA_DIR / "desktop_auto.log"
             log_bus.set_log_file(str(log_path))
             log_bus.log_signal.connect(self._append_log)
             log_bus.emit("[全局日志] 已启用,文件: " + str(log_path))
@@ -1705,7 +1734,7 @@ class MainWindow(QMainWindow):
 
     # ---- 窗口状态持久化 ----
     def _window_state_path(self) -> Path:
-        return RUNTIME_DIR / "window_state.json"
+        return USER_DATA_DIR / "window_state.json"
 
     def _load_window_state(self) -> None:
         """加载窗口位置/大小/默认后台运行设置"""
@@ -1779,7 +1808,7 @@ class MainWindow(QMainWindow):
 
     # ---- 7.2 列表操作 ----
     # 状态文件:记录「一键启动」开启的 PID,关闭时只关这些
-    STATE_FILE = RUNTIME_DIR / "launch_state.json"
+    STATE_FILE = USER_DATA_DIR / "launch_state.json"
 
     def _load_state(self) -> dict:
         if self.STATE_FILE.exists():
@@ -2353,7 +2382,7 @@ def main() -> int:
 
 def _is_default_background() -> bool:
     """检查 config.json 中是否设置了默认后台运行"""
-    cfg_path = RUNTIME_DIR / "config.json"
+    cfg_path = USER_DATA_DIR / "config.json"
     if not cfg_path.exists():
         return False
     try:

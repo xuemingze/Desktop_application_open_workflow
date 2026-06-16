@@ -461,7 +461,14 @@ class WorkflowEditor(QWidget):
         super().__init__(parent)
         self.parent_window = parent
         self.workflows: dict[str, dict] = {}
-        self.workflow_file = Path("workflows.json")
+        from pathlib import Path as _Path
+        _user_dir = _Path.home() / "桌面自动化助手"
+        if not _user_dir.exists():
+            try:
+                _user_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+        self.workflow_file = _user_dir / "workflows.json"
         self.worker: Optional[WorkflowWorker] = None
         # 当前工作流的步骤列表(临时存储)
         self._current_steps: list[dict] = []
