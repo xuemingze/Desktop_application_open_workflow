@@ -82,10 +82,10 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "web_search",
-        "description": "联网搜索 (需要用户开启【联网】开关)。返回网页标题、链接、摘要列表。",
+        "description": "联网搜索 (需要用户开启【联网】开关)。使用 Bing 搜索,返回网页标题、链接、摘要列表。",
         "params": {
             "query": "搜索词",
-            "limit": "返回结果数(默认 5)",
+            "limit": "返回结果数（默认 5）",
         },
     },
 ]
@@ -145,7 +145,7 @@ def tool_search_local_files(query: str, limit: int = 10, path: str = "") -> dict
 
 
 def tool_web_search(query: str, limit: int = 5) -> dict:
-    """联网搜索 - 使用 DuckDuckGo HTML 接口 (免 key)
+    """联网搜索 - 使用 Bing (免 key, 在国内可访问)
 
     需用户开启【联网】开关。返回结果中会说明来源是网页。
     """
@@ -154,37 +154,44 @@ def tool_web_search(query: str, limit: int = 5) -> dict:
     try:
         import urllib.request, urllib.parse, re as _re
         q = urllib.parse.quote(query)
-        url = f"https://html.duckduckgo.com/html/?q={q}"
+        url = f"https://www.bing.com/search?q={q}"
         req = urllib.request.Request(
             url,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             },
         )
-        with urllib.request.urlopen(req, timeout=10) as r:
+        # 联网搜索: 独立 15 秒超时
+        with urllib.request.urlopen(req, timeout=15) as r:
             html = r.read().decode("utf-8", errors="ignore")
-        # 解析结果块 (DDG HTML 页面)
         results = []
-        # result__a 是标题, result__snippet 是摘要, result__url 是 URL
-        blocks = _re.findall(
-            r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?class="result__snippet"[^>]*>(.*?)</a>',
-            html, _re.DOTALL,
-        )
-        for href, title_html, snippet_html in blocks[:limit]:
-            # 去 HTML 标签
-            title = _re.sub(r"<[^>]+>", "", title_html).strip()
-            snippet = _re.sub(r"<[^>]+>", "", snippet_html).strip()
-            # DDG 链接 uddg= 是真实 URL
-            if "uddg=" in href:
-                m = _re.search(r"uddg=([^&]+)", href)
-                if m:
-                    href = urllib.parse.unquote(m.group(1))
+        # Bing 结果: <li class="b_algo"> ... <h2 ...><a href="URL">title</a></h2> <div class="b_caption"><p>summary</p></div>
+        # 取 b_algo 块 (不依赖中间顺序)
+        blocks = _re.findall(r'<li class="b_algo"[^>]*>.*?</li>', html, _re.DOTALL)
+        for b in blocks[:limit]:
+            # 标题 + 链接
+            h2 = _re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>\s*</h2>', b, _re.DOTALL)
+            if not h2:
+                continue
+            href = h2.group(1)
+            title = _re.sub(r"<[^>]+>", "", h2.group(2)).strip()
+            # 摘要 (b_caption > p)
+            cap = _re.search(r'<div class="b_caption"[^>]*>\s*<p[^>]*>(.*?)</p>', b, _re.DOTALL)
+            snippet = _re.sub(r"<[^>]+>", "", cap.group(1)).strip() if cap else ""
             results.append({
-                "title": title,
+                "title": title[:200],
                 "url": href,
-                "snippet": snippet[:200],
+                "snippet": snippet[:300],
             })
-        return {"ok": True, "count": len(results), "results": results, "source": "DuckDuckGo"}
+        # 兦底: 如果没拿到,返回原始 html 前 1KB
+        if not results:
+            return {
+                "ok": True, "count": 0, "results": [],
+                "source": "Bing", "note": "未能解析出结构化结果,可考虑优化正则",
+            }
+        return {"ok": True, "count": len(results), "results": results, "source": "Bing"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -254,17 +261,17 @@ def build_chat_system_prompt() -> str:
 }}
 
 【规则】
-- 只输出 JSON，不要有其他文字
+- 只输出 JSON,不要有其他文字
 - 工具名必须从上面列表中选
 - args 里只放工具需要的参数
-- 工具调用不要嵌套，一次只调一个
-- 用户说“打开XX”/“启动XX” → 用 launch_shortcut
-- 用户说“执行XX工作流”/“跑XX流程” → 用 run_workflow
-- 用户说“找XX文件”/“本地搜XX” → 用 search_local_files (仅本地 Everything)
-- 用户说“联网搜XX”/“百度一下”/“访问 XX 网站”/需联网才能获取信息的问题 → 用 web_search (需用户开启【联网】)
-- 用户说“列出工作流”/“看看工作流” → 用 list_workflows
-- 用户说“列出应用”/“桌面有啥” → 用 list_shortcuts
-- 如果用户问的问题需要联网但【联网】未开启，reply 里告诉用户“需要开启【联网】开关才能查询”
+- 工具调用不要嵌套,一次只调一个
+- 用户说"打开XX"/"启动XX" → 用 launch_shortcut
+- 用户说"执行XX工作流"/"跑XX流程" → 用 run_workflow
+- 用户说"找XX文件"/"本地搜XX" → 用 search_local_files (仅本地 Everything)
+- 用户说"联网搜XX"/"百度一下"/"访问 XX 网站"/需联网才能获取信息的问题 → 用 web_search (需用户开启【联网】)
+- 用户说"列出工作流"/"看看工作流" → 用 list_workflows
+- 用户说"列出应用"/"桌面有啥" → 用 list_shortcuts
+- 如果用户问的问题需要联网但【联网】未开启,reply 里告诉用户"需要开启【联网】开关才能查询"
 """
 
 
@@ -528,12 +535,6 @@ class ContextChatTab(QWidget):
     @Slot(str, dict)
     def _on_tool_call(self, action: str, args: dict):
         self.log_signal.emit(f"[AI对话] 调用工具: {action}({args})")
-        # 同步推到全局日志总线 (主窗口 + log 文件)
-        try:
-            from log_bus import log_bus
-            log_bus.emit(f"[AI对话] 调用工具: {action}({args})")
-        except Exception:
-            pass
         if self.chk_show_thinking.isChecked():
             args_str = ", ".join(f"{k}={v}" for k, v in args.items())
             self._append_system(f"🔧 调用工具: {action}({args_str})")
@@ -541,12 +542,6 @@ class ContextChatTab(QWidget):
     @Slot(str, dict)
     def _on_tool_result(self, action: str, result: dict):
         self.log_signal.emit(f"[AI对话] {action} 结果: {json.dumps(result, ensure_ascii=False)[:200]}")
-        # 同步推到全局日志总线
-        try:
-            from log_bus import log_bus
-            log_bus.emit(f"[AI对话] {action} 结果: {json.dumps(result, ensure_ascii=False)[:200]}")
-        except Exception:
-            pass
         if self.chk_show_thinking.isChecked():
             ok = result.get("ok", False)
             icon = "✅" if ok else "❌"
@@ -570,12 +565,6 @@ class ContextChatTab(QWidget):
     def _on_error(self, msg: str):
         self._append_system(f"❌ 错误: {msg}")
         self.log_signal.emit(f"[AI对话] 错误: {msg}")
-        # 同步推到全局日志总线
-        try:
-            from log_bus import log_bus
-            log_bus.emit(f"[AI对话] 错误: {msg}")
-        except Exception:
-            pass
         self.status_label.setText("❌ 出错")
 
     @Slot()
