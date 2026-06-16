@@ -703,10 +703,8 @@ class ContextChatTab(QWidget):
         if not text:
             return
         if not isinstance(self._backend, OpenAICompatibleBackend) and not hasattr(self._backend, "base_url"):
-            QMessageBox.warning(
-                self, "提示",
-                "当前后端不支持对话(请在「⚙️ 后端」选 OpenAI 兼容协议)。"
-            )
+            self._append_system("⚠️ 当前后端不支持对话，请在「⚙️ 后端」选择 OpenAI 兼容协议并点击应用设置。")
+            self.status_label.setText("⚠️ 后端未就绪")
             return
 
         # 发送前强制同步一次联网开关，避免 UI 勾选状态和模块全局状态不一致

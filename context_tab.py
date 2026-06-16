@@ -711,7 +711,7 @@ class ContextTab(QWidget):
             self._open_mini_chat(None)
             prompt = getattr(intent, "action_param", "") or ""
             if prompt:
-                self.context_chat_tab.send_text(prompt)
+                QTimer.singleShot(150, lambda p=prompt: self.context_chat_tab.send_text(p))
             return
         if hasattr(self, "context_chat_tab"):
             self.context_chat_tab.on_action_executed(intent)
@@ -833,33 +833,9 @@ class ContextTab(QWidget):
 
     # ---- 后端 ----
     def _on_apply_backend(self):
-        if self.backend_combo.currentIndex() == 0:
-            backend = EchoBackend()
-        else:
-            backend = OpenAICompatibleBackend(
-                base_url=self.base_url_input.text().strip(),
-                api_key=self.api_key_input.text().strip(),
-                model=self.model_input.currentText().strip(),
-            )
-        self._agent.set_backend(backend)
-        set_tavily_api_key(self.tavily_key_input.text().strip())
-        # 同步更新 infer timeout
-        try:
-            t = float(self.timeout_spin.value())
-            self._agent._worker._infer_timeout = max(2.0, t)
-        except Exception:
-            pass
-        # 同步更新主动嗅探的问题生成器
-        self._proactive_generator.set_backend(backend)
-        try:
-            self._proactive_generator.set_timeout(float(self.timeout_spin.value()))
-        except Exception:
-            pass
-        # 同步更新 AI 对话页的后端
-        if hasattr(self, "context_chat_tab"):
-            self.context_chat_tab.set_backend(backend)
+        self._apply_backend_from_ui(silent=False)
+        self._save_config()
         QMessageBox.information(self, "应用成功", "AI 后端已切换")
-        self._append_log(f"[后端] 切换到: {type(backend).__name__}")
 
     def _on_test_backend(self):
         backend = OpenAICompatibleBackend(
@@ -990,6 +966,34 @@ class ContextTab(QWidget):
         if hasattr(self, "tavily_key_input"):
             self.tavily_key_input.setText(tavily_key)
         set_tavily_api_key(tavily_key)
+        self._apply_backend_from_ui(silent=True)
+
+    def _apply_backend_from_ui(self, silent: bool = False):
+        if self.backend_combo.currentIndex() == 0:
+            backend = EchoBackend()
+        else:
+            backend = OpenAICompatibleBackend(
+                base_url=self.base_url_input.text().strip(),
+                api_key=self.api_key_input.text().strip(),
+                model=self.model_input.currentText().strip(),
+            )
+        self._agent.set_backend(backend)
+        set_tavily_api_key(self.tavily_key_input.text().strip())
+        try:
+            t = float(self.timeout_spin.value())
+            self._agent._worker._infer_timeout = max(2.0, t)
+        except Exception:
+            pass
+        self._proactive_generator.set_backend(backend)
+        try:
+            self._proactive_generator.set_timeout(float(self.timeout_spin.value()))
+        except Exception:
+            pass
+        if hasattr(self, "context_chat_tab"):
+            self.context_chat_tab.set_backend(backend)
+        if not silent:
+            self._append_log(f"[后端] 切换到: {type(backend).__name__}")
+        return backend
 
     def _save_config(self):
         # 保留 _save_proactive_config 写入的 proactive 段，避免保存后端/规则时把用户档案覆盖掉
