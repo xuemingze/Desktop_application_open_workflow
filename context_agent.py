@@ -14,7 +14,7 @@ import json
 import re
 from typing import Optional
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot, QMetaObject, Q_ARG, Qt
+from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt
 
 from context_sensor import ContextCapsule
 from context_toast import ToastIntent
@@ -151,10 +151,14 @@ class InferenceWorker(QObject):
 
     finished = Signal(ToastIntent)
     skipped = Signal(str)
+    # 外部通过这个信号提交任务——Signal 自动跨线程 queued，避开 Q_ARG(object) 的限制
+    _submit = Signal(object)
 
     def __init__(self, backend: LLMBackend):
         super().__init__()
         self._backend = backend
+        # 将 _submit 信号在 worker 内部连接到 process 槽
+        self._submit.connect(self.process)
 
     @Slot(object)
     def process(self, capsule):
@@ -214,10 +218,9 @@ class ContextAgent(QObject):
         self._thread.start()
 
     def process(self, capsule: ContextCapsule):
-        """主线程入口——把任务 invokeMethod 给 Worker（非阻塞）"""
-        QMetaObject.invokeMethod(
-            self._worker, "process", Qt.QueuedConnection, Q_ARG(object, capsule)
-        )
+        """主线程入口——用 Signal 发送任务给 Worker（跨线程自动 queued，非阻塞）"""
+        # Signal 默认是 queued connection（跨线程），避开 Q_ARG(object) 的 QMetaType 问题
+        self._worker._submit.emit(capsule)
 
     def _on_worker_finished(self, intent: ToastIntent):
         self.intent_ready.emit(intent)
