@@ -193,16 +193,18 @@ class ProcessSensor(QObject):
         self._interval = poll_interval_ms
         self._enabled = False
         self._whitelist = [w.lower() for w in (whitelist or [])]
-        # 已存在进程快照
+        # 已存在进程快照：pid -> name。不能只按进程名，否则同名 helper 还活着时捕捉不到退出。
         self._known = {}
         self._init_snapshot()
 
     def _init_snapshot(self):
         try:
             import psutil
-            self._known = {p.info["name"].lower(): p.info["pid"]
-                          for p in psutil.process_iter(["name", "pid"])
-                          if p.info.get("name")}
+            self._known = {
+                int(p.info["pid"]): p.info["name"].lower()
+                for p in psutil.process_iter(["name", "pid"])
+                if p.info.get("name") and p.info.get("pid") is not None
+            }
         except Exception:
             self._known = {}
 
@@ -232,21 +234,22 @@ class ProcessSensor(QObject):
         current = {}
         for p in psutil.process_iter(["name", "pid"]):
             name = (p.info.get("name") or "").lower()
-            if not name:
+            pid = p.info.get("pid")
+            if not name or pid is None:
                 continue
             if self._whitelist and name not in self._whitelist:
                 continue
-            current[name] = p.info["pid"]
+            current[int(pid)] = name
 
         # 新进程（启动）
-        for name, pid in current.items():
-            if name not in self._known:
+        for pid, name in current.items():
+            if pid not in self._known:
                 self._emit_event("started", name, pid)
 
         # 已退出
-        for name in self._known:
-            if name not in current:
-                self._emit_event("exited", name, self._known[name])
+        for pid, name in self._known.items():
+            if pid not in current:
+                self._emit_event("exited", name, pid)
 
         self._known = current
 

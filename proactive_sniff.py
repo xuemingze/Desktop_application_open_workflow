@@ -496,6 +496,15 @@ class BehaviorInterestMatcher(QObject):
         file_path = getattr(capsule, "file_path", "") or ""
         clipboard_text = getattr(capsule, "clipboard_text", "") or ""
 
+        # 进程退出时，真实 exe 名可能不包含兴趣关键词（例如窗口叫“异环”，exe 叫 xxx.exe）。
+        # 如果之前由窗口命中登记过这个 exe，则直接触发退出陪伴。
+        if source == "process" and event_type == "exited":
+            proc_key = self._session_key(process_name)
+            if proc_key in self._active_sessions:
+                session = self._active_sessions.get(proc_key, {})
+                self._fire_process_exit_companion(session.get("keyword", process_name), process_name)
+                return
+
         candidates = [
             ("process", process_name),
             ("window", window_title),
@@ -531,13 +540,15 @@ class BehaviorInterestMatcher(QObject):
                 elif source == "process" and event_type == "exited":
                     self._fire_process_exit_companion(kw, matched_text)
                 else:
+                    if source == "window" and window_app:
+                        self._mark_active_session(window_app, kw, display_name=matched_text)
                     self._fire_behavior_question(kw, matched_text, source, event_type, matched_kind)
                 break  # 一次只触发一个关键词
 
     def _session_key(self, matched_text: str) -> str:
         return (matched_text or "").lower().strip()
 
-    def _mark_active_session(self, matched_text: str, keyword: str):
+    def _mark_active_session(self, matched_text: str, keyword: str, display_name: str | None = None):
         key = self._session_key(matched_text)
         if not key:
             return
@@ -546,9 +557,10 @@ class BehaviorInterestMatcher(QObject):
             "start": now,
             "last_reminder": 0.0,
             "keyword": keyword,
-            "name": matched_text,
+            "name": display_name or matched_text,
+            "process": matched_text,
         }
-        self.log_signal.emit(f"[行为触发] 开始记录 {matched_text} 使用时长")
+        self.log_signal.emit(f"[行为触发] 开始记录 {display_name or matched_text} 使用时长（进程: {matched_text}）")
 
     def _duration_text(self, seconds: float) -> str:
         seconds = max(0, int(seconds))
@@ -571,13 +583,14 @@ class BehaviorInterestMatcher(QObject):
         key = self._session_key(matched_text)
         session = self._active_sessions.pop(key, None)
         duration = self._duration_text(time.time() - session["start"]) if session else "刚刚一会儿"
+        display = (session or {}).get("name") or matched_text
         templates = [
-            f"{matched_text} 关掉啦，刚才玩了 {duration}。要不要休息一下眼睛，聊点别的？",
-            f"收工～{matched_text} 这轮大概用了 {duration}。想再干点什么，还是和我聊聊玩的？",
-            f"你刚退出 {matched_text}，可以活动一下肩颈、看看远处。想聊聊刚才玩的内容吗？",
+            f"{display} 关掉啦，刚才玩了 {duration}。要不要休息一下眼睛，聊点别的？",
+            f"收工～{display} 这轮大概用了 {duration}。想再干点什么，还是和我聊聊玩的？",
+            f"你刚退出 {display}，可以活动一下肩颈、看看远处。想聊聊刚才玩的内容吗？",
         ]
         text = random.choice(templates)
-        self.log_signal.emit(f"[行为触发] 进程退出陪伴: {matched_text} / {duration} → {text}")
+        self.log_signal.emit(f"[行为触发] 进程退出陪伴: {display} / {duration} → {text}")
         self._append_companion_question(text, category="hobby")
 
     def _check_rest_reminders(self):
