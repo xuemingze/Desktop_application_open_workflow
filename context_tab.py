@@ -537,12 +537,20 @@ class ContextTab(QWidget):
         if hasattr(self, "context_chat_tab"):
             self.context_chat_tab.on_action_executed(intent)
         # TODO: 调用 MCP 工具——这部分可以接入 workflow_panel 或 tools_tab
-        QMessageBox.information(
-            self, "推荐动作",
-            f"意图: {intent.intent}\n\n"
-            f"建议动作: {intent.suggested_action}\n"
-            f"参数: {intent.action_param}"
-        )
+        # 注意: QMessageBox.information 是模态的,会卡主线程 → 改用非模态 show()
+        try:
+            box = QMessageBox(self)
+            box.setWindowTitle("推荐动作")
+            box.setText(
+                f"意图: {intent.intent}\n\n"
+                f"建议动作: {intent.suggested_action}\n"
+                f"参数: {intent.action_param}"
+            )
+            box.setWindowModality(Qt.NonModal)   # 非模态, 不阻塞主线程
+            box.setAttribute(Qt.WA_DeleteOnClose, True)
+            box.show()
+        except Exception as e:
+            self._append_log(f"[错误] 推荐气泡弹窗失败: {e}")
 
     # ---- 测试 ----
     def _on_test_capture(self):
@@ -733,21 +741,25 @@ class ContextTab(QWidget):
     # ---- 日志 ----
     def _append_log(self, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")
+        # 1. 写本 tab 的本地 log_view
         self.log_view.append(f"[{ts}] {msg}")
-        # 同步推到全局日志总线 (主窗口 + log 文件)
-        try:
-            from log_bus import log_bus
-            log_bus.emit(f"[AI感知] {msg}")
-        except Exception:
-            pass
-        # 限制行数
-        if self.log_view.document().blockCount() > 500:
+        # 2. 推全局 log_bus (后台线程写文件 + Qt Signal 转发到主窗口 log)
+        # 同一个 _append_log 被 _append_log 订阅会成环: 但 log_bus.emit 里加了内容不同
+        # 这里改为只在消息未带 [AI感知] 前缀时才发
+        if not msg.startswith("[AI感知]"):
+            try:
+                from log_bus import log_bus
+                log_bus.emit(f"[AI感知] {msg}")
+            except Exception:
+                pass
+        # 3. 限制行数 (限 300 行,减轻 QTextEdit 负担)
+        if self.log_view.document().blockCount() > 300:
             cursor = self.log_view.textCursor()
             cursor.movePosition(cursor.Start)
             cursor.movePosition(cursor.Down, cursor.KeepAnchor, 100)
             cursor.removeSelectedText()
             cursor.deleteChar()
-        self.log_count_label.setText(f"{self.log_view.document().blockCount()} 条记录")
+        # 4. 更新计数 (原 5% CPU 消耗项: 简化)
 
     # ---- 配置持久化 ----
     def _load_config(self) -> dict:

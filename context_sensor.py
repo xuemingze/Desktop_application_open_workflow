@@ -89,12 +89,12 @@ class ClipboardSensor(QObject):
 class WindowSensor(QObject):
     """前台窗口切换监听——Windows API + Qt 定时器
 
-    默认 1 秒轮询一次。可以降低间隔但会增加 CPU。
+    默认 2 秒轮询一次 (过低会卡主线程, 过高反应慢)。
     """
 
     captured = Signal(object)
 
-    def __init__(self, poll_interval_ms: int = 1000):
+    def __init__(self, poll_interval_ms: int = 2000):
         super().__init__()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._poll)
