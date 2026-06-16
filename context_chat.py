@@ -653,6 +653,11 @@ class ContextChatTab(QWidget):
         self.chk_keep_history.setChecked(True)
         ctrl_row.addWidget(self.chk_keep_history)
 
+        self.chk_show_proactive_push = QCheckBox("显示主动推送")
+        self.chk_show_proactive_push.setChecked(False)
+        self.chk_show_proactive_push.setToolTip("关闭后，气泡主动推荐不会自动同步到 AI 对话记录")
+        ctrl_row.addWidget(self.chk_show_proactive_push)
+
         self.chk_log_toast_actions = QCheckBox("记录气泡点击动作")
         self.chk_log_toast_actions.setChecked(False)
         self.chk_log_toast_actions.setToolTip("关闭后，点击气泡不会在 AI 对话里追加“点击了气泡/已接受推荐”等动作说明")
@@ -819,6 +824,8 @@ class ContextChatTab(QWidget):
         intent 是 context_toast.ToastIntent,有 intent/message/suggested_action/action_param
         """
         try:
+            if not getattr(self, "chk_show_proactive_push", None) or not self.chk_show_proactive_push.isChecked():
+                return
             msg = getattr(intent, "message", "") or ""
             sug = getattr(intent, "suggested_action", "") or ""
             param = getattr(intent, "action_param", "") or ""
