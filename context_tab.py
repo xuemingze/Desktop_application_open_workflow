@@ -703,9 +703,26 @@ class ContextTab(QWidget):
         self._learning_toast_timers[rule_name] = timer
         timer.start(900)
 
+    def _inject_toast_context(self, intent: ToastIntent):
+        if not hasattr(self, "context_chat_tab"):
+            return
+        msg = getattr(intent, "message", "") or ""
+        tag = getattr(intent, "intent", "") or ""
+        action = getattr(intent, "suggested_action", "") or ""
+        param = getattr(intent, "action_param", "") or ""
+        ctx = (
+            "用户刚点击了一个桌面主动气泡。请把它当作当前对话上文，不要说你不知道气泡内容。\n"
+            f"气泡类型: {tag}\n"
+            f"气泡内容: {msg}\n"
+            f"建议动作: {action}\n"
+            f"动作参数: {param[:1000]}"
+        )
+        self.context_chat_tab.add_next_context(ctx)
+
     def _on_toast_clicked(self, intent: ToastIntent):
         """用户点击了气泡 → 打开小聊天窗，并同步 AI 对话标签页记录"""
         self._append_log(f"[点击] 用户点击气泡: {intent.suggested_action}({intent.action_param})")
+        self._inject_toast_context(intent)
         # 学习规则点击后只发送一条真实 AI 请求，不再额外追加“已接受推荐/点击气泡”两段记录
         if getattr(intent, "suggested_action", "") == "ai_prompt" and hasattr(self, "context_chat_tab"):
             self._open_mini_chat(None)

@@ -598,6 +598,7 @@ class ContextChatTab(QWidget):
         self._history: list[dict] = []        # 对话历史 [{role, content}]
         self._worker: Optional[ChatWorker] = None
         self._pending_user_msg: str = ""
+        self._next_context: list[dict] = []   # 点击气泡后注入给下一轮 AI 的隐藏上下文
         self._max_history = 20               # 保留最近 20 轮
         self._build_ui()
 
@@ -700,6 +701,15 @@ class ContextChatTab(QWidget):
         self._backend = backend
 
     # ---- 用户发送 ----
+    def add_next_context(self, content: str):
+        """为下一次用户发送注入隐藏上下文，不强制显示到聊天记录。"""
+        content = (content or "").strip()
+        if not content:
+            return
+        self._next_context.append({"role": "system", "content": content[:2000]})
+        # 防止堆积过多
+        self._next_context = self._next_context[-5:]
+
     def send_text(self, text: str):
         """外部小聊天窗调用：复用主 AI 对话页的同一套发送/历史链路。"""
         if text:
@@ -730,10 +740,16 @@ class ContextChatTab(QWidget):
         self.btn_send.setEnabled(False)
         self.status_label.setText("⏳ AI 思考中...")
 
-        # 启动 worker
+        # 启动 worker。气泡上下文只注入下一轮，即使不保留历史也要带上。
+        history_for_worker = []
+        if self.chk_keep_history.isChecked():
+            history_for_worker.extend(list(self._history))
+        if self._next_context:
+            history_for_worker.extend(self._next_context)
+            self._next_context = []
         self._worker = ChatWorker(
             backend=self._backend,
-            history=list(self._history) if self.chk_keep_history.isChecked() else [],
+            history=history_for_worker,
             user_msg=text,
             web_enabled=self.chk_web.isChecked(),
         )

@@ -450,6 +450,7 @@ class BehaviorInterestMatcher(QObject):
         # 冷却字典：{keyword: 上次触发时间戳}
         self._cooldown: dict[str, float] = {}
         self._cooldown_seconds = 300  # 5 分钟冷却
+        self._duplicate_question_window_seconds = 20 * 60  # “近期已问过”窗口: 20 分钟
         self._enabled = False
         self._active_sessions: dict[str, dict] = {}
         self._rest_reminder_after_seconds = 45 * 60
@@ -612,10 +613,13 @@ class BehaviorInterestMatcher(QObject):
 
     def _fire_behavior_question(self, keyword: str, matched_text: str, source: str = "", event_type: str = "", matched_kind: str = ""):
         """触发一次行为相关问题生成"""
-        # 去重检查
+        # 去重检查：只看最近 20 分钟，避免一个关键词今天问过一次后整天不再触发
+        now = time.time()
         for prev in list(self._history)[-10:]:
+            if now - getattr(prev, "timestamp", 0) > self._duplicate_question_window_seconds:
+                continue
             if keyword.lower() in prev.text.lower():
-                self.log_signal.emit(f"[行为触发] {keyword} 近期已问过，跳过")
+                self.log_signal.emit(f"[行为触发] {keyword} 20 分钟内已问过，跳过")
                 return
 
         event_desc = ""
