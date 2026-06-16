@@ -99,7 +99,7 @@ class ContextTab(QWidget):
         self._mini_chat_dialog = None
         # 主动嗅探
         self._proactive_history = deque(maxlen=100)
-        self._proactive_generator = QuestionGenerator(self._agent._backend)
+        self._proactive_generator = QuestionGenerator(self._agent._backend, timeout=15.0)
         self._proactive_scheduler = ProactiveScheduler(
             self._proactive_generator, self._proactive_history, parent=self
         )
@@ -737,6 +737,10 @@ class ContextTab(QWidget):
             pass
         # 同步更新主动嗅探的问题生成器
         self._proactive_generator.set_backend(backend)
+        try:
+            self._proactive_generator.set_timeout(float(self.timeout_spin.value()))
+        except Exception:
+            pass
         # 同步更新 AI 对话页的后端
         if hasattr(self, "context_chat_tab"):
             self.context_chat_tab.set_backend(backend)

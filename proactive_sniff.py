@@ -160,8 +160,12 @@ class UserProfile:
 class QuestionGenerator:
     """问题生成器——用 AI 后端生成朋友式问题"""
 
-    def __init__(self, backend: LLMBackend):
+    def __init__(self, backend: LLMBackend, timeout: float = 15.0):
         self._backend = backend
+        self._timeout = timeout
+
+    def set_timeout(self, timeout: float):
+        self._timeout = max(2.0, float(timeout))
 
     def set_backend(self, backend: LLMBackend):
         """热替换后端"""
@@ -176,8 +180,8 @@ class QuestionGenerator:
             now=datetime.now().strftime("%Y-%m-%d %H:%M"),
         )
 
-        # 简短 user 消息触发即可
-        raw = self._backend.infer(sys_prompt, "请生成一个问题")
+        # 简短 user 消息触发即可。主动嗅探也使用较长超时，避免云端模型 5s 内未返回被误判无响应。
+        raw = self._backend.infer(sys_prompt, "请生成一个问题", timeout=self._timeout)
         if not raw:
             return None
 
@@ -205,7 +209,7 @@ class QuestionGenerator:
             now=datetime.now().strftime("%Y-%m-%d %H:%M"),
         )
 
-        raw = self._backend.infer(sys_prompt, f"用户行为：【{detected_topic}】，基于此生成一个问题")
+        raw = self._backend.infer(sys_prompt, f"用户行为：【{detected_topic}】，基于此生成一个问题", timeout=self._timeout)
         if not raw:
             return None
 
@@ -533,6 +537,7 @@ class BehaviorInterestMatcher(QObject):
             event_desc = "文件变化"
         detected_topic = f"{event_desc}{matched_text}（命中关键词：{keyword}）" if event_desc else f"{matched_text}（命中关键词：{keyword}）"
 
+        self.log_signal.emit(f"[行为触发] 开始生成问题（超时 {getattr(self._generator, '_timeout', 15)}s）: {detected_topic}")
         q = self._generator.generate_behavior_question(
             detected_topic, self._profile, list(self._history)
         )
