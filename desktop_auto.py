@@ -256,12 +256,13 @@ import pyperclip
 import win32com.client
 from PIL import Image
 from PySide6.QtCore import Qt, QRect, QPoint, QThread, Signal
-from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QGuiApplication
+from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QGuiApplication, QAction, QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QListWidget, QListWidgetItem, QLabel, QTextEdit,
     QFileDialog, QMessageBox, QStatusBar, QGroupBox, QRadioButton,
-    QButtonGroup, QCheckBox, QSpinBox, QLineEdit, QComboBox, QInputDialog
+    QButtonGroup, QCheckBox, QSpinBox, QLineEdit, QComboBox, QInputDialog,
+    QSystemTrayIcon, QMenu
 )
 
 # ---------------------------------------------------------------------------
@@ -1471,6 +1472,14 @@ class MainWindow(QMainWindow):
         self.refresh_shortcuts()
         self._start_ipc_server()
 
+        # ---- 系统托盘 ----
+        self._tray_icon: Optional[QSystemTrayIcon] = None
+        self._tray_menu: Optional[QMenu] = None
+        self._truly_quit = False  # 区分"隐藏到托盘"和"真正退出"
+        self._setup_system_tray()
+        # 加载窗口状态(位置/大小/是否默认后台)
+        self._load_window_state()
+
     # ---- 7.1 日志桥接 ----
     def _append_log(self, msg: str) -> None:
         self.log_view.append(msg)
@@ -1515,6 +1524,27 @@ class MainWindow(QMainWindow):
             pass
 
     def closeEvent(self, event) -> None:
+        # 如果有托盘,且不是真正退出,则隐藏到托盘
+        if self._tray_icon and self._tray_icon.isVisible() and not self._truly_quit:
+            event.ignore()
+            self.hide()
+            if self._tray_icon and not self._tray_icon.supportsMessages() is False:
+                pass
+            # 首次隐藏给个气泡提示
+            if not getattr(self, "_tray_hint_shown", False):
+                self._tray_hint_shown = True
+                try:
+                    self._tray_icon.showMessage(
+                        "桌面自动化助手",
+                        "已最小化到托盘，双击图标可恢复窗口。",
+                        QSystemTrayIcon.Information,
+                        3000,
+                    )
+                except Exception:
+                    pass
+            return
+        # 真正退出:清理资源
+        self._save_window_state()
         if self.ipc_server:
             self.ipc_server.stop()
             self.ipc_server.wait(1000)
@@ -1524,7 +1554,140 @@ class MainWindow(QMainWindow):
                 self.context_tab.shutdown()
         except Exception:
             pass
+        if self._tray_icon:
+            try:
+                self._tray_icon.hide()
+            except Exception:
+                pass
         super().closeEvent(event)
+
+    # ---- 系统托盘 ----
+    def _setup_system_tray(self) -> None:
+        """初始化系统托盘图标 + 右键菜单"""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self._append_log("[托盘] 系统不支持托盘图标,跳过初始化")
+            return
+
+        # 使用 app_icon.ico
+        icon_path = Path(__file__).parent / "app_icon.ico"
+        icon = QIcon(str(icon_path)) if icon_path.exists() else self.windowIcon()
+        self._tray_icon = QSystemTrayIcon(icon, self)
+        self._tray_icon.setToolTip("桌面自动化助手")
+
+        # 右键菜单
+        self._tray_menu = QMenu()
+
+        act_show = QAction("📖  显示主界面", self)
+        act_show.triggered.connect(self._show_from_tray)
+        self._tray_menu.addAction(act_show)
+
+        act_hide = QAction("🙈  隐藏到托盘", self)
+        act_hide.triggered.connect(self.hide)
+        self._tray_menu.addAction(act_hide)
+
+        self._tray_menu.addSeparator()
+
+        # 启动 MCP server
+        act_mcp = QAction("🤖  启动/重启 MCP Server", self)
+        act_mcp.triggered.connect(self._tray_start_mcp)
+        self._tray_menu.addAction(act_mcp)
+
+        # 打开工具页
+        act_tools = QAction("🔧  打开【工具】页", self)
+        act_tools.triggered.connect(self._tray_open_tools)
+        self._tray_menu.addAction(act_tools)
+
+        self._tray_menu.addSeparator()
+
+        act_quit = QAction("❌  退出", self)
+        act_quit.triggered.connect(self._truly_quit_app)
+        self._tray_menu.addAction(act_quit)
+
+        self._tray_icon.setContextMenu(self._tray_menu)
+
+        # 双击恢复窗口
+        self._tray_icon.activated.connect(self._on_tray_activated)
+        # 左键单击在 Windows 上是 ActivationReason.Trigger, 也会调 activated
+        self._tray_icon.show()
+        self._append_log("[托盘] 系统托盘图标已启用")
+
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        """双击托盘图标 → 恢复窗口"""
+        if reason in (QSystemTrayIcon.DoubleClick, QSystemTrayIcon.Trigger):
+            # Trigger(单击)仅在已隐藏时恢复,避免抢占用户焦点
+            if not self.isVisible():
+                self._show_from_tray()
+            elif reason == QSystemTrayIcon.DoubleClick:
+                self._show_from_tray()
+
+    def _show_from_tray(self) -> None:
+        """从托盘恢复主窗口"""
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        try:
+            import win32gui, win32con
+            hwnd = int(self.winId())
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+
+    def _truly_quit_app(self) -> None:
+        """从托盘菜单真正退出应用"""
+        self._truly_quit = True
+        self._append_log("[系统] 退出程序...")
+        QApplication.quit()
+
+    def _tray_start_mcp(self) -> None:
+        """从托盘启动 MCP server(委托给 tools_tab)"""
+        if hasattr(self, "tools_tab") and self.tools_tab:
+            self.tools_tab._start_mcp_server()
+            # 切换到工具页并显示窗口
+            self._show_from_tray()
+
+    def _tray_open_tools(self) -> None:
+        """从托盘打开【工具】页"""
+        self._show_from_tray()
+        if hasattr(self, "right_tabs"):
+            from PySide6.QtWidgets import QTabWidget
+            for w in self.findChildren(QTabWidget):
+                if w is self.right_tabs:
+                    for i in range(w.count()):
+                        if "工具" in w.tabText(i):
+                            w.setCurrentIndex(i)
+                            return
+
+    # ---- 窗口状态持久化 ----
+    def _window_state_path(self) -> Path:
+        return RUNTIME_DIR / "window_state.json"
+
+    def _load_window_state(self) -> None:
+        """加载窗口位置/大小/默认后台运行设置"""
+        path = self._window_state_path()
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text("utf-8"))
+        except Exception:
+            return
+        geom = data.get("geometry")
+        if isinstance(geom, list) and len(geom) == 4:
+            try:
+                self.setGeometry(geom[0], geom[1], geom[2], geom[3])
+            except Exception:
+                pass
+
+    def _save_window_state(self) -> None:
+        """保存窗口位置/大小"""
+        try:
+            geom = [self.x(), self.y(), self.width(), self.height()]
+            self._window_state_path().write_text(
+                json.dumps({"geometry": geom}, ensure_ascii=False, indent=2),
+                "utf-8",
+            )
+        except Exception:
+            pass
 
     def _capture_coord_for_quick(self):
         """快速启动面板的坐标捕捉: Win+D 显示桌面 -> 3秒倒计时 -> 捕捉"""
@@ -2028,6 +2191,9 @@ def main() -> int:
 
     app = QApplication(sys.argv)
     app.setApplicationName("桌面自动化助手")
+    # 如果托盘可用,不要在最后一个窗口关闭时退出应用(避免关闭主窗口后进程退出)
+    if QSystemTrayIcon.isSystemTrayAvailable():
+        app.setQuitOnLastWindowClosed(False)
     # 设置应用图标
     icon_path = Path(__file__).parent / "app_icon.ico"
     if icon_path.exists():
@@ -2045,8 +2211,28 @@ def main() -> int:
     """)
 
     win = MainWindow()
-    win.show()
+    # 判断是否需要默认后台运行
+    start_in_background = "--background" in sys.argv or _is_default_background()
+    if not start_in_background:
+        win.show()
+    else:
+        # 后台运行: 不显示窗口,仅托盘图标
+        win._tray_hint_shown = True  # 跳过“已隐藏”提示
+        # 仍是创建窗口,只是不 showNormal;需要时 _show_from_tray 会显示
+        print("[启动] 默认后台运行,窗口已隐藏,可在托盘恢复")
     return app.exec()
+
+
+def _is_default_background() -> bool:
+    """检查 config.json 中是否设置了默认后台运行"""
+    cfg_path = RUNTIME_DIR / "config.json"
+    if not cfg_path.exists():
+        return False
+    try:
+        data = json.loads(cfg_path.read_text("utf-8"))
+        return bool(data.get("start_in_background", False))
+    except Exception:
+        return False
 
 
 def _run_mcp_only() -> int:

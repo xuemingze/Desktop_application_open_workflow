@@ -46,6 +46,7 @@ hiddenimports = [
     'mcp.client.session',
     'mcp_embedded',
     'mcp_patch',
+    'autostart',
     'jsonschema_specifications',
     'jsonschema_specifications._core',
     'referencing',
@@ -68,6 +69,7 @@ datas = [
     ('image_match.py', '.'),
     ('mcp_embedded.py', '.'),
     ('mcp_patch.py', '.'),
+    ('autostart.py', '.'),
     ('workflows.json', '.'),
     ('samples', 'samples'),
     ('app_icon.ico', '.'),  # 应用图标

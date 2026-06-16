@@ -5,7 +5,8 @@
 包含:
 - MCP Server 控制 (启动/停止)
 - MCP Server 工具简介
-- (后续可扩展: 配置导入/导出、日志查看等)
+- 系统设置 (开机启动 / 默认后台运行)
+- 启动器信息 (桌面快捷方式)
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ if sys.platform == "win32":
         pass
 
 import os
+import json
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -27,8 +29,27 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QGroupBox, QTextEdit, QFrame, QScrollArea
+    QGroupBox, QTextEdit, QFrame, QScrollArea, QCheckBox, QMessageBox
 )
+
+# 复用父项目的运行时目录解析
+try:
+    from desktop_auto import RUNTIME_DIR
+except Exception:
+    RUNTIME_DIR = Path(__file__).parent
+
+# 开机启动管理
+try:
+    from autostart import (
+        is_autostart_enabled, enable_autostart, disable_autostart,
+        get_autostart_command,
+    )
+    _AUTOSTART_OK = True
+except Exception:
+    _AUTOSTART_OK = False
+
+
+CONFIG_FILE = RUNTIME_DIR / "config.json"
 
 
 # 5 个 MCP 工具的简介
@@ -100,6 +121,9 @@ class ToolsTab(QWidget):
         iv.setContentsMargins(4, 4, 4, 4)
         iv.setSpacing(10)
 
+        # ===== 系统设置 (开机启动 / 后台运行) =====
+        iv.addWidget(self._build_system_box())
+
         # ===== MCP Server 控制 =====
         iv.addWidget(self._build_mcp_box())
 
@@ -111,6 +135,80 @@ class ToolsTab(QWidget):
 
         iv.addStretch()
         layout.addWidget(scroll)
+
+    def _build_system_box(self) -> QGroupBox:
+        """系统设置：开机启动 + 默认后台运行"""
+        gb = QGroupBox("⚙️ 系统设置")
+        v = QVBoxLayout(gb)
+        v.setContentsMargins(10, 6, 10, 10)
+        v.setSpacing(8)
+
+        # 开机启动
+        self.chk_autostart = QCheckBox("✅ 开机自动启动 (登录后自动后台运行)")
+        self.chk_autostart.setStyleSheet("font-weight: bold; font-size: 12px; padding: 4px;")
+        self.chk_autostart.toggled.connect(self._on_autostart_toggle)
+        v.addWidget(self.chk_autostart)
+
+        self.lbl_autostart_status = QLabel("状态: 检测中...")
+        self.lbl_autostart_status.setStyleSheet("color: #666; font-size: 11px; padding: 0 8px 4px 24px;")
+        self.lbl_autostart_status.setWordWrap(True)
+        v.addWidget(self.lbl_autostart_status)
+
+        # 分割线
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        line.setStyleSheet("color: #e5e7eb;")
+        v.addWidget(line)
+
+        # 默认后台运行
+        self.chk_start_bg = QCheckBox("🫥 启动时默认后台运行 (不显示窗口,仅托盘图标)")
+        self.chk_start_bg.setStyleSheet("font-weight: bold; font-size: 12px; padding: 4px;")
+        self.chk_start_bg.toggled.connect(self._on_start_bg_toggle)
+        v.addWidget(self.chk_start_bg)
+
+        self.lbl_start_bg_status = QLabel("状态: 检测中...")
+        self.lbl_start_bg_status.setStyleSheet("color: #666; font-size: 11px; padding: 0 8px 4px 24px;")
+        self.lbl_start_bg_status.setWordWrap(True)
+        v.addWidget(self.lbl_start_bg_status)
+
+        # 分割线
+        line2 = QFrame()
+        line2.setFrameShape(QFrame.HLine)
+        line2.setFrameShadow(QFrame.Sunken)
+        line2.setStyleSheet("color: #e5e7eb;")
+        v.addWidget(line2)
+
+        # 测试/立即隐藏按钮
+        btn_row = QHBoxLayout()
+        self.btn_hide_to_tray = QPushButton("🫥  立即隐藏到托盘")
+        self.btn_hide_to_tray.setStyleSheet(
+            "QPushButton { padding: 6px 10px; }"
+            "QPushButton:hover { background:#e0e7ff; }"
+        )
+        self.btn_hide_to_tray.clicked.connect(self._hide_main_to_tray)
+        btn_row.addWidget(self.btn_hide_to_tray)
+
+        self.btn_refresh_sys = QPushButton("🔄  刷新状态")
+        self.btn_refresh_sys.setStyleSheet("padding: 6px 10px;")
+        self.btn_refresh_sys.clicked.connect(self._refresh_system_status)
+        btn_row.addWidget(self.btn_refresh_sys)
+
+        btn_row.addStretch()
+        v.addLayout(btn_row)
+
+        # 提示
+        hint = QLabel(
+            "💡 提示：关闭窗口后会最小化到托盘；右键托盘图标可“退出”。\n"
+            "   如需开机启动会写入 HKCU 注册表项 (无需管理员权限)。"
+        )
+        hint.setStyleSheet("color: #888; font-size: 11px; padding: 4px 0 0 0;")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+
+        # 延迟加载状态 (等 QApplication 完成初始化后)
+        QTimer.singleShot(300, self._refresh_system_status)
+        return gb
 
     def _build_mcp_box(self) -> QGroupBox:
         """MCP Server 控制区"""
@@ -277,6 +375,106 @@ class ToolsTab(QWidget):
         lv.addLayout(btn_row)
 
         return lb
+
+    # ------------------------------------------------------------------
+    # 系统设置：开机启动 / 默认后台运行
+    # ------------------------------------------------------------------
+    def _load_global_config(self) -> dict:
+        """加载全局 config.json"""
+        if not CONFIG_FILE.exists():
+            return {}
+        try:
+            return json.loads(CONFIG_FILE.read_text("utf-8"))
+        except Exception:
+            return {}
+
+    def _save_global_config(self, data: dict) -> None:
+        """保存全局 config.json"""
+        try:
+            CONFIG_FILE.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                "utf-8",
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "提示", f"保存配置失败:\n{e}")
+
+    def _refresh_system_status(self) -> None:
+        """刷新开机启动 / 后台运行 状态显示"""
+        # 开机启动
+        if _AUTOSTART_OK:
+            enabled = is_autostart_enabled()
+            self.chk_autostart.blockSignals(True)
+            self.chk_autostart.setChecked(enabled)
+            self.chk_autostart.blockSignals(False)
+            if enabled:
+                cmd = get_autostart_command() or ""
+                self.lbl_autostart_status.setText(
+                    f"状态: ✅ 已启用 (启动项: HKCU\\...\\Run\\DesktopAutoAssistant)\n命令: {cmd}"
+                )
+                self.lbl_autostart_status.setStyleSheet("color: #16a34a; font-size: 11px; padding: 0 8px 4px 24px;")
+            else:
+                self.lbl_autostart_status.setText("状态: ❌ 未启用 (勾选上面复选框以启用开机启动)")
+                self.lbl_autostart_status.setStyleSheet("color: #666; font-size: 11px; padding: 0 8px 4px 24px;")
+        else:
+            self.chk_autostart.setEnabled(False)
+            self.lbl_autostart_status.setText("状态: ⚠️ autostart 模块不可用")
+            self.lbl_autostart_status.setStyleSheet("color: #d97706; font-size: 11px; padding: 0 8px 4px 24px;")
+
+        # 默认后台运行
+        cfg = self._load_global_config()
+        bg = bool(cfg.get("start_in_background", False))
+        self.chk_start_bg.blockSignals(True)
+        self.chk_start_bg.setChecked(bg)
+        self.chk_start_bg.blockSignals(False)
+        if bg:
+            self.lbl_start_bg_status.setText(
+                "状态: ✅ 启用 - 下次启动时默认仅托盘运行,窗口隐藏\n"
+                "  提示: 仍然可以双击托盘图标恢复窗口"
+            )
+            self.lbl_start_bg_status.setStyleSheet("color: #16a34a; font-size: 11px; padding: 0 8px 4px 24px;")
+        else:
+            self.lbl_start_bg_status.setText("状态: ❌ 未启用 - 下次启动会显示主窗口")
+            self.lbl_start_bg_status.setStyleSheet("color: #666; font-size: 11px; padding: 0 8px 4px 24px;")
+
+    def _on_autostart_toggle(self, checked: bool) -> None:
+        """开关 开机启动"""
+        if not _AUTOSTART_OK:
+            QMessageBox.warning(self, "提示", "autostart 模块不可用")
+            return
+        if checked:
+            ok, msg = enable_autostart()
+        else:
+            ok, msg = disable_autostart()
+        # 显示结果到状态标签
+        if ok:
+            self.lbl_autostart_status.setText(f"状态: {msg}")
+            self.lbl_autostart_status.setStyleSheet("color: #16a34a; font-size: 11px; padding: 0 8px 4px 24px;")
+        else:
+            self.lbl_autostart_status.setText(f"状态: {msg}")
+            self.lbl_autostart_status.setStyleSheet("color: #dc2626; font-size: 11px; padding: 0 8px 4px 24px;")
+            # 失败时恢复勾选状态
+            self.chk_autostart.blockSignals(True)
+            self.chk_autostart.setChecked(not checked)
+            self.chk_autostart.blockSignals(False)
+            QMessageBox.warning(self, "提示", msg)
+        # 刷新状态
+        QTimer.singleShot(100, self._refresh_system_status)
+
+    def _on_start_bg_toggle(self, checked: bool) -> None:
+        """开关 默认后台运行"""
+        cfg = self._load_global_config()
+        cfg["start_in_background"] = bool(checked)
+        self._save_global_config(cfg)
+        QTimer.singleShot(100, self._refresh_system_status)
+
+    def _hide_main_to_tray(self) -> None:
+        """点击 “立即隐藏到托盘” 按钮"""
+        main_win = self.window()
+        if main_win is None or not isinstance(main_win, QWidget):
+            QMessageBox.information(self, "提示", "找不到主窗口")
+            return
+        # 触发 closeEvent (会隐藏到托盘)
+        main_win.close()
 
     # ------------------------------------------------------------------
     # MCP Server 控制
