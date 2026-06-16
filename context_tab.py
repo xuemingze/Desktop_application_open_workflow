@@ -95,7 +95,7 @@ class ContextTab(QWidget):
         self._sensor_manager = ContextSensorManager()
         self._gatekeeper = Gatekeeper()
         self._toast_manager = ToastManager(self)
-        self._agent = ContextAgent(backend=EchoBackend(), parent=self)
+        self._agent = ContextAgent(backend=EchoBackend(), parent=self, infer_timeout=15.0)
         # 主动嗅探
         self._proactive_history = deque(maxlen=100)
         self._proactive_generator = QuestionGenerator(self._agent._backend)
@@ -342,8 +342,8 @@ class ContextTab(QWidget):
         f.addRow("Model:", self.model_input)
 
         self.timeout_spin = QSpinBox()
-        self.timeout_spin.setRange(1, 60)
-        self.timeout_spin.setValue(5)
+        self.timeout_spin.setRange(2, 120)
+        self.timeout_spin.setValue(15)
         self.timeout_spin.setSuffix(" 秒")
         f.addRow("超时:", self.timeout_spin)
 
@@ -647,6 +647,12 @@ class ContextTab(QWidget):
                 model=self.model_input.currentText().strip(),
             )
         self._agent.set_backend(backend)
+        # 同步更新 infer timeout
+        try:
+            t = float(self.timeout_spin.value())
+            self._agent._worker._infer_timeout = max(2.0, t)
+        except Exception:
+            pass
         # 同步更新主动嗅探的问题生成器
         self._proactive_generator.set_backend(backend)
         # 同步更新 AI 对话页的后端

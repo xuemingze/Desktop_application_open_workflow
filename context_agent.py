@@ -136,7 +136,10 @@ class OpenAICompatibleBackend(LLMBackend):
             if not choices:
                 return None
             return choices[0].get("message", {}).get("content")
-        except Exception:
+        except Exception as e:
+            # 关键: 不要把异常吞了,让调用方知道原因
+            import traceback as _tb
+            print(f"[OpenAICompat] 推理失败: {type(e).__name__}: {e}\n{_tb.format_exc()}", file=__import__('sys').stderr)
             return None
 
 
@@ -154,9 +157,10 @@ class InferenceWorker(QObject):
     # 外部通过这个信号提交任务——Signal 自动跨线程 queued，避开 Q_ARG(object) 的限制
     _submit = Signal(object)
 
-    def __init__(self, backend: LLMBackend):
+    def __init__(self, backend: LLMBackend, infer_timeout: float = 15.0):
         super().__init__()
         self._backend = backend
+        self._infer_timeout = max(2.0, float(infer_timeout))
         # 将 _submit 信号在 worker 内部连接到 process 槽
         self._submit.connect(self.process)
 
@@ -172,7 +176,7 @@ class InferenceWorker(QObject):
             clipboard_text=user_text[:500],
         )
 
-        raw = self._backend.infer(sys_prompt, user_text)
+        raw = self._backend.infer(sys_prompt, user_text, timeout=self._infer_timeout)
         if not raw:
             self.skipped.emit("后端无响应")
             return
@@ -204,11 +208,12 @@ class ContextAgent(QObject):
     intent_ready = Signal(ToastIntent)
     log_signal = Signal(str)
 
-    def __init__(self, backend: Optional[LLMBackend] = None, parent=None):
+    def __init__(self, backend: Optional[LLMBackend] = None, parent=None,
+                 infer_timeout: float = 15.0):
         super().__init__(parent)
         self._backend = backend or EchoBackend()
         self._thread = QThread()
-        self._worker = InferenceWorker(self._backend)
+        self._worker = InferenceWorker(self._backend, infer_timeout=infer_timeout)
         self._worker.moveToThread(self._thread)
 
         # Worker 信号 → Manager 槽（在主线程接收，自动跨线程 queued）
@@ -219,7 +224,6 @@ class ContextAgent(QObject):
 
     def process(self, capsule: ContextCapsule):
         """主线程入口——用 Signal 发送任务给 Worker（跨线程自动 queued，非阻塞）"""
-        # Signal 默认是 queued connection（跨线程），避开 Q_ARG(object) 的 QMetaType 问题
         self._worker._submit.emit(capsule)
 
     def _on_worker_finished(self, intent: ToastIntent):
@@ -229,13 +233,12 @@ class ContextAgent(QObject):
     def _on_worker_skipped(self, reason: str):
         self.log_signal.emit(f"[AI] 跳过: {reason}")
 
-    def set_backend(self, backend: LLMBackend):
-        """热替换后端（需要重启 Worker）"""
-        self.shutdown()
-        self._backend = backend
-        self.__init__(backend=backend, parent=self.parent())
+    def current_backend(self) -> LLMBackend:
+        """暴露当前后端，供外部组件（如 QuestionGenerator）实时获取"""
+        return self._backend
 
-    def shutdown(self):
-        if self._thread:
-            self._thread.quit()
-            self._thread.wait(2000)
+    def set_backend(self, backend: LLMBackend):
+        """热替换后端（替换 Worker 的后端引用）"""
+        self._backend = backend
+        # 替换 Worker 内部的后端引用
+        self._worker._backend = backend
