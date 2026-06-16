@@ -653,6 +653,11 @@ class ContextChatTab(QWidget):
         self.chk_keep_history.setChecked(True)
         ctrl_row.addWidget(self.chk_keep_history)
 
+        self.chk_log_toast_actions = QCheckBox("记录气泡点击动作")
+        self.chk_log_toast_actions.setChecked(False)
+        self.chk_log_toast_actions.setToolTip("关闭后，点击气泡不会在 AI 对话里追加“点击了气泡/已接受推荐”等动作说明")
+        ctrl_row.addWidget(self.chk_log_toast_actions)
+
         # 联网开关 (默认关闭,避免无意访问网络)
         self.chk_web = QCheckBox("🌐 联网")
         self.chk_web.setToolTip("开启后,AI 可以调用 web_search 工具 (Bing) 进行联网搜索")
@@ -827,8 +832,10 @@ class ContextChatTab(QWidget):
             self._append_system(f"❌ on_intent 出错: {e}")
 
     def on_toast_clicked(self, intent):
-        """用户点击了某个气泡 → 记录用户的交互到聊天历史"""
+        """用户点击了某个气泡 → 可选记录用户的交互到聊天历史"""
         try:
+            if not getattr(self, "chk_log_toast_actions", None) or not self.chk_log_toast_actions.isChecked():
+                return
             msg = getattr(intent, "message", "") or ""
             sug = getattr(intent, "suggested_action", "") or ""
             param = getattr(intent, "action_param", "") or ""
@@ -837,8 +844,10 @@ class ContextChatTab(QWidget):
             self._append_system(f"❌ on_toast_clicked 出错: {e}")
 
     def on_action_executed(self, intent):
-        """context_tab 用户点击气泡后同步显示在聊天记录里"""
+        """context_tab 用户点击气泡后可选同步显示在聊天记录里"""
         try:
+            if not getattr(self, "chk_log_toast_actions", None) or not self.chk_log_toast_actions.isChecked():
+                return
             msg = getattr(intent, "message", "") or ""
             sug = getattr(intent, "suggested_action", "") or ""
             param = getattr(intent, "action_param", "") or ""
