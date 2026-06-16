@@ -717,7 +717,10 @@ class ContextTab(QWidget):
             f"建议动作: {action}\n"
             f"动作参数: {param[:1000]}"
         )
-        self.context_chat_tab.add_next_context(ctx)
+        visible = " ".join((msg or tag or action or "").split())
+        if len(visible) > 90:
+            visible = visible[:90].rstrip() + "…"
+        self.context_chat_tab.add_next_context(ctx, visible_hint=visible)
 
     def _on_toast_clicked(self, intent: ToastIntent):
         """用户点击了气泡 → 打开小聊天窗，并同步 AI 对话标签页记录"""

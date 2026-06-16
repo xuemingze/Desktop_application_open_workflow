@@ -701,14 +701,16 @@ class ContextChatTab(QWidget):
         self._backend = backend
 
     # ---- 用户发送 ----
-    def add_next_context(self, content: str):
-        """为下一次用户发送注入隐藏上下文，不强制显示到聊天记录。"""
+    def add_next_context(self, content: str, visible_hint: str = ""):
+        """为下一次用户发送注入气泡上下文，可选在聊天记录显示摘要。"""
         content = (content or "").strip()
         if not content:
             return
         self._next_context.append({"role": "system", "content": content[:2000]})
         # 防止堆积过多
         self._next_context = self._next_context[-5:]
+        if visible_hint:
+            self._append_system(f"🧩 已带入气泡上文：{visible_hint}")
 
     def send_text(self, text: str):
         """外部小聊天窗调用：复用主 AI 对话页的同一套发送/历史链路。"""
