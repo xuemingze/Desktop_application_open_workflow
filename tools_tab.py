@@ -206,6 +206,48 @@ class ToolsTab(QWidget):
         hint.setWordWrap(True)
         v.addWidget(hint)
 
+
+        # ----- 危险操作 -----
+        line3 = QFrame()
+        line3.setFrameShape(QFrame.HLine)
+        line3.setFrameShadow(QFrame.Sunken)
+        line3.setStyleSheet("color: #fca5a5;")
+        v.addWidget(line3)
+
+        danger_box = QGroupBox("* 危险操作")
+        danger_box.setStyleSheet(
+            "QGroupBox { font-weight: bold; color: #dc2626; "
+            "border: 1px solid #fca5a5; border-radius: 4px; margin-top: 6px; padding: 2px; }"
+        )
+        dv = QVBoxLayout(danger_box)
+        dv.setContentsMargins(8, 4, 8, 6)
+
+        warn_label = QLabel(
+            "* 卸载将删除：\n"
+            "   - 所有运行时数据(工作流、自定义应用、窗口状态)\n"
+            "   - 用户配置(后端地址、API Key、AI 感知档案)\n"
+            "   - 日志文件\n"
+            "   - 本程序 exe 文件\n"
+            "此操作不可逆，请确认已备份重要数据。"
+        )
+        warn_label.setStyleSheet(
+            "color: #991b1b; font-size: 11px; padding: 4px; "
+            "background: #fef2f2; border-radius: 4px; line-height: 1.6;"
+        )
+        warn_label.setWordWrap(True)
+        dv.addWidget(warn_label)
+
+        self.btn_uninstall = QPushButton("X 卸载本软件")
+        self.btn_uninstall.setStyleSheet(
+            "QPushButton { background: #dc2626; color: white; font-weight: bold; "
+            "padding: 7px 14px; border-radius: 4px; }"
+            "QPushButton:hover { background: #b91c1c; }"
+        )
+        self.btn_uninstall.clicked.connect(self._do_uninstall)
+        dv.addWidget(self.btn_uninstall)
+
+        v.addWidget(danger_box)
+
         # 延迟加载状态 (等 QApplication 完成初始化后)
         QTimer.singleShot(300, self._refresh_system_status)
         return gb
@@ -435,6 +477,65 @@ class ToolsTab(QWidget):
         else:
             self.lbl_start_bg_status.setText("状态: ❌ 未启用 - 下次启动会显示主窗口")
             self.lbl_start_bg_status.setStyleSheet("color: #666; font-size: 11px; padding: 0 8px 4px 24px;")
+
+    def _do_uninstall(self):
+        reply = QMessageBox.warning(
+            self,
+            "\u26d4 \u786e\u8ba4\u5378\u8f7d",
+            "\u4f60\u786e\u5b9a\u8981\u5378\u8f7d\u300c\u684c\u9762\u81ea\u52a8\u5316\u52a9\u624b\u300d\u5417\uff1f\n\n",
+            "\u5c06\u5220\u9664\uff1a\n",
+            "  \u00b7 \u6240\u6709\u8fd0\u884c\u65f6\u6570\u636e\uff08\u5de5\u4f5c\u6d41\u3001\u81ea\u5b9a\u4e49\u5e94\u7528\u3001\u914d\u7f6e\uff09\n",
+            "  \u00b7 \u65e5\u5fd7\u6587\u4ef6\n",
+            "  \u00b7 \u672c\u7a0b\u5e8f exe \u6587\u4ef6\n\n",
+            "\u26a0 \u6b64\u64cd\u4f5c\u4e0d\u53ef\u9006\uff01\n\n",
+            "\u70b9\u51fb\u300c\u786e\u5b9a\u300d\u5c06\u5173\u95ed\u7a0b\u5e8f\u5e76\u5220\u9664\u6240\u6709\u6570\u636e\u3002\n",
+            "\u70b9\u51fb\u300c\u53d6\u6d88\u300d\u653e\u5f03\u5378\u8f7d\u3002",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Ok:
+            return
+        import sys as _sys
+        exe_path = _sys.executable
+        data_dir = str(Path.home() / "\u684c\u9762\u81ea\u52a8\u5316\u52a9\u624b")
+        tmp_dir = os.environ.get("TEMP", "C:\\Windows\\Temp")
+        batch_path = Path(tmp_dir) / ("uninstall_desktop_auto_" + str(os.getpid()) + ".bat")
+        exe_name = Path(exe_path).name
+
+        _t = {
+            "exe_name": exe_name,
+            "exe_path": exe_path,
+            "data_dir": data_dir,
+        }
+        _batch = (
+            "@echo off\n"
+            "chcp 65001 >nul\n"
+            "echo \u6b63\u5728\u7b49\u5f85\u7a0b\u5e8f\u9000\u51fa...\n"
+            ":wait_loop\n"
+            'tasklist /FI "IMAGENAME eq %(exe_name)s" 2>nul | find /I "%(exe_name)s" >nul\n'
+            "if %%errorlevel%%==0 (\n"
+            "    timeout /t 2 /nobreak >nul\n"
+            "    goto wait_loop\n"
+            ")\n"
+            "echo \u6b63\u5728\u5220\u9664 exe...\n"
+            'del /f /q "%(exe_path)s" 2>nul\n'
+            "echo \u6b63\u5728\u5220\u9664\u7528\u6237\u6570\u636e\u76ee\u5f55...\n"
+            'rmdir /s /q "%(data_dir)s" 2>nul\n'
+            "echo \u5378\u8f7d\u5b8c\u6210.\n"
+            'del "%%~f0"\n'
+        ) % _t
+
+        try:
+            batch_path.write_text(_batch, encoding="utf-8")
+        except Exception as e:
+            QMessageBox.critical(self, "\u5378\u8f7d\u5931\u8d25", "\u65e0\u6cd5\u521b\u5efa\u5378\u8f7d\u811a\u672c\uff1a" + str(e))
+            return
+        try:
+            subprocess.Popen(["cmd.exe", "/c", str(batch_path)], creationflags=0x08000000)
+        except Exception:
+            pass
+        from PySide6.QtWidgets import QApplication
+        QApplication.quit()
 
     def _on_autostart_toggle(self, checked: bool) -> None:
         """开关 开机启动"""
