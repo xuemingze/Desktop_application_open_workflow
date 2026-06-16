@@ -178,6 +178,22 @@ def _enhance_web_query(query: str) -> str:
     return q
 
 
+def _dedupe_search_results(results: list[dict], limit: int = 5) -> list[dict]:
+    deduped = []
+    seen = set()
+    for item in results or []:
+        url = str(item.get("url") or "").strip().rstrip("/")
+        title = str(item.get("title") or "").strip()
+        key = url.lower() or title.lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
 def _curated_game_results(query: str) -> list[dict]:
     q = (query or "").lower()
     if "异环" in q and ("娜娜莉" in q or "nanally" in q or "nanali" in q):
@@ -241,13 +257,19 @@ def _tool_tavily_search(query: str, limit: int = 5) -> dict:
         with urllib.request.urlopen(req, timeout=20) as r:
             data = json.loads(r.read().decode("utf-8", errors="ignore"))
         results = []
-        for item in data.get("results", [])[:limit]:
+        for item in data.get("results", [])[: max(limit * 2, 10)]:
+            title = str(item.get("title", ""))[:200]
+            url = str(item.get("url", ""))
+            snippet = str(item.get("content", item.get("snippet", "")))[:500]
+            if _is_low_quality_search_result(title, url, snippet):
+                continue
             results.append({
-                "title": str(item.get("title", ""))[:200],
-                "url": str(item.get("url", "")),
-                "snippet": str(item.get("content", item.get("snippet", "")))[:500],
+                "title": title,
+                "url": url,
+                "snippet": snippet,
                 "score": item.get("score"),
             })
+        results = _dedupe_search_results(_curated_game_results(query) + results, limit)
         return {"ok": True, "count": len(results), "results": results, "source": "Tavily"}
     except Exception as e:
         try:
@@ -314,6 +336,7 @@ def _tool_bing_search(query: str, limit: int = 5) -> dict:
             if len(merged_results) >= limit:
                 break
         results = merged_results
+        results = _dedupe_search_results(results, limit)
         if not results:
             return {
                 "ok": True, "count": 0, "results": [],
@@ -484,15 +507,29 @@ class ChatWorker(QThread):
             self.tool_call.emit(action, args if isinstance(args, dict) else {})
             result = TOOL_DISPATCH[action](args if isinstance(args, dict) else {})
 
-            # 把工具结果展示出来
-            result_str = json.dumps(result, ensure_ascii=False, indent=2)[:2000]
+            # 把工具结果展示出来；web_search 需要保留足够的来源和摘要给二次总结
+            result_limit = 6000 if action == "web_search" else 2000
+            result_str = json.dumps(result, ensure_ascii=False, indent=2)[:result_limit]
             self.tool_result.emit(action, result)
 
             # 第二轮:让 LLM 总结
             messages.append({"role": "assistant", "content": raw1})
+            if action == "web_search":
+                instruction = (
+                    "请只基于工具结果回答，不要编造。\n"
+                    "要求：\n"
+                    "1. 先指出 Tavily Key 是否有授权问题（如果结果里有 tavily_auth_error/note）。\n"
+                    "2. 严格按 results 数组顺序提炼，不要打乱来源顺序。\n"
+                    "3. 合并重复信息，不要重复同一句建议。\n"
+                    "4. 如果是角色培养/攻略问题，按固定顺序输出：定位 → 技能优先级 → 装备/词条 → 觉醒 → 配队 → 手法。\n"
+                    "5. 最后列出 2-3 个来源标题，不要列百科/字典。\n"
+                    "6. 直接说人话，不要 JSON，不要把工具日志原样贴出来。"
+                )
+            else:
+                instruction = "请基于这个结果给用户一个简洁友好的回答(100字内)。直接说人话,不要 JSON。"
             messages.append({
                 "role": "user",
-                "content": f"工具 {action} 的结果:\n```json\n{result_str}\n```\n请基于这个结果给用户一个简洁友好的回答(100字内)。直接说人话,不要 JSON。"
+                "content": f"工具 {action} 的结果:\n```json\n{result_str}\n```\n{instruction}"
             })
 
             self.thinking.emit("正在生成回复...")
@@ -560,6 +597,7 @@ class ContextChatTab(QWidget):
         self._backend: LLMBackend = OpenAICompatibleBackend()  # 默认
         self._history: list[dict] = []        # 对话历史 [{role, content}]
         self._worker: Optional[ChatWorker] = None
+        self._pending_user_msg: str = ""
         self._max_history = 20               # 保留最近 20 轮
         self._build_ui()
 
@@ -678,6 +716,7 @@ class ContextChatTab(QWidget):
             pass
 
         # 显示用户消息
+        self._pending_user_msg = text
         self._append_user(text)
         self.input_edit.clear()
         self.btn_send.setEnabled(False)
@@ -717,17 +756,26 @@ class ContextChatTab(QWidget):
         if self.chk_show_thinking.isChecked():
             ok = result.get("ok", False)
             icon = "✅" if ok else "❌"
-            result_short = json.dumps(result, ensure_ascii=False, indent=2)
-            if len(result_short) > 500:
-                result_short = result_short[:500] + "..."
-            self._append_system(f"{icon} 工具结果:\n```json\n{result_short}\n```")
+            if action == "web_search" and ok:
+                titles = [r.get("title", "") for r in result.get("results", [])[:3]]
+                note = result.get("note", "")
+                lines = [f"来源: {result.get('source', 'web')} / {result.get('count', 0)} 条结果"]
+                if note:
+                    lines.append(f"提示: {note}")
+                lines += [f"{i}. {t}" for i, t in enumerate(titles, 1) if t]
+                self._append_system(f"{icon} 联网结果:\n" + "\n".join(lines))
+            else:
+                result_short = json.dumps(result, ensure_ascii=False, indent=2)
+                if len(result_short) > 500:
+                    result_short = result_short[:500] + "..."
+                self._append_system(f"{icon} 工具结果:\n```json\n{result_short}\n```")
 
     @Slot(str)
     def _on_assistant_message(self, msg: str):
         self._append_assistant(msg)
         # 加入历史
         if self.chk_keep_history.isChecked():
-            self._history.append({"role": "user", "content": self.input_edit.text() or "(上轮)"})
+            self._history.append({"role": "user", "content": self._pending_user_msg or "(上轮)"})
             self._history.append({"role": "assistant", "content": msg})
             # 限长
             while len(self._history) > self._max_history * 2:
