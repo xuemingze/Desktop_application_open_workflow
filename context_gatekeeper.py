@@ -46,6 +46,9 @@ DEFAULT_SNIFF_RULES = [
     ("JSON 数据", r'^\s*[\{\[][\s\S]+[\}\]]\s*$'),
     ("Base64", r"^[A-Za-z0-9+/]{20,}={0,2}$"),
     ("Stack Overflow 引用", r"stackoverflow\.com|github\.com/.*issues?"),
+    # 学习类规则：默认关闭，用户按需在「嗅探规则」里勾选
+    ("英文文本", r"\b[A-Za-z][A-Za-z'’-]{2,}\b(?:[\s,.;:!?()\[\]{}\"“”‘’、，。；：！？-]+[A-Za-z][A-Za-z'’-]{2,}\b){3,}", False),
+    ("学术词汇", r"\b(?:hypothesis|methodology|epistemology|ontology|paradigm|empirical|quantitative|qualitative|regression|variance|significance|correlation|causality|algorithm|neural|transformer|embedding)\b|(?:模型|机制|范式|方法论|本体论|认识论|实证|定量|定性|回归|方差|显著性|相关性|因果|假设|变量|样本|置信区间|路径依赖|多重共线性)", False),
 ]
 
 
@@ -87,7 +90,13 @@ class Gatekeeper:
     ):
         self._blacklist = set(p.lower() for p in (process_blacklist or DEFAULT_PROCESS_BLACKLIST))
         rules_src = sniff_rules if sniff_rules is not None else DEFAULT_SNIFF_RULES
-        self._rules: list[SniffRule] = [SniffRule(name, p) for name, p in rules_src]
+        self._rules: list[SniffRule] = []
+        for item in rules_src:
+            if len(item) >= 3:
+                name, pattern, enabled = item[0], item[1], bool(item[2])
+            else:
+                name, pattern, enabled = item[0], item[1], True
+            self._rules.append(SniffRule(name, pattern, enabled))
 
     # ---- 进程黑名单 ----
     def add_to_blacklist(self, app_name: str):

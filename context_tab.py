@@ -262,7 +262,20 @@ class ContextTab(QWidget):
 
         self.rule_list = QListWidget()
         self.rule_list.setMaximumHeight(280)
+        self.rule_list.itemChanged.connect(self._on_rule_item_changed)
         layout.addWidget(self.rule_list)
+
+        learning_gb = QGroupBox("学习规则设置")
+        lf = QFormLayout(learning_gb)
+        self.default_translate_lang_input = QLineEdit("中文")
+        self.default_translate_lang_input.setPlaceholderText("例如：中文 / English / 日本語")
+        self.default_translate_lang_input.editingFinished.connect(self._save_config)
+        lf.addRow("默认翻译语言:", self.default_translate_lang_input)
+        tip = QLabel("勾选规则后：检测到英文 → 推送 AI 翻译；检测到学术词汇 → 推送 AI 解释。")
+        tip.setStyleSheet("color:#666;")
+        lf.addRow("说明:", tip)
+        layout.addWidget(learning_gb)
+        self._load_learning_config_into_ui()
 
         # 自定义规则
         custom_gb = QGroupBox("添加自定义规则")
@@ -584,6 +597,22 @@ class ContextTab(QWidget):
         text = (capsule.clipboard_text or "").strip()
         if not text:
             return
+        if rule_name == "英文文本":
+            lang = "中文"
+            try:
+                lang = self.default_translate_lang_input.text().strip() or "中文"
+            except Exception:
+                pass
+            prompt = f"请把下面这段英文翻译成{lang}，保留专有名词，并在必要时补充一句上下文说明：\n\n{text}"
+            msg = f"检测到英文文本，要翻译成{lang}吗？"
+            self._show_learning_toast(rule_name, msg, prompt)
+            return
+        if rule_name == "学术词汇":
+            prompt = f"请解释下面内容中的学术词汇/概念：先用通俗中文解释，再给一个例子，最后列出关键词。\n\n{text}"
+            msg = "检测到学术/专业词汇，要我解释一下吗？"
+            self._show_learning_toast(rule_name, msg, prompt)
+            return
+
         # 规则 -> 动作 映射表
         RULE_FALLBACK = {
             "IP 地址":       ("launch_shortcut",  "mstsc",            f"检测到 IP {text},打开远程桌面？"),
@@ -615,12 +644,30 @@ class ContextTab(QWidget):
         # 延迟 4 秒,给 LLM 先推的机会(LLM 需 3-11 秒)
         QTimer.singleShot(4000, _show)
 
+    def _show_learning_toast(self, rule_name: str, msg: str, prompt: str):
+        def _show():
+            from log_bus import log_bus
+            log_bus.emit(f"[学习规则] 按规则「{rule_name}」生成推荐: {msg}")
+            intent = ToastIntent(
+                intent=f"学习-{rule_name}",
+                message=msg,
+                suggested_action="ai_prompt",
+                action_param=prompt,
+            )
+            self._toast_manager.show_toast(intent)
+            self.toast_broadcast.emit(intent)
+        QTimer.singleShot(600, _show)
+
     def _on_toast_clicked(self, intent: ToastIntent):
         """用户点击了气泡 → 打开小聊天窗，并同步 AI 对话标签页记录"""
         self._append_log(f"[点击] 用户点击气泡: {intent.suggested_action}({intent.action_param})")
         if hasattr(self, "context_chat_tab"):
             self.context_chat_tab.on_action_executed(intent)
         self._open_mini_chat(intent)
+        if getattr(intent, "suggested_action", "") == "ai_prompt" and hasattr(self, "context_chat_tab"):
+            prompt = getattr(intent, "action_param", "") or ""
+            if prompt:
+                self.context_chat_tab.send_text(prompt)
 
     # ---- 测试 ----
     def _on_test_capture(self):
@@ -670,6 +717,7 @@ class ContextTab(QWidget):
 
     # ---- 规则管理 ----
     def _refresh_rule_list(self):
+        self.rule_list.blockSignals(True)
         self.rule_list.clear()
         for rule in self._gatekeeper.get_rules():
             text = f"{'✅' if rule.enabled else '⬜'} {rule.name}  |  {rule.pattern}"
@@ -678,6 +726,16 @@ class ContextTab(QWidget):
             item.setCheckState(Qt.Checked if rule.enabled else Qt.Unchecked)
             item.setData(Qt.UserRole, rule.name)
             self.rule_list.addItem(item)
+        self.rule_list.blockSignals(False)
+
+    def _on_rule_item_changed(self, item: QListWidgetItem):
+        name = item.data(Qt.UserRole)
+        enabled = item.checkState() == Qt.Checked
+        self._gatekeeper.toggle_rule(name, enabled)
+        self.rule_list.blockSignals(True)
+        item.setText(f"{'✅' if enabled else '⬜'} {name}  |  " + next((r.pattern for r in self._gatekeeper.get_rules() if r.name == name), ""))
+        self.rule_list.blockSignals(False)
+        self._save_config()
 
     def _on_add_rule(self):
         name = self.rule_name_input.text().strip()
@@ -856,6 +914,12 @@ class ContextTab(QWidget):
                 return {}
         return {}
 
+    def _load_learning_config_into_ui(self):
+        learning_cfg = self._config.get("learning", {}) if isinstance(self._config, dict) else {}
+        lang = str(learning_cfg.get("default_translate_lang") or "中文")
+        if hasattr(self, "default_translate_lang_input"):
+            self.default_translate_lang_input.setText(lang)
+
     def _load_backend_config_into_ui(self):
         backend_cfg = self._config.get("backend", {}) if isinstance(self._config, dict) else {}
         if not backend_cfg:
@@ -888,6 +952,9 @@ class ContextTab(QWidget):
                 {"name": r.name, "enabled": r.enabled}
                 for r in self._gatekeeper.get_rules()
             ],
+            "learning": {
+                "default_translate_lang": self.default_translate_lang_input.text().strip() or "中文",
+            },
             "backend": {
                 "type": self.backend_combo.currentIndex(),
                 "base_url": self.base_url_input.text(),
