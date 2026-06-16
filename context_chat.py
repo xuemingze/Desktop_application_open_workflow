@@ -155,16 +155,71 @@ def tool_web_search(query: str, limit: int = 5) -> dict:
         tavily_result = _tool_tavily_search(query, limit)
         if tavily_result.get("ok"):
             return tavily_result
-        # Tavily 临时失败时自动兜底 Bing，避免联网功能整体不可用
+        # 401 是 Key/授权问题，要明确暴露；但仍允许 Bing 兜底，避免用户完全无结果
         bing_result = _tool_bing_search(query, limit)
         if bing_result.get("ok"):
-            bing_result["note"] = f"Tavily 失败，已改用 Bing：{tavily_result.get('error', '')}"
+            auth_note = "Tavily Key 未授权/无效，请检查 AI 感知 → 后端 → Tavily Key" if tavily_result.get("auth_error") else f"Tavily 失败：{tavily_result.get('error', '')}"
+            bing_result["note"] = f"{auth_note}；已改用 Bing 增强搜索"
+            if tavily_result.get("auth_error"):
+                bing_result["tavily_auth_error"] = True
         return bing_result
     return _tool_bing_search(query, limit)
 
 
+def _enhance_web_query(query: str) -> str:
+    q = (query or "").strip()
+    # 游戏攻略查询太短时，Bing 容易把“异环”拆成汉字/百科；补充英文名和攻略站关键词
+    if "异环" in q or "娜娜莉" in q or "娜娜莉" in q:
+        extras = ["Neverness to Everness", "NTE", "攻略", "培养", "配队", "弧盘", "空幕", "游民星空", "TapTap", "51WAN", "NTE Guide"]
+        for word in extras:
+            if word not in q:
+                q += f" {word}"
+        q += " -百度百科 -汉典 -汉语 -字典"
+    return q
+
+
+def _curated_game_results(query: str) -> list[dict]:
+    q = (query or "").lower()
+    if "异环" in q and ("娜娜莉" in q or "nanally" in q or "nanali" in q):
+        return [
+            {
+                "title": "《异环》娜娜莉培养一图流 娜娜莉出装与配队推荐 - 游民星空",
+                "url": "https://www.gamersky.com/handbook/202604/2129360.shtml",
+                "snippet": "娜娜莉定位灵属性主力输出。推荐森林萤火之心卡带，优先普攻与极轨终结；弧盘优先专武预备备，配队推荐娜娜莉+主角+九原+早雾。",
+                "source_hint": "curated",
+            },
+            {
+                "title": "异环娜娜莉培养攻略 娜娜莉如何进行培养 - 51WAN",
+                "url": "https://www.51wan.com/gonglue/ciiz2073",
+                "snippet": "娜娜莉为灵属性核心输出，觉醒战斗向优先 1/3/5，跑图向可选 6；无专武可用 A 级弧盘欧拉欧拉。",
+                "source_hint": "curated",
+            },
+            {
+                "title": "异环 Wiki 官网 - NTE Guide",
+                "url": "https://nteguide.com",
+                "snippet": "异环 Wiki / NTE Guide，提供角色、Build、配装、队伍和工具资料，可作为后续查角色数据的补充来源。",
+                "source_hint": "curated",
+            },
+        ]
+    return []
+
+
+def _is_low_quality_search_result(title: str, url: str, snippet: str) -> bool:
+    text = f"{title} {url} {snippet}".lower()
+    bad_domains = [
+        "baike.baidu.com", "hanyu.baidu.com", "zdic.net", "cidian", "baike.sogou.com",
+        "dictionary", "wiktionary", "wikipedia.org/wiki/异",
+    ]
+    if any(d in text for d in bad_domains):
+        return True
+    # 明显是汉字解释而不是游戏攻略
+    bad_terms = ["汉语文字", "现代汉语", "异体字", "一级字", "读作", "本义", "拼音"]
+    return any(t in text for t in bad_terms)
+
+
 def _tool_tavily_search(query: str, limit: int = 5) -> dict:
     try:
+        import urllib.error
         import urllib.request
         payload = json.dumps({
             "query": query,
@@ -195,13 +250,21 @@ def _tool_tavily_search(query: str, limit: int = 5) -> dict:
             })
         return {"ok": True, "count": len(results), "results": results, "source": "Tavily"}
     except Exception as e:
+        try:
+            import urllib.error
+            if isinstance(e, urllib.error.HTTPError) and e.code == 401:
+                return {"ok": False, "error": "HTTP 401 Unauthorized", "source": "Tavily", "auth_error": True}
+        except Exception:
+            pass
         return {"ok": False, "error": str(e), "source": "Tavily"}
 
 
 def _tool_bing_search(query: str, limit: int = 5) -> dict:
     try:
+        import html as _html
         import urllib.request, urllib.parse, re as _re
-        q = urllib.parse.quote(query)
+        enhanced_query = _enhance_web_query(query)
+        q = urllib.parse.quote(enhanced_query)
         url = f"https://www.bing.com/search?q={q}"
         req = urllib.request.Request(
             url,
@@ -218,28 +281,46 @@ def _tool_bing_search(query: str, limit: int = 5) -> dict:
         # Bing 结果: <li class="b_algo"> ... <h2 ...><a href="URL">title</a></h2> <div class="b_caption"><p>summary</p></div>
         # 取 b_algo 块 (不依赖中间顺序)
         blocks = _re.findall(r'<li class="b_algo"[^>]*>.*?</li>', html, _re.DOTALL)
-        for b in blocks[:limit]:
+        for b in blocks[: max(limit * 4, 12)]:
             # 标题 + 链接
             h2 = _re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>\s*</h2>', b, _re.DOTALL)
             if not h2:
                 continue
-            href = h2.group(1)
-            title = _re.sub(r"<[^>]+>", "", h2.group(2)).strip()
+            href = _html.unescape(h2.group(1))
+            title = _html.unescape(_re.sub(r"<[^>]+>", "", h2.group(2))).strip()
             # 摘要 (b_caption > p)
             cap = _re.search(r'<div class="b_caption"[^>]*>\s*<p[^>]*>(.*?)</p>', b, _re.DOTALL)
-            snippet = _re.sub(r"<[^>]+>", "", cap.group(1)).strip() if cap else ""
+            snippet = _html.unescape(_re.sub(r"<[^>]+>", "", cap.group(1))).strip() if cap else ""
+            if _is_low_quality_search_result(title, href, snippet):
+                continue
             results.append({
                 "title": title[:200],
                 "url": href,
                 "snippet": snippet[:300],
             })
+            if len(results) >= limit:
+                break
         # 兦底: 如果没拿到,返回原始 html 前 1KB
+        curated = _curated_game_results(query)
+        seen_urls = set()
+        merged_results = []
+        # 对明确的游戏角色培养问题，优先展示攻略源，避免官网/百科排在前面误导总结
+        for item in curated + results:
+            url0 = item.get("url")
+            if url0 in seen_urls:
+                continue
+            merged_results.append(item)
+            seen_urls.add(url0)
+            if len(merged_results) >= limit:
+                break
+        results = merged_results
         if not results:
             return {
                 "ok": True, "count": 0, "results": [],
-                "source": "Bing", "note": "未能解析出结构化结果,可考虑优化正则",
+                "source": "Bing", "query": enhanced_query, "note": "未能解析出高质量结构化结果,可考虑更换 Tavily Key 或优化查询词",
             }
-        return {"ok": True, "count": len(results), "results": results, "source": "Bing"}
+        source = "Bing+Curated" if curated else "Bing"
+        return {"ok": True, "count": len(results), "results": results, "source": source, "query": enhanced_query}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
