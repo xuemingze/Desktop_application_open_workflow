@@ -231,16 +231,28 @@ TOOL_DISPATCH = {
 # ---------------------------------------------------------------------------
 # 系统提示词
 # ---------------------------------------------------------------------------
-def build_chat_system_prompt() -> str:
+def build_chat_system_prompt(web_enabled: Optional[bool] = None) -> str:
     tools_text = "\n".join(
         f"- {t['name']}: {t['description']} 参数: {json.dumps(t['params'], ensure_ascii=False)}"
         for t in TOOL_DEFINITIONS
+    )
+    if web_enabled is None:
+        web_enabled = is_web_enabled()
+    web_state = "已开启" if web_enabled else "未开启"
+    web_rule = (
+        "当前【联网】已开启：遇到需要最新攻略/网页信息/新闻/资料的问题，直接调用 web_search，不要再要求用户开启。"
+        if web_enabled else
+        "当前【联网】未开启：遇到必须联网的问题，回复用户需要开启【联网】开关。"
     )
     return f"""你是一个桌面自动化助手,运行在用户的 Windows 电脑上。用户会用自然语言跟你说话,你需要:
 1. 理解用户意图
 2. 决定是否需要调用工具
 3. 如果需要,**严格按 JSON 格式**输出工具调用指令
 4. 如果不需要(闲聊/确认/信息查询),直接给出友好回答
+
+【当前运行状态】
+- 联网开关: {web_state}
+- {web_rule}
 
 【可用工具】
 {tools_text}
@@ -268,10 +280,10 @@ def build_chat_system_prompt() -> str:
 - 用户说"打开XX"/"启动XX" → 用 launch_shortcut
 - 用户说"执行XX工作流"/"跑XX流程" → 用 run_workflow
 - 用户说"找XX文件"/"本地搜XX" → 用 search_local_files (仅本地 Everything)
-- 用户说"联网搜XX"/"百度一下"/"访问 XX 网站"/需联网才能获取信息的问题 → 用 web_search (需用户开启【联网】)
+- 用户说"联网搜XX"/"百度一下"/"访问 XX 网站"/需联网才能获取信息的问题 → 如果联网开关已开启，用 web_search；如果未开启，再提示需要开启
 - 用户说"列出工作流"/"看看工作流" → 用 list_workflows
 - 用户说"列出应用"/"桌面有啥" → 用 list_shortcuts
-- 如果用户问的问题需要联网但【联网】未开启,reply 里告诉用户"需要开启【联网】开关才能查询"
+- 当前联网开关是：{web_state}。不要和这个状态相矛盾。
 """
 
 
@@ -288,17 +300,19 @@ class ChatWorker(QThread):
     error = Signal(str)                    # 错误
     log = Signal(str)                      # 调试日志
 
-    def __init__(self, backend: LLMBackend, history: list[dict], user_msg: str, timeout: float = 30.0):
+    def __init__(self, backend: LLMBackend, history: list[dict], user_msg: str, timeout: float = 30.0, web_enabled: bool = False):
         super().__init__()
         self._backend = backend
         self._history = history            # [{role, content}, ...]
         self._user_msg = user_msg
         self._timeout = timeout
+        self._web_enabled = web_enabled
 
     def run(self):
         try:
             self.thinking.emit("正在思考...")
-            sys_prompt = build_chat_system_prompt()
+            # Worker 线程里不要靠全局状态猜测，把 UI 当前联网状态显式传入系统提示
+            sys_prompt = build_chat_system_prompt(web_enabled=self._web_enabled)
             messages = [{"role": "system", "content": sys_prompt}] + self._history + [
                 {"role": "user", "content": self._user_msg}
             ]
@@ -459,7 +473,7 @@ class ContextChatTab(QWidget):
 
         # 联网开关 (默认关闭,避免无意访问网络)
         self.chk_web = QCheckBox("🌐 联网")
-        self.chk_web.setToolTip("开启后,AI 可以调用 web_search 工具 (DuckDuckGo) 进行联网搜索")
+        self.chk_web.setToolTip("开启后,AI 可以调用 web_search 工具 (Bing) 进行联网搜索")
         self.chk_web.toggled.connect(self._on_web_toggle)
         ctrl_row.addWidget(self.chk_web)
 
@@ -513,6 +527,12 @@ class ContextChatTab(QWidget):
             )
             return
 
+        # 发送前强制同步一次联网开关，避免 UI 勾选状态和模块全局状态不一致
+        try:
+            set_web_enabled(self.chk_web.isChecked())
+        except Exception:
+            pass
+
         # 显示用户消息
         self._append_user(text)
         self.input_edit.clear()
@@ -524,6 +544,7 @@ class ContextChatTab(QWidget):
             backend=self._backend,
             history=list(self._history) if self.chk_keep_history.isChecked() else [],
             user_msg=text,
+            web_enabled=self.chk_web.isChecked(),
         )
         self._worker.thinking.connect(self._on_thinking)
         self._worker.tool_call.connect(self._on_tool_call)
