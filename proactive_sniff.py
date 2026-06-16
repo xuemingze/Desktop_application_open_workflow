@@ -451,6 +451,11 @@ class BehaviorInterestMatcher(QObject):
         self._cooldown: dict[str, float] = {}
         self._cooldown_seconds = 300  # 5 分钟冷却
         self._enabled = False
+        self._active_sessions: dict[str, dict] = {}
+        self._rest_reminder_after_seconds = 45 * 60
+        self._rest_reminder_interval_seconds = 30 * 60
+        self._rest_timer = QTimer(self)
+        self._rest_timer.timeout.connect(self._check_rest_reminders)
 
     def set_profile(self, profile: UserProfile):
         self._profile = profile
@@ -458,8 +463,11 @@ class BehaviorInterestMatcher(QObject):
     def set_enabled(self, enabled: bool):
         self._enabled = enabled
         if enabled:
+            if not self._rest_timer.isActive():
+                self._rest_timer.start(60 * 1000)
             self.log_signal.emit("[行为触发] 已启用")
         else:
+            self._rest_timer.stop()
             self.log_signal.emit("[行为触发] 已停用")
 
     def is_enabled(self) -> bool:
@@ -517,8 +525,77 @@ class BehaviorInterestMatcher(QObject):
                     continue
 
                 self._cooldown[cooldown_key] = now
-                self._fire_behavior_question(kw, matched_text, source, event_type, matched_kind)
+                if source == "process" and event_type == "started":
+                    self._mark_active_session(matched_text, kw)
+                    self._fire_behavior_question(kw, matched_text, source, event_type, matched_kind)
+                elif source == "process" and event_type == "exited":
+                    self._fire_process_exit_companion(kw, matched_text)
+                else:
+                    self._fire_behavior_question(kw, matched_text, source, event_type, matched_kind)
                 break  # 一次只触发一个关键词
+
+    def _session_key(self, matched_text: str) -> str:
+        return (matched_text or "").lower().strip()
+
+    def _mark_active_session(self, matched_text: str, keyword: str):
+        key = self._session_key(matched_text)
+        if not key:
+            return
+        now = time.time()
+        self._active_sessions[key] = {
+            "start": now,
+            "last_reminder": 0.0,
+            "keyword": keyword,
+            "name": matched_text,
+        }
+        self.log_signal.emit(f"[行为触发] 开始记录 {matched_text} 使用时长")
+
+    def _duration_text(self, seconds: float) -> str:
+        seconds = max(0, int(seconds))
+        minutes = seconds // 60
+        if minutes < 1:
+            return "刚刚一会儿"
+        if minutes < 60:
+            return f"{minutes} 分钟"
+        h, m = divmod(minutes, 60)
+        return f"{h} 小时 {m} 分钟" if m else f"{h} 小时"
+
+    def _append_companion_question(self, text: str, category: str = "hobby"):
+        q = ProactiveQuestion(text=text, category=category, timestamp=time.time())
+        self._history.append(q)
+        while len(self._history) > 100:
+            self._history.popleft()
+        self.triggered.emit(q)
+
+    def _fire_process_exit_companion(self, keyword: str, matched_text: str):
+        key = self._session_key(matched_text)
+        session = self._active_sessions.pop(key, None)
+        duration = self._duration_text(time.time() - session["start"]) if session else "刚刚一会儿"
+        templates = [
+            f"{matched_text} 关掉啦，刚才玩了 {duration}。要不要休息一下眼睛，聊点别的？",
+            f"收工～{matched_text} 这轮大概用了 {duration}。想再干点什么，还是和我聊聊玩的？",
+            f"你刚退出 {matched_text}，可以活动一下肩颈、看看远处。想聊聊刚才玩的内容吗？",
+        ]
+        text = random.choice(templates)
+        self.log_signal.emit(f"[行为触发] 进程退出陪伴: {matched_text} / {duration} → {text}")
+        self._append_companion_question(text, category="hobby")
+
+    def _check_rest_reminders(self):
+        if not self._enabled:
+            return
+        now = time.time()
+        for key, session in list(self._active_sessions.items()):
+            elapsed = now - session.get("start", now)
+            last = session.get("last_reminder", 0.0)
+            if elapsed < self._rest_reminder_after_seconds:
+                continue
+            if last and now - last < self._rest_reminder_interval_seconds:
+                continue
+            session["last_reminder"] = now
+            name = session.get("name") or key
+            text = f"{name} 已经开了 {self._duration_text(elapsed)}，该休息一下啦。眺望远处 20 秒，保护眼睛哦。"
+            self.log_signal.emit(f"[行为触发] 使用时长提醒: {name} / {self._duration_text(elapsed)}")
+            self._append_companion_question(text, category="hobby")
 
     def _fire_behavior_question(self, keyword: str, matched_text: str, source: str = "", event_type: str = "", matched_kind: str = ""):
         """触发一次行为相关问题生成"""
