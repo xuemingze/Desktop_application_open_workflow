@@ -2,14 +2,12 @@
 chcp 65001 > nul
 REM ============================================================
 REM   Desktop Automation Assistant - Build Script
-REM   Tag-based naming, never overwrites historical versions
-REM
-REM   Output: dist\desktop-auto-vYYYY.MM.DD[-HHMM].exe
+REM   Output: dist\desktop-auto-vYYYY.MM.DD-gHHHHHHHH.exe
+REM   (git short hash always included → never overwrites)
 REM
 REM   Usage:
 REM     build.bat                    Default: today's date
 REM     build.bat 2026.07.15         Specify date
-REM     build.bat 2026.07.15 14:30   Specify date and time
 REM ============================================================
 
 setlocal
@@ -19,17 +17,15 @@ cd /d "%~dp0"
 REM ---- 1. Parse arguments ----
 if "%~1"=="" (
     set "TAG_DATE=%date:~0,4%.%date:~5,2%.%date:~8,2%"
-    set "TAG_TIME="
 ) else (
     set "TAG_DATE=%~1"
-    if /I not "%~2"=="" (
-        set "TAG_TIME=-%~2:~0,2%%~2:~3,2%"
-    ) else (
-        set "TAG_TIME="
-    )
 )
 
-echo [BUILD] Tag: %TAG_DATE%%TAG_TIME%
+REM 获取 git short hash 作为唯一标识（避免同名覆盖）
+for /f "delims=" %%h in ('git rev-parse --short HEAD 2^>nul') do set "GIT_HASH=%%h"
+if "%GIT_HASH%"=="" set "GIT_HASH=local"
+
+echo [BUILD] Date: %TAG_DATE%  Hash: %GIT_HASH%
 
 REM ---- 2. Check PyInstaller (优先使用项目 venv) ----
 set "PYINSTALLER_CMD=pyinstaller"
@@ -56,9 +52,9 @@ if exist dist (
     echo [KEEP] dist\ preserved (historical versions)
 )
 
-REM ---- 4. Run PyInstaller with tag name (does NOT overwrite) ----
-set "EXE_NAME=desktop-auto-v%TAG_DATE%%TAG_TIME%"
-echo [BUILD] Running PyInstaller ... Output: %EXE_NAME%.exe
+REM ---- 4. Run PyInstaller with unique name (git hash → never overwrite) ----
+set "EXE_NAME=desktop-auto-v%TAG_DATE%-g%GIT_HASH%"
+echo [BUILD] Output: %EXE_NAME%.exe
 set "BUILD_EXE_NAME=%EXE_NAME%"
 %PYINSTALLER_CMD% build.spec --noconfirm --clean
 

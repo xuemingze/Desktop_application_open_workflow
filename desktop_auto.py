@@ -262,7 +262,7 @@ from PySide6.QtWidgets import (
     QPushButton, QListWidget, QListWidgetItem, QLabel, QTextEdit,
     QFileDialog, QMessageBox, QStatusBar, QGroupBox, QRadioButton,
     QButtonGroup, QCheckBox, QSpinBox, QLineEdit, QComboBox, QInputDialog,
-    QSystemTrayIcon, QMenu
+    QSystemTrayIcon, QMenu, QProgressDialog
 )
 
 # ---------------------------------------------------------------------------
@@ -2365,6 +2365,16 @@ def main() -> int:
         QLabel { padding: 2px 0; }
     """)
 
+    # 启动进度画面
+    _show_splash(app, [
+        "正在创建用户数据目录…",
+        "正在迁移旧配置文件…",
+        "正在加载后端配置…",
+        "正在初始化传感器…",
+        "正在启动 AI 感知…",
+        "启动完成，即将显示主窗口…",
+    ])
+
     win = MainWindow()
     # 订阅全局日志总线 (主窗口)
     win._setup_global_log_bus()
@@ -2378,6 +2388,33 @@ def main() -> int:
         # 仍是创建窗口,只是不 showNormal;需要时 _show_from_tray 会显示
         print("[启动] 默认后台运行,窗口已隐藏,可在托盘恢复")
     return app.exec()
+
+
+def _show_splash(app: QApplication, steps: list[str]) -> None:
+    """显示启动进度画面，每步自动推进，保证最低显示时间。"""
+    import time as _time
+    pd = QProgressDialog(steps[0], None, 0, len(steps), None)
+    pd.setWindowTitle("桌面自动化助手 - 启动中")
+    pd.setWindowFlags(pd.windowFlags() | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
+    pd.setModal(True)
+    pd.resize(420, 90)
+    screen_geo = app.primaryScreen().geometry()
+    pd.move(screen_geo.center() - pd.rect().center())
+    pd.show()
+    app.processEvents()
+    start = _time.time()
+    min_dur = 1.5
+    for i, step in enumerate(steps):
+        pd.setLabelText(step)
+        pd.setValue(i + 1)
+        app.processEvents()
+        elapsed = _time.time() - start
+        step_dur = min_dur / len(steps)
+        remaining = step_dur - (elapsed - i * step_dur)
+        if remaining > 0:
+            _time.sleep(remaining)
+    pd.close()
+    pd.deleteLater()
 
 
 def _is_default_background() -> bool:
