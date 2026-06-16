@@ -32,7 +32,7 @@ from proactive_sniff import (
     ProactiveScheduler, ProactiveRunner, QuestionGenerator,
     UserProfile, ProactiveQuestion, BehaviorInterestMatcher,
 )
-from context_chat import ContextChatTab, MiniChatDialog
+from context_chat import ContextChatTab, MiniChatDialog, set_tavily_api_key
 
 # ---------------------------------------------------------------------------
 # 后台 Worker: 拉取模型列表 (避免同步 HTTP 阻塞 UI)
@@ -350,6 +350,11 @@ class ContextTab(QWidget):
         self.timeout_spin.setSuffix(" 秒")
         f.addRow("超时:", self.timeout_spin)
 
+        self.tavily_key_input = QLineEdit()
+        self.tavily_key_input.setEchoMode(QLineEdit.Password)
+        self.tavily_key_input.setPlaceholderText("可选：Tavily API Key，联网搜索优先使用 Tavily")
+        f.addRow("Tavily Key:", self.tavily_key_input)
+
         layout.addWidget(gb)
 
         btn_row = QHBoxLayout()
@@ -378,6 +383,8 @@ class ContextTab(QWidget):
                      "• 整个过程可在「日志」标签页查看实时活动")
         iv.addWidget(info)
         layout.addWidget(info_gb)
+
+        self._load_backend_config_into_ui()
 
         layout.addStretch()
         return w
@@ -729,6 +736,7 @@ class ContextTab(QWidget):
                 model=self.model_input.currentText().strip(),
             )
         self._agent.set_backend(backend)
+        set_tavily_api_key(self.tavily_key_input.text().strip())
         # 同步更新 infer timeout
         try:
             t = float(self.timeout_spin.value())
@@ -848,6 +856,29 @@ class ContextTab(QWidget):
                 return {}
         return {}
 
+    def _load_backend_config_into_ui(self):
+        backend_cfg = self._config.get("backend", {}) if isinstance(self._config, dict) else {}
+        if not backend_cfg:
+            return
+        try:
+            self.backend_combo.setCurrentIndex(int(backend_cfg.get("type", self.backend_combo.currentIndex())))
+        except Exception:
+            pass
+        if "base_url" in backend_cfg:
+            self.base_url_input.setText(str(backend_cfg.get("base_url") or ""))
+        if "api_key" in backend_cfg:
+            self.api_key_input.setText(str(backend_cfg.get("api_key") or ""))
+        if "model" in backend_cfg:
+            self.model_input.setCurrentText(str(backend_cfg.get("model") or ""))
+        try:
+            self.timeout_spin.setValue(int(backend_cfg.get("timeout", self.timeout_spin.value())))
+        except Exception:
+            pass
+        tavily_key = str(backend_cfg.get("tavily_api_key") or "")
+        if hasattr(self, "tavily_key_input"):
+            self.tavily_key_input.setText(tavily_key)
+        set_tavily_api_key(tavily_key)
+
     def _save_config(self):
         # 保留 _save_proactive_config 写入的 proactive 段，避免保存后端/规则时把用户档案覆盖掉
         cfg = dict(self._config) if isinstance(self._config, dict) else {}
@@ -863,6 +894,7 @@ class ContextTab(QWidget):
                 "api_key": self.api_key_input.text(),
                 "model": self.model_input.currentText(),
                 "timeout": self.timeout_spin.value(),
+                "tavily_api_key": self.tavily_key_input.text().strip(),
             },
         })
         self._config = cfg

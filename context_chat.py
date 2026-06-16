@@ -145,12 +145,60 @@ def tool_search_local_files(query: str, limit: int = 10, path: str = "") -> dict
 
 
 def tool_web_search(query: str, limit: int = 5) -> dict:
-    """联网搜索 - 使用 Bing (免 key, 在国内可访问)
+    """联网搜索。
 
-    需用户开启【联网】开关。返回结果中会说明来源是网页。
+    需用户开启【联网】开关。若配置了 Tavily API Key，优先使用 Tavily；否则使用 Bing 兜底。
     """
     if not _WEB_ENABLED:
         return {"ok": False, "error": "联网开关未开启,请在 AI 对话页上方开启【联网】"}
+    if _TAVILY_API_KEY:
+        tavily_result = _tool_tavily_search(query, limit)
+        if tavily_result.get("ok"):
+            return tavily_result
+        # Tavily 临时失败时自动兜底 Bing，避免联网功能整体不可用
+        bing_result = _tool_bing_search(query, limit)
+        if bing_result.get("ok"):
+            bing_result["note"] = f"Tavily 失败，已改用 Bing：{tavily_result.get('error', '')}"
+        return bing_result
+    return _tool_bing_search(query, limit)
+
+
+def _tool_tavily_search(query: str, limit: int = 5) -> dict:
+    try:
+        import urllib.request
+        payload = json.dumps({
+            "query": query,
+            "max_results": max(1, min(int(limit), 10)),
+            "search_depth": "basic",
+            "include_answer": False,
+            "include_raw_content": False,
+            "api_key": _TAVILY_API_KEY,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.tavily.com/search",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {_TAVILY_API_KEY}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read().decode("utf-8", errors="ignore"))
+        results = []
+        for item in data.get("results", [])[:limit]:
+            results.append({
+                "title": str(item.get("title", ""))[:200],
+                "url": str(item.get("url", "")),
+                "snippet": str(item.get("content", item.get("snippet", "")))[:500],
+                "score": item.get("score"),
+            })
+        return {"ok": True, "count": len(results), "results": results, "source": "Tavily"}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "source": "Tavily"}
+
+
+def _tool_bing_search(query: str, limit: int = 5) -> dict:
     try:
         import urllib.request, urllib.parse, re as _re
         q = urllib.parse.quote(query)
@@ -196,8 +244,23 @@ def tool_web_search(query: str, limit: int = 5) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-# 联网开关 (运行时由 UI 切换)
+# 联网开关 / Tavily Key (运行时由 UI 切换)
 _WEB_ENABLED = False
+_TAVILY_API_KEY = ""
+
+
+def set_tavily_api_key(api_key: str) -> None:
+    global _TAVILY_API_KEY
+    _TAVILY_API_KEY = (api_key or "").strip()
+    try:
+        from log_bus import log_bus
+        log_bus.emit(f"[AI对话] Tavily {'已配置' if _TAVILY_API_KEY else '未配置'}")
+    except Exception:
+        pass
+
+
+def get_tavily_api_key() -> str:
+    return _TAVILY_API_KEY
 
 
 def set_web_enabled(enabled: bool) -> None:
