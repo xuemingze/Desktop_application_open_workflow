@@ -599,6 +599,8 @@ class ContextChatTab(QWidget):
         self._worker: Optional[ChatWorker] = None
         self._pending_user_msg: str = ""
         self._next_context: list[dict] = []   # 点击气泡后注入给下一轮 AI 的隐藏上下文
+        self._inline_status_active = False    # 本轮是否已在对话区显示状态 AI 行
+        self._inline_status_phase = ""
         self._max_history = 20               # 保留最近 20 轮
         self._build_ui()
 
@@ -741,6 +743,8 @@ class ContextChatTab(QWidget):
         self.input_edit.clear()
         self.btn_send.setEnabled(False)
         self.status_label.setText("💭 思考中…")
+        self._inline_status_active = False
+        self._inline_status_phase = ""
 
         # 启动 worker。气泡上下文只注入下一轮，即使不保留历史也要带上。
         history_for_worker = []
@@ -767,10 +771,19 @@ class ContextChatTab(QWidget):
     @Slot(str)
     def _on_thinking(self, msg: str):
         if self.chk_show_thinking.isChecked():
-            if "生成" in msg or "回复" in msg:
+            is_replying = "生成" in msg or "回复" in msg
+            if is_replying:
                 self.status_label.setText("✨ 回复中…")
+                if self._inline_status_phase != "replying":
+                    self._append_assistant_status("✨ 回复中…")
+                    self._inline_status_active = True
+                    self._inline_status_phase = "replying"
             else:
                 self.status_label.setText("💭 思考中…")
+                if not self._inline_status_active:
+                    self._append_assistant_status("💭 思考中…")
+                    self._inline_status_active = True
+                    self._inline_status_phase = "thinking"
 
     @Slot(str, dict)
     def _on_tool_call(self, action: str, args: dict):
@@ -801,6 +814,8 @@ class ContextChatTab(QWidget):
 
     @Slot(str)
     def _on_assistant_message(self, msg: str):
+        self._inline_status_active = False
+        self._inline_status_phase = ""
         self._append_assistant(msg)
         # 加入历史
         if self.chk_keep_history.isChecked():
@@ -820,6 +835,8 @@ class ContextChatTab(QWidget):
     def _on_worker_finished(self):
         self.btn_send.setEnabled(True)
         self.status_label.setText("就绪")
+        self._inline_status_active = False
+        self._inline_status_phase = ""
         if self._worker:
             self._worker.deleteLater()
             self._worker = None
@@ -894,6 +911,17 @@ class ContextChatTab(QWidget):
             f'<div style="margin:6px 0; padding:8px; background:#dbeafe; border-radius:6px;">'
             f'<b style="color:#1e40af;">🧑 你</b> <span style="color:#888; font-size:10px;">[{ts}]</span><br>'
             f'<span style="color:#1e3a8a;">{self._esc(text)}</span>'
+            f'</div>'
+        )
+        self._append_html(html)
+
+    def _append_assistant_status(self, text: str):
+        """在对话区显示 AI 工作状态（思考中/回复中），小对话窗也会同步看到"""
+        ts = datetime.now().strftime("%H:%M:%S")
+        html = (
+            f'<div style="margin:6px 0; padding:8px; background:#ecfdf5; border:1px dashed #86efac; border-radius:6px;">'
+            f'<b style="color:#16a34a;">🤖 助手</b> <span style="color:#888; font-size:10px;">[{ts}]</span><br>'
+            f'<span style="color:#15803d;">{self._esc(text)}</span>'
             f'</div>'
         )
         self._append_html(html)
