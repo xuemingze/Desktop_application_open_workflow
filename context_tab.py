@@ -32,6 +32,7 @@ from proactive_sniff import (
     ProactiveScheduler, ProactiveRunner, QuestionGenerator,
     UserProfile, ProactiveQuestion, BehaviorInterestMatcher,
 )
+from context_chat import ContextChatTab
 
 
 CONFIG_FILE = Path.home() / "context_aware_config.json"
@@ -119,7 +120,14 @@ class ContextTab(QWidget):
         # === Tab 5: 主动嗅探 ===
         sub.addTab(self._build_proactive_panel(), "🎯 主动嗅探")
 
-        # === Tab 6: 活动日志 ===
+        # === Tab 6: AI 对话 (调用 MCP 工具) ===
+        self.context_chat_tab = ContextChatTab(self)
+        self.context_chat_tab.log_signal.connect(self._append_log)
+        # 初始化时同步默认后端
+        self.context_chat_tab.set_backend(self._agent._backend)
+        sub.addTab(self.context_chat_tab, "💬 AI 对话")
+
+        # === Tab 7: 活动日志 ===
         sub.addTab(self._build_log_panel(), "📊 日志")
 
         root.addWidget(sub, stretch=1)
@@ -270,7 +278,12 @@ class ContextTab(QWidget):
         self.api_key_input = QLineEdit("EMPTY")
         f.addRow("API Key:", self.api_key_input)
 
-        self.model_input = QLineEdit("qwen2.5:7b")
+        self.model_input = QComboBox()
+        self.model_input.setEditable(True)
+        self.model_input.setInsertPolicy(QComboBox.NoInsert)
+        # 默认保留一个占位项,用户可输入也以后拉取后覆盖
+        self.model_input.addItem("qwen2.5:7b")
+        self.model_input.setCurrentText("qwen2.5:7b")
         f.addRow("Model:", self.model_input)
 
         self.timeout_spin = QSpinBox()
@@ -288,6 +301,13 @@ class ContextTab(QWidget):
         btn_test.clicked.connect(self._on_test_backend)
         btn_row.addWidget(btn_apply)
         btn_row.addWidget(btn_test)
+
+        # 拉取模型列表
+        self.btn_fetch_models = QPushButton("🔄 拉取模型列表")
+        self.btn_fetch_models.setToolTip("从当前 Base URL + API Key 拉取可用模型 (OpenAI 协议: GET /v1/models)")
+        self.btn_fetch_models.clicked.connect(self._on_fetch_models)
+        btn_row.addWidget(self.btn_fetch_models)
+
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
@@ -566,11 +586,14 @@ class ContextTab(QWidget):
             backend = OpenAICompatibleBackend(
                 base_url=self.base_url_input.text().strip(),
                 api_key=self.api_key_input.text().strip(),
-                model=self.model_input.text().strip(),
+                model=self.model_input.currentText().strip(),
             )
         self._agent.set_backend(backend)
         # 同步更新主动嗅探的问题生成器
         self._proactive_generator.set_backend(backend)
+        # 同步更新 AI 对话页的后端
+        if hasattr(self, "context_chat_tab"):
+            self.context_chat_tab.set_backend(backend)
         QMessageBox.information(self, "应用成功", "AI 后端已切换")
         self._append_log(f"[后端] 切换到: {type(backend).__name__}")
 
@@ -578,13 +601,82 @@ class ContextTab(QWidget):
         backend = OpenAICompatibleBackend(
             base_url=self.base_url_input.text().strip(),
             api_key=self.api_key_input.text().strip(),
-            model=self.model_input.text().strip(),
+            model=self.model_input.currentText().strip(),
         )
         result = backend.infer("你是一个测试 AI。", "ping", timeout=self.timeout_spin.value())
         if result:
             QMessageBox.information(self, "连通成功", f"后端响应:\n{result[:200]}")
         else:
             QMessageBox.warning(self, "连通失败", "后端无响应，请检查 URL/Key/Model")
+
+    def _on_fetch_models(self):
+        """从当前 Base URL + API Key 拉取可用模型列表 (OpenAI 协议 GET /v1/models)"""
+        base_url = self.base_url_input.text().strip().rstrip("/")
+        api_key = self.api_key_input.text().strip() or "EMPTY"
+        if not base_url:
+            QMessageBox.warning(self, "提示", "请先填写 Base URL")
+            return
+
+        self.btn_fetch_models.setEnabled(False)
+        self.btn_fetch_models.setText("⏳ 拉取中...")
+        QApplication.processEvents()
+        self._append_log(f"[后端] 拉取模型: GET {base_url}/models")
+
+        try:
+            import urllib.request, json as _json
+            req = urllib.request.Request(
+                f"{base_url}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=self.timeout_spin.value()) as resp:
+                data = _json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            self._append_log(f"[后端] 拉取模型失败: {e}")
+            QMessageBox.warning(self, "拉取失败", f"GET {base_url}/models 失败:\n{e}")
+            self.btn_fetch_models.setEnabled(True)
+            self.btn_fetch_models.setText("🔄 拉取模型列表")
+            return
+
+        # 解析 (OpenAI 格式: {"object": "list", "data": [{"id": "..."}, ...]})
+        items = data.get("data") if isinstance(data, dict) else None
+        if not items and isinstance(data, list):
+            items = data
+        if not items:
+            QMessageBox.warning(self, "拉取失败", f"响应格式不认识:\n{str(data)[:300]}")
+            self.btn_fetch_models.setEnabled(True)
+            self.btn_fetch_models.setText("🔄 拉取模型列表")
+            return
+
+        # 提取 id
+        ids = []
+        for it in items:
+            if isinstance(it, dict):
+                mid = it.get("id") or it.get("name") or it.get("model")
+                if mid:
+                    ids.append(str(mid))
+            elif isinstance(it, str):
+                ids.append(it)
+        if not ids:
+            QMessageBox.warning(self, "拉取失败", "未提取到任何模型 id")
+            return
+
+        # 去重 + 排序
+        ids = sorted(set(ids))
+        # 保留当前选中项
+        prev = self.model_input.currentText().strip()
+        self.model_input.blockSignals(True)
+        self.model_input.clear()
+        self.model_input.addItems(ids)
+        # 恢复当前选中
+        if prev and prev in ids:
+            self.model_input.setCurrentText(prev)
+        elif ids:
+            self.model_input.setCurrentIndex(0)
+        self.model_input.blockSignals(False)
+        self._append_log(f"[后端] 拉取到 {len(ids)} 个模型: {ids[:5]}{'...' if len(ids)>5 else ''}")
+        QMessageBox.information(self, "拉取成功", f"获取到 {len(ids)} 个模型, 已在下拉框中。\n请选择后点“应用设置”生效。")
+        self.btn_fetch_models.setEnabled(True)
+        self.btn_fetch_models.setText("🔄 拉取模型列表")
 
     # ---- 日志 ----
     def _append_log(self, msg: str):
@@ -619,7 +711,7 @@ class ContextTab(QWidget):
                 "type": self.backend_combo.currentIndex(),
                 "base_url": self.base_url_input.text(),
                 "api_key": self.api_key_input.text(),
-                "model": self.model_input.text(),
+                "model": self.model_input.currentText(),
                 "timeout": self.timeout_spin.value(),
             },
         }

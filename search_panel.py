@@ -1074,9 +1074,19 @@ def search_everything(query: str, limit: int = 50, offset: int = 0, sort: str = 
     """
     Everything 全盘搜索 (供 MCP 调用)
     返回 JSON 友好的 dict
+
+    鉴权策略: 优先用 SecureStore 中存储的凭据 (与【文件搜索】标签页一致)。
+    凭据不存在时退回无密码模式。
     """
-    # 默认 Everything 无密码模式
-    config = EverythingConfig(host="127.0.0.1", port=16259, username="", password="")
+    # 从 SecureStore 加载凭据 (与 SearchPanel._auto_load_or_prompt_setup 一致)
+    username, password = "", ""
+    try:
+        store = SecureStore("desktop_auto")
+        username = store.load("everything_http_user") or ""
+        password = store.load("everything_http_pass") or ""
+    except Exception:
+        pass
+    config = EverythingConfig(host="127.0.0.1", port=16259, username=username, password=password)
     try:
         eh = EverythingHTTP(config)
         results = eh.search(query, limit=limit, offset=offset, sort=sort, path=path)
