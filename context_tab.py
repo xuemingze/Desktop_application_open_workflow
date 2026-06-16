@@ -526,9 +526,50 @@ class ContextTab(QWidget):
             return
 
         self._append_log(f"[放行] 命中规则: {result.rule_name}")
-        # 剪贴板事件需要送到 AI；其他事件直接放行
+        # 剪贴板事件: 先按规则兑底弹一条气泡, LLM 如果推荐更好会覆盖
         if capsule.source == "clipboard":
             self._agent.process(capsule)
+            self._fallback_toast_by_rule(capsule, result.rule_name)
+
+    def _fallback_toast_by_rule(self, capsule: ContextCapsule, rule_name: str) -> None:
+        """兑底: 根据嗅探规则名直接弹一条气泡,不依赖 LLM
+
+        场景: LLM 返回 need_action=false (小模型不够智能),但规则已明确
+        匹配到 IP/URL/报错/路径等 → 应该帮用户推一跟动作。
+        """
+        text = (capsule.clipboard_text or "").strip()
+        if not text:
+            return
+        # 规则 -> 动作 映射表
+        RULE_FALLBACK = {
+            "IP 地址":       ("launch_shortcut",  "mstsc",            f"检测到 IP {text},打开远程桌面？"),
+            "报错信息":      ("search_local_files", text[:30],          "发现报错,搜索相关日志?"),
+            "URL":          ("launch_shortcut",  text,                f"检测到链接,打开?"),
+            "域名":         ("launch_shortcut",  "https://" + text,   f"检测到域名,打开?"),
+            "Windows 路径": ("launch_shortcut",  "explorer",          f"打开路径 {text}?"),
+            "Unix 路径":    ("search_local_files", text,                f"搜索路径 {text}?"),
+            "Nginx 配置":   ("search_local_files", "nginx.conf",        "查找 nginx 配置?"),
+            "命令行":        ("search_local_files", text,                "查找相关脚本?"),
+            "单据/表格":    ("search_local_files", text[:30],          "查找单据相关文件?"),
+        }
+        if rule_name not in RULE_FALLBACK:
+            return
+        sug, param, msg = RULE_FALLBACK[rule_name]
+        # 避免 LLM 已经在 intent_ready 中推过同一条 → 重复
+        # 解决方案: 只在 LLM 决策后没产生 toast 的情况下 (现在 05s 后)才兑底
+        # 简单点: 先用 QTimer.singleShot 延迟推, 让 LLM 先推
+        def _show():
+            from log_bus import log_bus
+            log_bus.emit(f"[兑底] 按规则「{rule_name}」生成推荐: {msg}")
+            intent = ToastIntent(
+                intent=f"兑底-{rule_name}",
+                message=msg,
+                suggested_action=sug,
+                action_param=param,
+            )
+            self._toast_manager.show_toast(intent)
+        # 延迟 4 秒,给 LLM 先推的机会(LLM 需 3-11 秒)
+        QTimer.singleShot(4000, _show)
 
     def _on_toast_clicked(self, intent: ToastIntent):
         """用户点击了气泡"""
