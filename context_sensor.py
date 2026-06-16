@@ -67,20 +67,21 @@ class ClipboardSensor(QObject):
     def _on_clipboard_change(self):
         from PySide6.QtGui import QGuiApplication
         text = QGuiApplication.clipboard().text() or ""
+        norm_text = text.strip()
         now = time.time()
 
-        # 去重：同一内容在 debounce 窗口内不重复上报
-        if text == self._last_text and (now - self._last_time) < (self._debounce_ms / 1000.0):
-            return
-
         # 空内容丢弃
-        if not text.strip():
+        if not norm_text:
             return
 
-        self._last_text = text
+        # 去重：忽略前后空白/换行，避免 "\n192.168.0.1\n" 和 "192.168.0.1" 被当成两次
+        if norm_text == self._last_text and (now - self._last_time) < (self._debounce_ms / 1000.0):
+            return
+
+        self._last_text = norm_text
         self._last_time = now
 
-        cap = ContextCapsule(source="clipboard", clipboard_text=text)
+        cap = ContextCapsule(source="clipboard", clipboard_text=norm_text)
         # 同步获取前台窗口信息
         cap.foreground_window, cap.foreground_app = get_foreground_window_info()
         self.captured.emit(cap)

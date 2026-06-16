@@ -117,7 +117,7 @@ class UserProfile:
 
         # 3. 语义别名：用户写“游戏/独立游戏/电竞”等，自动匹配常见游戏客户端/进程名
         alias_map = {
-            "游戏": ["steam", "steamwebhelper", "epic", "epicgameslauncher", "wegame", "tgp", "mihoyo", "hoyoplay", "hyp", "launcher", "yuanshen", "genshin", "wuthering", "鸣潮", "原神", "starrail", "zenless", "client-win64-shipping"],
+            "游戏": ["steam", "steamwebhelper", "epic", "epicgameslauncher", "wegame", "tgp", "mihoyo", "hoyoplay", "hyp", "launcher", "yuanshen", "genshin", "wuthering", "鸣潮", "原神", "崩坏", "星穹铁道", "绝区零", "异环", "无限暖暖", "starrail", "zenless", "client-win64-shipping"],
             "独立游戏": ["steam", "epic", "itch", "itch.io"],
             "电竞": ["steam", "wegame", "valorant", "league", "lol", "cs2", "dota"],
             "摄影": ["photoshop", "lightroom", "camera", "captureone"],
@@ -503,6 +503,7 @@ class BehaviorInterestMatcher(QObject):
                     break
 
             if matched_text:
+                self.log_signal.emit(f"[行为触发] 命中 {matched_kind}:{matched_text} / 关键词 {kw}")
                 # 冷却检查：同一关键词 + 同一进程事件分开冷却
                 cooldown_key = f"{kw_lower}:{source}:{event_type}:{matched_text.lower()}"
                 now = time.time()

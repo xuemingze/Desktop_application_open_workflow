@@ -845,7 +845,9 @@ class ContextTab(QWidget):
         return {}
 
     def _save_config(self):
-        cfg = {
+        # 保留 _save_proactive_config 写入的 proactive 段，避免保存后端/规则时把用户档案覆盖掉
+        cfg = dict(self._config) if isinstance(self._config, dict) else {}
+        cfg.update({
             "blacklist_extra": self._gatekeeper.get_blacklist(),
             "rule_overrides": [
                 {"name": r.name, "enabled": r.enabled}
@@ -858,7 +860,8 @@ class ContextTab(QWidget):
                 "model": self.model_input.currentText(),
                 "timeout": self.timeout_spin.value(),
             },
-        }
+        })
+        self._config = cfg
         try:
             CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as e:

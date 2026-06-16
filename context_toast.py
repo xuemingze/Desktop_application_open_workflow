@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import re
+import time
 
 from PySide6.QtCore import (
     Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, QPoint, QSize, Signal, QObject,
@@ -222,9 +224,41 @@ class ToastManager(QObject):
         super().__init__(parent)
         self._queue: deque[ToastBubble] = deque(maxlen=3)
         self._move_animations: list[QPropertyAnimation] = []
+        self._recent_keys: dict[str, float] = {}
+        self._dedupe_seconds = 12.0
+
+    def _intent_key(self, intent: ToastIntent) -> str:
+        """短时间去重 key。
+
+        同一个 IP/URL/动作在 LLM 推荐 + 规则兜底 + 剪贴板重复事件中可能产生多条不同文案，
+        这里按实体去重，而不是按完整 message 去重。
+        """
+        text = f"{intent.intent} {intent.message} {intent.suggested_action} {intent.action_param}"
+        ip = re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text)
+        if ip:
+            return f"ip:{ip.group(0)}"
+        url = re.search(r"https?://[^\s]+", text)
+        if url:
+            return f"url:{url.group(0).rstrip('/')}"
+        return f"{intent.suggested_action}:{intent.action_param or intent.message[:30]}".lower()
 
     def show_toast(self, intent: ToastIntent):
         """显示一个新气泡"""
+        key = self._intent_key(intent)
+        now = time.time()
+        # 清理旧 key
+        for k, ts in list(self._recent_keys.items()):
+            if now - ts > self._dedupe_seconds:
+                self._recent_keys.pop(k, None)
+        if key in self._recent_keys and now - self._recent_keys[key] <= self._dedupe_seconds:
+            try:
+                from log_bus import log_bus
+                log_bus.emit(f"[Toast] 去重跳过: {key}")
+            except Exception:
+                pass
+            return
+        self._recent_keys[key] = now
+
         try:
             from log_bus import log_bus
             log_bus.emit(f"[Toast] show_toast: {intent.message} -> {intent.suggested_action}({intent.action_param})")
@@ -253,6 +287,7 @@ class ToastManager(QObject):
         for t in list(self._queue):
             t.fade_out()
         self._queue.clear()
+        self._recent_keys.clear()
 
     def _on_toast_closed(self, toast: ToastBubble):
         try:
