@@ -483,10 +483,6 @@ class BehaviorInterestMatcher(QObject):
         if not self._enabled:
             return
 
-        keywords = self._profile.get_interest_keywords()
-        if not keywords:
-            return
-
         source = getattr(capsule, "source", "") or ""
         event_type = getattr(capsule, "event_type", "") or ""
 
@@ -505,6 +501,14 @@ class BehaviorInterestMatcher(QObject):
                 session = self._active_sessions.get(proc_key, {})
                 self._fire_process_exit_companion(session.get("keyword", process_name), process_name)
                 return
+
+        # 文档/办公类动作独立识别：意味着用户在工作，不依赖兴趣关键词
+        if self._maybe_fire_document_work_companion(source, event_type, process_name, window_title, window_app, file_path):
+            return
+
+        keywords = self._profile.get_interest_keywords()
+        if not keywords:
+            return
 
         candidates = [
             ("process", process_name),
@@ -545,6 +549,45 @@ class BehaviorInterestMatcher(QObject):
                         self._mark_active_session(window_app, kw, display_name=matched_text)
                     self._fire_behavior_question(kw, matched_text, source, event_type, matched_kind)
                 break  # 一次只触发一个关键词
+
+    def _maybe_fire_document_work_companion(self, source: str, event_type: str, process_name: str, window_title: str, window_app: str, file_path: str) -> bool:
+        text = " ".join([process_name or "", window_title or "", window_app or "", file_path or ""]).lower()
+        if not text.strip():
+            return False
+        doc_markers = [
+            "winword", "word.exe", "excel.exe", "powerpnt", "wps", "et.exe", "wpp.exe",
+            "acrobat", "pdf", "notion", "feishu", "lark", "飞书", "腾讯文档", "docs.qq.com",
+            "语雀", "yuque", "obsidian", "typora", "onenote", "xmind",
+            ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".pdf", ".md",
+            "文档", "表格", "幻灯片", "报告", "方案", "合同", "论文", "简历", "周报", "日报",
+        ]
+        if not any(m in text for m in doc_markers):
+            return False
+        if source == "process" and event_type == "exited":
+            return False
+        key = f"doc-work:{source}:{(window_app or process_name or window_title or file_path).lower()}"
+        now = time.time()
+        last = self._cooldown.get(key, 0)
+        if now - last < 20 * 60:
+            return True
+        self._cooldown[key] = now
+        title = window_title or file_path or process_name or "文档"
+        short = title.strip()
+        if len(short) > 36:
+            short = short[:36].rstrip() + "…"
+        templates = [
+            f"看起来你在处理「{short}」。要不要我帮你理一下思路，或者拆成几个小步骤？",
+            f"进入工作模式啦：{short}。需要我陪你梳理重点、写个提纲，还是做个检查清单？",
+            f"你像是在看文档/做材料。要不要我帮你总结、润色，或者把下一步列出来？",
+            f"工作时间到～如果这份材料有点乱，我可以帮你先抓重点。",
+        ]
+        q = ProactiveQuestion(text=random.choice(templates), category="work", timestamp=time.time())
+        self._history.append(q)
+        while len(self._history) > 100:
+            self._history.popleft()
+        self.log_signal.emit(f"[行为触发] 文档工作陪伴: {title} → {q.text}")
+        self.triggered.emit(q)
+        return True
 
     def _session_key(self, matched_text: str) -> str:
         return (matched_text or "").lower().strip()
