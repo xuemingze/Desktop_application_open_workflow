@@ -710,7 +710,7 @@ class ContextChatTab(QWidget):
         # 防止堆积过多
         self._next_context = self._next_context[-5:]
         if visible_hint:
-            self._append_system(f"🧩 已带入气泡上文：{visible_hint}")
+            self._append_system(visible_hint)
 
     def send_text(self, text: str):
         """外部小聊天窗调用：复用主 AI 对话页的同一套发送/历史链路。"""
@@ -740,7 +740,7 @@ class ContextChatTab(QWidget):
         self._append_user(text)
         self.input_edit.clear()
         self.btn_send.setEnabled(False)
-        self.status_label.setText("⏳ AI 思考中...")
+        self.status_label.setText("💭 思考中…")
 
         # 启动 worker。气泡上下文只注入下一轮，即使不保留历史也要带上。
         history_for_worker = []
@@ -767,7 +767,10 @@ class ContextChatTab(QWidget):
     @Slot(str)
     def _on_thinking(self, msg: str):
         if self.chk_show_thinking.isChecked():
-            self.status_label.setText(f"💭 {msg}")
+            if "生成" in msg or "回复" in msg:
+                self.status_label.setText("✨ 回复中…")
+            else:
+                self.status_label.setText("💭 思考中…")
 
     @Slot(str, dict)
     def _on_tool_call(self, action: str, args: dict):
