@@ -611,12 +611,14 @@ class ContextTab(QWidget):
             except Exception:
                 pass
             prompt = f"请把下面这段英文翻译成{lang}，保留专有名词，并在必要时补充一句上下文说明：\n\n{text}"
-            msg = f"检测到英文文本，要翻译成{lang}吗？"
+            preview = self._learning_text_preview(text)
+            msg = f"📘 翻译为{lang}: {preview}"
             self._show_learning_toast(rule_name, msg, prompt)
             return
         if rule_name == "学术词汇":
             prompt = f"请解释下面内容中的学术词汇/概念：先用通俗中文解释，再给一个例子，最后列出关键词。\n\n{text}"
-            msg = "检测到学术/专业词汇，要我解释一下吗？"
+            preview = self._learning_text_preview(text)
+            msg = f"🎓 解释: {preview}"
             self._show_learning_toast(rule_name, msg, prompt)
             return
 
@@ -650,6 +652,12 @@ class ContextTab(QWidget):
             self._toast_manager.show_toast(intent)
         # 延迟 4 秒,给 LLM 先推的机会(LLM 需 3-11 秒)
         QTimer.singleShot(4000, _show)
+
+    def _learning_text_preview(self, text: str, max_len: int = 90) -> str:
+        clean = " ".join((text or "").split())
+        if len(clean) <= max_len:
+            return clean
+        return clean[:max_len].rstrip() + "…"
 
     def _show_learning_toast(self, rule_name: str, msg: str, prompt: str):
         import time
