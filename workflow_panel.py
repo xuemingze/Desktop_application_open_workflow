@@ -68,6 +68,15 @@ class SnipDialog(QDialog):
 # 步骤执行器
 # ============================================================
 class StepExecutor:
+    # 全局 launcher 回调引用 (由 main_win 启动时设置)
+    # 签名: launch_by_path(path: str) -> bool
+    # 返回 True 表示已交给 main_win 处理 (尊重 launch_mode 绑定)
+    _launcher = None
+
+    @classmethod
+    def set_launcher(cls, fn) -> None:
+        cls._launcher = fn
+
     @staticmethod
     def execute(step: dict, log_func) -> bool:
         step_type = step.get("type", "")
@@ -101,12 +110,23 @@ class StepExecutor:
 
     @staticmethod
     def _launch_app(params, log_func) -> bool:
-        import subprocess
         path = params.get("path", "")
         if not path or not Path(path).exists():
             log_func(f"  路径不存在: {path}")
             return False
-        log_func(f"  启动: {path}")
+        # 优先交给 main_win 的 launcher (尊重 launch_mode 绑定)
+        if StepExecutor._launcher is not None:
+            try:
+                ok = StepExecutor._launcher(path)
+                if ok:
+                    log_func(f"  已交给主窗口启动 (尊重 launch_mode 绑定): {path}")
+                    return True
+                # launcher 返回 False 表示路径未匹配到快捷方式,fallback
+            except Exception as e:
+                log_func(f"  launcher 调用失败, fallback: {e}")
+        # Fallback: 直接 Popen (不尊重绑定)
+        import subprocess
+        log_func(f"  启动 (Popen fallback): {path}")
         subprocess.Popen([path], creationflags=0x08000000)
         log_func(f"  已启动")
         return True

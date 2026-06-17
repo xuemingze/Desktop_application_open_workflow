@@ -137,7 +137,7 @@ class ToolsTab(QWidget):
         layout.addWidget(scroll)
 
     def _build_system_box(self) -> QGroupBox:
-        """系统设置：开机启动 + 默认后台运行"""
+        """系统设置:开机启动 + 默认后台运行"""
         gb = QGroupBox("⚙️ 系统设置")
         v = QVBoxLayout(gb)
         v.setContentsMargins(10, 6, 10, 10)
@@ -179,6 +179,13 @@ class ToolsTab(QWidget):
         line2.setStyleSheet("color: #e5e7eb;")
         v.addWidget(line2)
 
+        # 显示操作日志
+        self.chk_show_log = QCheckBox("📋 显示底部操作日志")
+        self.chk_show_log.setStyleSheet("font-weight: bold; font-size: 12px; padding: 4px;")
+        self.chk_show_log.setChecked(True)
+        self.chk_show_log.toggled.connect(self._on_show_log_toggle)
+        v.addWidget(self.chk_show_log)
+
         # 测试/立即隐藏按钮
         btn_row = QHBoxLayout()
         self.btn_hide_to_tray = QPushButton("🫥  立即隐藏到托盘")
@@ -199,7 +206,7 @@ class ToolsTab(QWidget):
 
         # 提示
         hint = QLabel(
-            "💡 提示：关闭窗口后会最小化到托盘；右键托盘图标可“退出”。\n"
+            "💡 提示:关闭窗口后会最小化到托盘;右键托盘图标可「退出」。\n"
             "   如需开机启动会写入 HKCU 注册表项 (无需管理员权限)。"
         )
         hint.setStyleSheet("color: #888; font-size: 11px; padding: 4px 0 0 0;")
@@ -223,12 +230,12 @@ class ToolsTab(QWidget):
         dv.setContentsMargins(8, 4, 8, 6)
 
         warn_label = QLabel(
-            "* 卸载将删除：\n"
+            "* 卸载将删除:\n"
             "   - 所有运行时数据(工作流、自定义应用、窗口状态)\n"
             "   - 用户配置(后端地址、API Key、AI 感知档案)\n"
             "   - 日志文件\n"
             "   - 本程序 exe 文件\n"
-            "此操作不可逆，请确认已备份重要数据。"
+            "此操作不可逆,请确认已备份重要数据。"
         )
         warn_label.setStyleSheet(
             "color: #991b1b; font-size: 11px; padding: 4px; "
@@ -347,7 +354,7 @@ class ToolsTab(QWidget):
             tf.setContentsMargins(8, 6, 8, 6)
 
             # 标题
-            title_lbl = QLabel(f"<b>{tool['name']}</b> — {tool['title']}")
+            title_lbl = QLabel(f"<b>{tool['name']}</b> - {tool['title']}")
             title_lbl.setStyleSheet("color: #2563eb; font-size: 12px;")
             tf.addWidget(title_lbl)
 
@@ -419,7 +426,7 @@ class ToolsTab(QWidget):
         return lb
 
     # ------------------------------------------------------------------
-    # 系统设置：开机启动 / 默认后台运行
+    # 系统设置:开机启动 / 默认后台运行
     # ------------------------------------------------------------------
     def _load_global_config(self) -> dict:
         """加载全局 config.json"""
@@ -579,8 +586,15 @@ class ToolsTab(QWidget):
             pass
         QTimer.singleShot(100, self._refresh_system_status)
 
+    def _on_show_log_toggle(self, checked: bool) -> None:
+        """开关 显示/隐藏底部操作日志"""
+        main_win = self.window()
+        if main_win is None or not isinstance(main_win, QWidget):
+            return
+        main_win.log_view.setVisible(checked)
+
     def _hide_main_to_tray(self) -> None:
-        """点击 “立即隐藏到托盘” 按钮"""
+        """点击 "立即隐藏到托盘" 按钮"""
         main_win = self.window()
         if main_win is None or not isinstance(main_win, QWidget):
             QMessageBox.information(self, "提示", "找不到主窗口")
@@ -743,7 +757,7 @@ class ToolsTab(QWidget):
                 self.lbl_mcp_status.setText("状态: 🗑 桌面快捷方式已删除")
                 QMessageBox.information(self, "成功", "桌面快捷方式已删除")
             else:
-                self.lbl_mcp_status.setText("状态: ℹ️ 快捷方式不存在")
+                self.lbl_mcp_status.setText("状态: i️ 快捷方式不存在")
                 QMessageBox.information(self, "提示", "桌面快捷方式不存在")
         except Exception as e:
             self.lbl_mcp_status.setText(f"状态: ❌ 删除失败: {e}")

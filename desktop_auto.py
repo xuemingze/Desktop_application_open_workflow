@@ -262,7 +262,7 @@ from PySide6.QtWidgets import (
     QPushButton, QListWidget, QListWidgetItem, QLabel, QTextEdit,
     QFileDialog, QMessageBox, QStatusBar, QGroupBox, QRadioButton,
     QButtonGroup, QCheckBox, QSpinBox, QLineEdit, QComboBox, QInputDialog,
-    QSystemTrayIcon, QMenu, QProgressDialog, QSizePolicy,
+    QSystemTrayIcon, QMenu, QProgressDialog, QSizePolicy, QScrollArea, QFrame,
 )
 
 # ---------------------------------------------------------------------------
@@ -308,6 +308,10 @@ class ShortcutInfo:
     lnk_path: str
     work_dir: str = ""
     icon_samples: list[str] = field(default_factory=list)  # 多模板路径
+    launch_mode: str = ""  # 绑定的启动方式 (desktop/direct/shell/image/coord),空=跟随 UI 单选按钮
+    _coord_x: int = 0     # 绑定的坐标 (快捷方式级别,优先于 UI)
+    _coord_y: int = 0
+    _click_type: str = "left_double"
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +366,17 @@ def scan_desktop_shortcuts() -> list[ShortcutInfo]:
             lnk_path="",  # 自定义不是快捷方式
             work_dir=custom.get("work_dir", ""),
         ))
+
+    # 加载快捷方式绑定元数据(launch_mode 等)
+    meta = load_shortcut_meta()
+    for sc in out:
+        key = _shortcut_key(sc)
+        item = meta.get(key) or {}
+        sc.launch_mode = item.get("launch_mode", "")
+        # 加载绑定坐标 (后续可在 run_action 里采用)
+        sc._coord_x = int(item.get("coord_x", 0) or 0)
+        sc._coord_y = int(item.get("coord_y", 0) or 0)
+        sc._click_type = item.get("click_type", "left_double")
     return out
 
 
@@ -404,6 +419,41 @@ if USER_DATA_DIR.exists():
 
 # 自定义应用管理
 CUSTOM_APPS_FILE = USER_DATA_DIR / "custom_apps.json"
+
+# 快捷方式绑定元数据: 存 launch_mode 等
+SHORTCUT_META_FILE = USER_DATA_DIR / "shortcut_meta.json"
+
+
+def _shortcut_key(sc) -> str:
+    """生成快捷方式的唯一键。优先用 lnk_path，其次 target，最后 name。"""
+    if sc.lnk_path:
+        return sc.lnk_path
+    if sc.target:
+        return f"target::{sc.target}"
+    return f"name::{sc.name}"
+
+
+def load_shortcut_meta() -> dict:
+    """加载 shortcut_meta.json, 返回 {key: {launch_mode}}"""
+    if not SHORTCUT_META_FILE.exists():
+        return {}
+    try:
+        data = json.loads(SHORTCUT_META_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        log.warning(f"shortcut_meta.json 读取失败: {e}")
+        return {}
+
+
+def save_shortcut_meta(meta: dict) -> None:
+    """保存到 shortcut_meta.json"""
+    try:
+        SHORTCUT_META_FILE.write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+    except Exception as e:
+        log.warning(f"shortcut_meta.json 保存失败: {e}")
 
 
 def load_custom_apps() -> list[dict]:
@@ -681,13 +731,33 @@ class LaunchWorker(QThread):
         info = self.info
         self.log_signal.emit(f"🖱️ 鼠标双击桌面图标: {info.name}")
 
-        # B. 先用截图模板匹配(最精准)
+        # B. 先用截图模板匹配(最精准) — 这是首选
         try:
             self._launch_desktop_click_by_image(info)
             self._wait_window_ready(info.name, timeout=20)
             return
         except Exception as e:
             self.log_signal.emit(f"   ⚠️ 模板匹配失败: {e}")
+
+        # B'. UI 坐标优先 (X>0 或 Y>0) — 如果用户手动设置过坐标,直接采用
+        x = self.coord.get("x", 0) if self.coord else 0
+        y = self.coord.get("y", 0) if self.coord else 0
+        click_type = self.coord.get("click_type", "left_double") if self.coord else "left_double"
+        if x > 0 or y > 0:
+            self.log_signal.emit(f"   🎯 使用 UI 设置的坐标 ({x}, {y}) 类型={click_type},跳过桌面枚举")
+            import pyautogui as pa
+            import time as _t
+            pa.hotkey('win', 'd')
+            _t.sleep(0.3)
+            if click_type == "right_single":
+                pa.click(x, y, button="right")
+            elif click_type == "left_single":
+                pa.click(x, y)
+            else:
+                pa.doubleClick(x, y)
+            self.log_signal.emit(f"   ✅ 已点击")
+            self._wait_window_ready(info.name, timeout=20)
+            return
 
         # A. 走 IShellFolder API 拿真实图标位置
         logical_idx = None
@@ -1259,7 +1329,7 @@ class MainWindow(QMainWindow):
         self.radio_direct = QRadioButton("🚀 直接启动 (Popen,最优先,最稳定)", self)
         self.radio_desktop = QRadioButton("🖱️ 鼠标双击桌面图标 (备选)", self)
         self.radio_shellexec = QRadioButton("Shell 启动 (cmd /c,特殊场景)", self)
-        self.radio_image = QRadioButton("📸 图像识别点击 (最后兜底)", self)
+        self.radio_image = QRadioButton("📸 捕捉坐标点击", self)
         self.radio_direct.setChecked(True)
         self.mode_group.addButton(self.radio_desktop, 1)
         self.mode_group.addButton(self.radio_direct, 2)
@@ -1301,10 +1371,19 @@ class MainWindow(QMainWindow):
         self.right_tabs = QTabWidget(right)
 
         # === Tab 1: 快速启动 (原内容) ===
+        # 用 QScrollArea 包裹,防止控件重叠
         quick_tab = QWidget()
-        rv = QVBoxLayout(quick_tab)
+        quick_outer = QVBoxLayout(quick_tab)
+        quick_outer.setContentsMargins(0, 0, 0, 0)
+        quick_scroll = QScrollArea(quick_tab)
+        quick_scroll.setWidgetResizable(True)
+        quick_scroll.setFrameShape(QFrame.NoFrame)
+        quick_inner = QWidget()
+        quick_scroll.setWidget(quick_inner)
+        rv = QVBoxLayout(quick_inner)
         rv.setContentsMargins(4, 4, 4, 4)
         rv.setSpacing(6)
+        quick_outer.addWidget(quick_scroll)
 
         rv.addWidget(QLabel("目标信息:"))
         rv.addWidget(self.info_label)
@@ -1316,6 +1395,36 @@ class MainWindow(QMainWindow):
         gv.addWidget(self.radio_image)
         gb.setMinimumHeight(150)
         rv.addWidget(gb)
+
+        # ===== 启动方式绑定 (快捷方式级别) =====
+        bind_box = QGroupBox("🔗 启动方式绑定 (双击/工作流 都生效)")
+        bv = QVBoxLayout(bind_box)
+        bv.setContentsMargins(8, 4, 8, 6)
+        bv.setSpacing(4)
+        self.lbl_launch_mode_hint = QLabel("未选择快捷方式")
+        self.lbl_launch_mode_hint.setStyleSheet("color: #2563eb; font-size: 11px; padding: 2px 4px;")
+        self.lbl_launch_mode_hint.setWordWrap(True)
+        bv.addWidget(self.lbl_launch_mode_hint)
+        bind_row = QHBoxLayout()
+        self.btn_bind_launch_mode = QPushButton("💾 绑定当前启动方式")
+        self.btn_bind_launch_mode.setToolTip("把当前选择的启动方式绑定到本快捷方式。以后双击/工作流调用都会用这个 mode。")
+        self.btn_bind_launch_mode.setStyleSheet(
+            "QPushButton { background:#2563eb; color:white; font-weight:bold; padding:5px 10px; }"
+            "QPushButton:hover { background:#1d4ed8; }"
+            "QPushButton:disabled { background:#9ca3af; }"
+        )
+        self.btn_bind_launch_mode.clicked.connect(self._bind_launch_mode)
+        self.btn_bind_launch_mode.setEnabled(False)
+        bind_row.addWidget(self.btn_bind_launch_mode)
+        self.btn_clear_launch_mode = QPushButton("🗑 清除绑定")
+        self.btn_clear_launch_mode.setToolTip("清除本快捷方式的启动方式绑定,以后跟随机 UI 单选按钮")
+        self.btn_clear_launch_mode.clicked.connect(self._clear_launch_mode)
+        self.btn_clear_launch_mode.setEnabled(False)
+        bind_row.addWidget(self.btn_clear_launch_mode)
+        bind_row.addStretch()
+        bv.addLayout(bind_row)
+        rv.addWidget(bind_box)
+
         rv.addWidget(self.chk_notepad)
         rv.addWidget(QLabel("图标模板 (图像模式需要,其他模式可选):"))
         rv.addWidget(self.samples_label)
@@ -1842,6 +1951,10 @@ class MainWindow(QMainWindow):
             self.workflow_editor.refresh_shortcuts()
 
     def _current(self) -> Optional[ShortcutInfo]:
+        # 优先返回 launch_by_path 传过来的 override (供工作流调用)
+        override = getattr(self, "_current_override", None)
+        if override is not None:
+            return override
         row = self.list_widget.currentRow()
         if 0 <= row < len(self.shortcuts):
             return self.shortcuts[row]
@@ -1895,13 +2008,119 @@ class MainWindow(QMainWindow):
             f"<b>{sc.name}</b><br>"
             f"目标: {sc.target}<br>"
             f"工作目录: {sc.work_dir or '(默认)'}<br>"
-            f"快捷方式: {sc.lnk_path}"
+            f"快捷方式: {sc.lnk_path}<br>"
+            f"绑定启动方式: <b style='color:#2563eb;'>{self._mode_name(sc.launch_mode)}</b>"
         )
         # 加载该条目之前保存过的模板(从文件 meta.json 简化版,这里每次只读文件名约定)
         sample_dir = Path("samples")
         if sample_dir.exists():
             sc.icon_samples = [str(p) for p in sample_dir.glob(f"{sc.name}_*.png")]
         self._refresh_samples_label()
+        # 如果该快捷方式已绑定 mode,自动选中对应单选
+        if sc.launch_mode == "desktop":
+            self.radio_desktop.setChecked(True)
+        elif sc.launch_mode == "direct":
+            self.radio_direct.setChecked(True)
+        elif sc.launch_mode == "shell":
+            self.radio_shellexec.setChecked(True)
+        elif sc.launch_mode == "image":
+            self.radio_image.setChecked(True)
+        self._refresh_launch_mode_hint()
+
+    @staticmethod
+    def _mode_name(mode: str) -> str:
+        return {
+            "": "(未绑定,跟随 UI)",
+            "desktop": "鼠标双击桌面图标",
+            "direct": "直接启动 (Popen)",
+            "shell": "Shell 启动 (cmd /c)",
+            "image": "图像识别 / 坐标点击",
+        }.get(mode, mode)
+
+    def _refresh_launch_mode_hint(self) -> None:
+        """刷新 "绑定启动方式" 区提示。"""
+        sc = self._current()
+        if not sc:
+            self.lbl_launch_mode_hint.setText("未选择快捷方式")
+            self.btn_bind_launch_mode.setEnabled(False)
+            self.btn_clear_launch_mode.setEnabled(False)
+            return
+        if sc.launch_mode:
+            self.lbl_launch_mode_hint.setText(
+                f"「{sc.name}」已绑定: <b>{self._mode_name(sc.launch_mode)}</b>。<br>"
+                f"双击/工作流 调用时将使用该 mode，不再受 UI 单选按钮影响。"
+            )
+        else:
+            self.lbl_launch_mode_hint.setText(
+                f"「{sc.name}」未绑定启动方式。双击/工作流 调用时使用当前 UI 选择的 mode。"
+            )
+        self.btn_bind_launch_mode.setEnabled(True)
+        self.btn_clear_launch_mode.setEnabled(bool(sc.launch_mode))
+
+    def _bind_launch_mode(self) -> None:
+        """把当前 UI 选择的 mode 绑定到本快捷方式，并持久化。"""
+        sc = self._current()
+        if not sc:
+            return
+        if self.radio_desktop.isChecked():
+            mode = "desktop"
+        elif self.radio_direct.isChecked():
+            mode = "direct"
+        elif self.radio_shellexec.isChecked():
+            mode = "shell"
+        else:
+            mode = "image"
+        sc.launch_mode = mode
+        meta = load_shortcut_meta()
+        meta[_shortcut_key(sc)] = {
+            "launch_mode": mode,
+            "coord_x": self.coord_x.value(),
+            "coord_y": self.coord_y.value(),
+            "click_type": self.coord_click_type.currentData() or "left_double",
+        }
+        save_shortcut_meta(meta)
+        self._append_log(f"🔗 已绑定「{sc.name}」启动方式: {self._mode_name(mode)}")
+        if self.coord_x.value() > 0 or self.coord_y.value() > 0:
+            self._append_log(
+                f"   📍 同时保存坐标: ({self.coord_x.value()}, {self.coord_y.value()}) 类型={self.coord_click_type.currentData()}"
+            )
+        self._refresh_launch_mode_hint()
+
+    def _clear_launch_mode(self) -> None:
+        """清除本快捷方式的启动方式绑定。"""
+        sc = self._current()
+        if not sc:
+            return
+        sc.launch_mode = ""
+        meta = load_shortcut_meta()
+        key = _shortcut_key(sc)
+        if key in meta:
+            meta.pop(key)
+            save_shortcut_meta(meta)
+        self._append_log(f"🗑 已清除「{sc.name}」的启动方式绑定")
+        self._refresh_launch_mode_hint()
+
+    def launch_by_path(self, path: str) -> bool:
+        """供工作流调用。根据 path 查找对应 ShortcutInfo 并尊重其 launch_mode 绑定。
+        返回 True=已处理, False=未找到对应 sc (由 workflow 走 fallback)。"""
+        # 归一化路径
+        path_norm = str(Path(path).resolve()) if Path(path).exists() else path
+        for sc in self.shortcuts:
+            if sc.target == path or sc.target == path_norm:
+                self._current_override = sc
+                try:
+                    self.run_action()
+                finally:
+                    self._current_override = None
+                return True
+            if sc.lnk_path and Path(sc.lnk_path).resolve() == Path(path).resolve():
+                self._current_override = sc
+                try:
+                    self.run_action()
+                finally:
+                    self._current_override = None
+                return True
+        return False
 
     def _refresh_samples_label(self) -> None:
         sc = self._current()
@@ -1989,25 +2208,37 @@ class MainWindow(QMainWindow):
             return
 
         mode = (
-            "desktop" if self.radio_desktop.isChecked()
-            else "direct" if self.radio_direct.isChecked()
-            else "shell" if self.radio_shellexec.isChecked()
-            else "image"
+            sc.launch_mode if sc.launch_mode
+            else (
+                "desktop" if self.radio_desktop.isChecked()
+                else "direct" if self.radio_direct.isChecked()
+                else "shell" if self.radio_shellexec.isChecked()
+                else "image"
+            )
         )
         if mode == "image" and not sc.icon_samples:
             QMessageBox.warning(self, "提示", "图像识别模式需要先有模板,请用「截图框选」")
             return
+        if mode == "coord" and (self.coord_x.value() == 0 and self.coord_y.value() == 0):
+            QMessageBox.warning(self, "提示", "坐标点击模式需要先设置有效坐标")
+            return
 
         self.btn_run.setEnabled(False)
         self.btn_stop.setEnabled(True)
+        # coord 优先用 sc 上绑定的，其次 UI 当前值
+        coord_x = getattr(sc, "_coord_x", 0) or 0
+        coord_y = getattr(sc, "_coord_y", 0) or 0
+        if not (coord_x > 0 or coord_y > 0):
+            coord_x = self.coord_x.value()
+            coord_y = self.coord_y.value()
         self.worker = LaunchWorker(
             sc, mode,
             do_notepad=self.chk_notepad.isChecked(),
             extra_args=self.args_edit.text(),
             coord={
-                "x": self.coord_x.value(),
-                "y": self.coord_y.value(),
-                "click_type": self.coord_click_type.currentData()
+                "x": coord_x,
+                "y": coord_y,
+                "click_type": getattr(sc, "_click_type", "left_double") or self.coord_click_type.currentData()
             },
         )
         # (self.scope_all 已被工作流面板取代)
@@ -2379,6 +2610,12 @@ def main() -> int:
     win = MainWindow()
     # 订阅全局日志总线 (主窗口)
     win._setup_global_log_bus()
+    # 设置工作流 StepExecutor 的 launcher 回调 (尊重快捷方式的 launch_mode 绑定)
+    try:
+        from workflow_panel import StepExecutor
+        StepExecutor.set_launcher(win.launch_by_path)
+    except Exception:
+        pass
     # 判断是否需要默认后台运行
     start_in_background = "--background" in sys.argv or _is_default_background()
     if not start_in_background:
