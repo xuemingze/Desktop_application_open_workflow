@@ -24,6 +24,7 @@ import image_match  # noqa: F401
 import workflow_panel  # noqa: F401
 import search_panel  # noqa: F401
 import tools_tab  # noqa: F401
+from i18n import t  # noqa: F401
 
 import os
 import sys
