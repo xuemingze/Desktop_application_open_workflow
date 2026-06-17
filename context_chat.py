@@ -611,14 +611,14 @@ class ContextChatTab(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
 
-        # 顶部:标题 + 提示（标题紧凑，提示放在 chat 上方）
+        # 顶部:标题 + 提示
         top = QHBoxLayout()
-        title = QLabel("💬 AI 对话")
-        title.setFont(QFont("", 11, QFont.Bold))
+        title = QLabel("💬 AI 对话助手(可调用 MCP 工具)")
+        title.setFont(QFont("", 12, QFont.Bold))
         top.addWidget(title)
         top.addStretch()
-        hint = QLabel("支持:列工作流 / 启动应用 / 跑工作流 / 搜文件")
-        hint.setStyleSheet("color: #666; font-size: 10px;")
+        hint = QLabel("支持:列出工作流 / 启动应用 / 跑工作流 / 搜文件")
+        hint.setStyleSheet("color: #666; font-size: 11px;")
         top.addWidget(hint)
         root.addLayout(top)
 
