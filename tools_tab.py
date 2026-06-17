@@ -289,6 +289,18 @@ class ToolsTab(QWidget):
         try:
             set_lang(new_lang)
             lang_name = self.lang_combo.itemText(idx)
+            # 同时推送气泡通知（同步到 AI 对话 tab）
+            main_win = self.parent()
+            if main_win and hasattr(main_win, "context_tab") and main_win.context_tab:
+                from context_toast import ToastIntent
+                intent = ToastIntent(
+                    intent="\U0001f310 " + lang_name,
+                    message=t("msg_lang_changed_body", lang=lang_name),
+                    suggested_action="",
+                    action_param="",
+                )
+                main_win.context_tab._toast_manager.show_toast(intent)
+                main_win.context_tab.toast_broadcast.emit(intent)
             QMessageBox.information(
                 self,
                 t("msg_lang_changed_title"),

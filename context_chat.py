@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from context_agent import LLMBackend, OpenAICompatibleBackend, parse_intent_response
+from context_toast import ToastIntent
 from mcp_embedded import (
     scan_desktop_shortcuts, load_workflows, run_workflow_sync, launch_shortcut_sync,
 )
@@ -591,6 +592,7 @@ class ContextChatTab(QWidget):
     backend_changed = Signal(object)        # 让父级同步后端
     log_signal = Signal(str)                # 转发到 context_tab 主日志
     html_appended = Signal(str)             # 同步给小聊天窗
+    toast_broadcast = Signal(object)        # 广播到 context_tab toast 系统
 
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
@@ -800,9 +802,17 @@ class ContextChatTab(QWidget):
     @Slot(str, dict)
     def _on_tool_result(self, action: str, result: dict):
         self.log_signal.emit(f"[AI对话] {action} 结果: {json.dumps(result, ensure_ascii=False)[:200]}")
+        # 推送气泡（让 context_tab 同步显示）
+        ok = result.get("ok", False)
+        icon = "✅" if ok else "❌"
+        intent = ToastIntent(
+            intent=f"{icon} {action}",
+            message=f"AI 已调用工具: {action}",
+            suggested_action="",
+            action_param="",
+        )
+        self.toast_broadcast.emit(intent)
         if self.chk_show_thinking.isChecked():
-            ok = result.get("ok", False)
-            icon = "✅" if ok else "❌"
             if action == "web_search" and ok:
                 titles = [r.get("title", "") for r in result.get("results", [])[:3]]
                 note = result.get("note", "")

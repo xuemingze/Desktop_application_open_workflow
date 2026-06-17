@@ -176,6 +176,8 @@ class ContextTab(QWidget):
         self.context_chat_tab.set_backend(self._agent._backend)
         # 同步 AI 主动推送 (气泡) 到对话页
         self.toast_broadcast.connect(self.context_chat_tab.on_intent)
+        # 同步 AI chat 气泡事件到 toast 管理器（仅本地显示，不广播避免循环）
+        self.context_chat_tab.toast_broadcast.connect(self._toast_manager.show_toast)
         # 同步用户点击气泡
         self._toast_manager.toast_clicked.connect(self.context_chat_tab.on_toast_clicked)
         sub.addTab(self.context_chat_tab, t("ctx_tab_chat"))
