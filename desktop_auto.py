@@ -985,7 +985,8 @@ class LaunchWorker(QThread):
                     import cv2
                     screen_np = np.array(screen)
                     screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_RGB2GRAY)
-                    tpl_bgr = cv2.imread(str(c))
+                    # cv2.imread 不支持非 ASCII 路径,改用 np.fromfile + cv2.imdecode
+                    tpl_bgr = cv2.imdecode(np.fromfile(str(c), dtype=np.uint8), cv2.IMREAD_COLOR)
                     if tpl_bgr is None:
                         raise RuntimeError(f"无法读取模板: {c}")
                     tpl_gray = cv2.cvtColor(tpl_bgr, cv2.COLOR_BGR2GRAY)
@@ -1012,6 +1013,7 @@ class LaunchWorker(QThread):
                         cx = best_pos[0] + best_pos[2] // 2
                         cy = best_pos[1] + best_pos[3] // 2
                         self.log_signal.emit(f"   ✅ OpenCV 找到: 缩放={best_scale} 置信度={best_overall:.3f} @ ({cx}, {cy})")
+                        self._save_match_coord(info, cx, cy)
                         pyautogui.doubleClick(cx, cy)
                         self.log_signal.emit(f"   ✅ 双击完成")
                         matched = True
@@ -1030,6 +1032,7 @@ class LaunchWorker(QThread):
                         if box:
                             cx, cy = get_center(box)
                             self.log_signal.emit(f"   ✅ PIL 找到: ({cx}, {cy})")
+                            self._save_match_coord(info, cx, cy)
                             time.sleep(0.2)
                             pyautogui.doubleClick(cx, cy)
                             self.log_signal.emit(f"   ✅ 双击完成")
@@ -2066,7 +2069,7 @@ class MainWindow(QMainWindow):
         if sample_dir.exists():
             sc.icon_samples = [str(p) for p in sample_dir.glob(f"{sc.name}_*.png")]
         self._refresh_samples_label()
-        # 如果该快捷方式已绑定 mode,自动选中对应单选
+        # 如果该快捷方式已绑定 mode,自动选中对应单选;无绑定则默认 direct
         if sc.launch_mode == "desktop":
             self.radio_desktop.setChecked(True)
         elif sc.launch_mode == "direct":
@@ -2075,6 +2078,9 @@ class MainWindow(QMainWindow):
             self.radio_shellexec.setChecked(True)
         elif sc.launch_mode == "image":
             self.radio_image.setChecked(True)
+        else:
+            # 无绑定,默认使用直接启动
+            self.radio_direct.setChecked(True)
         self._refresh_launch_mode_hint()
 
     @staticmethod
@@ -2135,6 +2141,17 @@ class MainWindow(QMainWindow):
                 f"   📍 同时保存坐标: ({self.coord_x.value()}, {self.coord_y.value()}) 类型={self.coord_click_type.currentData()}"
             )
         self._refresh_launch_mode_hint()
+
+    def _save_match_coord(self, info, cx: int, cy: int) -> None:
+        """将模板匹配得到的中心坐标保存到元数据,供坐标点击兜底使用。"""
+        meta = load_shortcut_meta()
+        key = _shortcut_key(info)
+        entry = meta.get(key, {})
+        entry["coord_x"] = cx
+        entry["coord_y"] = cy
+        meta[key] = entry
+        save_shortcut_meta(meta)
+        self._append_log(f"   💾 已保存匹配坐标: ({cx}, {cy})")
 
     def _clear_launch_mode(self) -> None:
         """清除本快捷方式的启动方式绑定。"""
@@ -2340,6 +2357,7 @@ class MainWindow(QMainWindow):
 
         self.btn_run.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        self.worker = None  # 彻底清理,下次 run 从头开始
 
     # ---- 7.5a 清理历史残留进程 ----
     def cleanup_residuals(self) -> None:

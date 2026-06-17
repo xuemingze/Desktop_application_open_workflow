@@ -650,6 +650,16 @@ class WorkflowEditor(QWidget):
         click_row.addWidget(self.click_type_combo)
         click_row.addStretch()
         iw.addLayout(click_row)
+        # 捕捉坐标按钮
+        capture_row = QHBoxLayout()
+        self.btn_capture_match = QPushButton("🔍 捕捉坐标")
+        self.btn_capture_match.setToolTip("截图当前全屏→匹配模板→写入坐标→执行点击")
+        self.btn_capture_match.clicked.connect(self._capture_and_click)
+        self.capture_status = QLabel("")
+        self.capture_status.setStyleSheet("color: #888; font-size: 11px;")
+        capture_row.addWidget(self.btn_capture_match)
+        capture_row.addWidget(self.capture_status, 1)
+        iw.addLayout(capture_row)
         dv.addWidget(self.image_widget)
 
         # ============ 按键 专用控件 ============
@@ -918,6 +928,12 @@ class WorkflowEditor(QWidget):
             idx = self.click_type_combo.findData(click_type)
             if idx >= 0:
                 self.click_type_combo.setCurrentIndex(idx)
+            cx = params.get("x")
+            cy = params.get("y")
+            if cx and cy:
+                self.capture_status.setText(f"📍 已捕捉坐标 ({cx},{cy})")
+            else:
+                self.capture_status.setText("")
             self._update_image_preview()
         elif step_type == "key_press":
             self.key_edit.setText(params.get("keys", ""))
@@ -989,6 +1005,115 @@ class WorkflowEditor(QWidget):
             # 恢复显示
             main_win.show()
             main_win.raise_()
+
+    def _capture_and_click(self):
+        """截图当前全屏→匹配模板→写入坐标→执行点击"""
+        import pyautogui
+        from pathlib import Path
+        import numpy as np
+
+        # 1. 检查模板路径
+        template_path = self.image_path_edit.text().strip()
+        if not template_path:
+            self.capture_status.setText("⚠️ 请先输入或选择模板图片")
+            return
+        template_abs = str(Path(template_path).resolve())
+        if not Path(template_abs).exists():
+            self.capture_status.setText(f"⚠️ 模板不存在: {template_path}")
+            return
+
+        # 2. 可选: Win+D 显示桌面
+        if self.show_desktop_chk.isChecked():
+            pyautogui.hotkey('win', 'd')
+            time.sleep(0.5)
+            self.capture_status.setText("已按 Win+D,正在匹配...")
+        else:
+            self.capture_status.setText("正在截图匹配...")
+
+        # 3. 截全屏
+        screen = pyautogui.screenshot()
+        screen_np = np.array(screen)
+        confidence_thresh = self.conf_spin.value() / 100.0
+        click_type = self.click_type_combo.currentData() or "double"
+
+        # 4. 优先用 OpenCV 匹配
+        matched = False
+        cx, cy = 0, 0
+        try:
+            import cv2
+            screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_RGB2GRAY)
+            # cv2.imdecode 支持非 ASCII 路径
+            tpl_bgr = cv2.imdecode(np.fromfile(template_abs, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if tpl_bgr is None:
+                raise RuntimeError(f"无法读取模板: {template_abs}")
+            tpl_gray = cv2.cvtColor(tpl_bgr, cv2.COLOR_BGR2GRAY)
+            th, tw = tpl_gray.shape
+            sh, sw = screen_gray.shape
+            if tw > sw or th > sh:
+                raise RuntimeError("模板大于屏幕")
+
+            # 多尺度匹配
+            best_overall = 0.0
+            best_pos = None
+            best_scale = 1.0
+            for scale in [0.6, 0.8, 1.0, 1.2, 1.5]:
+                nw, nh = int(tw * scale), int(th * scale)
+                if nw < 8 or nh < 8 or nw > sw or nh > sh:
+                    continue
+                scaled = cv2.resize(tpl_gray, (nw, nh), interpolation=cv2.INTER_AREA)
+                result = cv2.matchTemplate(screen_gray, scaled, cv2.TM_CCOEFF_NORMED)
+                _, mv, _, ml = cv2.minMaxLoc(result)
+                if mv > best_overall:
+                    best_overall = mv
+                    best_pos = (ml[0], ml[1], nw, nh)
+                    best_scale = scale
+
+            if best_pos and best_overall >= confidence_thresh:
+                cx = best_pos[0] + best_pos[2] // 2
+                cy = best_pos[1] + best_pos[3] // 2
+                self.capture_status.setText(f"✅ 找到 @ ({cx},{cy}) 置信度={best_overall:.2f}")
+                matched = True
+            else:
+                self.capture_status.setText(f"⚠️ 未匹配,置信度={best_overall:.2f}<{confidence_thresh}")
+                return
+        except ImportError:
+            # OpenCV 不可用,走 PIL 兜底
+            from image_match import locate_on_screen, get_center
+            box = locate_on_screen(template_abs, confidence=confidence_thresh, screenshot=screen)
+            if box:
+                cx, cy = get_center(box)
+                self.capture_status.setText(f"✅ PIL 找到 @ ({cx},{cy})")
+                matched = True
+            else:
+                self.capture_status.setText("⚠️ PIL 也未匹配")
+                return
+        except Exception as e:
+            self.capture_status.setText(f"⚠️ 匹配异常: {e}")
+            return
+
+        if not matched:
+            return
+
+        # 5. 写入坐标到当前步骤的 params (x, y 字段,供 click_coords 兜底或参考)
+        # 先找到当前步骤在列表中的位置
+        step_idx = self.step_list.currentRow()
+        if 0 <= step_idx < len(self._current_steps):
+            step = self._current_steps[step_idx]
+            if step.get("type") == "click_image":
+                # 在 params 中写入 x, y
+                p = step.get("params", {})
+                p["x"] = cx
+                p["y"] = cy
+                step["params"] = p
+                self.capture_status.setText(f"✅ 已写入坐标 ({cx},{cy}) 并点击")
+
+        # 6. 执行点击
+        time.sleep(0.1)
+        if click_type == "double":
+            pyautogui.doubleClick(cx, cy)
+        else:
+            pyautogui.click(cx, cy)
+        self.capture_status.setText(f"✅ 已{('双' if click_type == 'double' else '单')}击 ({cx},{cy})")
 
     def _capture_mouse_position(self):
         """倒计时 3 秒后,自动捕捉当前鼠标坐标填入 X/Y (隐藏主窗口)"""
@@ -1161,12 +1286,18 @@ class WorkflowEditor(QWidget):
         elif step["type"] == "wait":
             step["params"] = {"seconds": self.wait_spin.value()}
         elif step["type"] == "click_image":
-            step["params"] = {
+            params = {
                 "template": self.image_path_edit.text(),
                 "confidence": self.conf_spin.value() / 100.0,
                 "show_desktop": self.show_desktop_chk.isChecked(),
                 "click_type": self.click_type_combo.currentData()
             }
+            # 保留捕捉到的坐标 (x, y)
+            p = step.get("params", {})
+            if "x" in p and "y" in p:
+                params["x"] = p["x"]
+                params["y"] = p["y"]
+            step["params"] = params
         elif step["type"] == "key_press":
             step["params"] = {"keys": self.key_edit.text()}
         elif step["type"] == "click_coords":
