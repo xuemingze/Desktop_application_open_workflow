@@ -141,18 +141,19 @@ class ToolsTab(QWidget):
 
     def _build_system_box(self) -> QGroupBox:
         """系统设置:开机启动 + 默认后台运行"""
-        gb = QGroupBox("⚙️ 系统设置")
+        from i18n import t
+        gb = QGroupBox(t("tools_system_settings"))
         v = QVBoxLayout(gb)
         v.setContentsMargins(10, 6, 10, 10)
         v.setSpacing(8)
 
         # 开机启动
-        self.chk_autostart = QCheckBox("✅ 开机自动启动 (登录后自动后台运行)")
+        self.chk_autostart = QCheckBox(t("tools_chk_autostart"))
         self.chk_autostart.setStyleSheet("font-weight: bold; font-size: 12px; padding: 4px;")
         self.chk_autostart.toggled.connect(self._on_autostart_toggle)
         v.addWidget(self.chk_autostart)
 
-        self.lbl_autostart_status = QLabel("状态: 未启动")
+        self.lbl_autostart_status = QLabel(t("tools_status_not_started"))
         self.lbl_autostart_status.setStyleSheet("color: #666; font-size: 11px; padding: 0 8px 4px 24px;")
         self.lbl_autostart_status.setWordWrap(True)
         v.addWidget(self.lbl_autostart_status)
@@ -165,12 +166,12 @@ class ToolsTab(QWidget):
         v.addWidget(line)
 
         # 默认后台运行
-        self.chk_start_bg = QCheckBox("🫥 启动时默认后台运行 (不显示窗口,仅托盘图标)")
+        self.chk_start_bg = QCheckBox(t("tools_chk_start_bg"))
         self.chk_start_bg.setStyleSheet("font-weight: bold; font-size: 12px; padding: 4px;")
         self.chk_start_bg.toggled.connect(self._on_start_bg_toggle)
         v.addWidget(self.chk_start_bg)
 
-        self.lbl_start_bg_status = QLabel("状态: 未启用")
+        self.lbl_start_bg_status = QLabel(t("tools_status_not_enabled"))
         self.lbl_start_bg_status.setStyleSheet("color: #666; font-size: 11px; padding: 0 8px 4px 24px;")
         self.lbl_start_bg_status.setWordWrap(True)
         v.addWidget(self.lbl_start_bg_status)
@@ -183,7 +184,7 @@ class ToolsTab(QWidget):
         v.addWidget(line2)
 
         # 显示操作日志
-        self.chk_show_log = QCheckBox("📋 显示底部操作日志")
+        self.chk_show_log = QCheckBox(t("tools_chk_show_log"))
         self.chk_show_log.setStyleSheet("font-weight: bold; font-size: 12px; padding: 4px;")
         self.chk_show_log.setChecked(True)
         self.chk_show_log.toggled.connect(self._on_show_log_toggle)
@@ -191,7 +192,7 @@ class ToolsTab(QWidget):
 
         # 测试/立即隐藏按钮
         btn_row = QHBoxLayout()
-        self.btn_hide_to_tray = QPushButton("🫥  立即隐藏到托盘")
+        self.btn_hide_to_tray = QPushButton(t("tools_btn_hide_to_tray"))
         self.btn_hide_to_tray.setStyleSheet(
             "QPushButton { padding: 6px 10px; }"
             "QPushButton:hover { background:#e0e7ff; }"
@@ -199,7 +200,7 @@ class ToolsTab(QWidget):
         self.btn_hide_to_tray.clicked.connect(self._hide_main_to_tray)
         btn_row.addWidget(self.btn_hide_to_tray)
 
-        self.btn_refresh_sys = QPushButton("🔄  刷新状态")
+        self.btn_refresh_sys = QPushButton(t("tools_btn_refresh"))
         self.btn_refresh_sys.setStyleSheet("padding: 6px 10px;")
         self.btn_refresh_sys.clicked.connect(self._refresh_system_status)
         btn_row.addWidget(self.btn_refresh_sys)
@@ -208,10 +209,7 @@ class ToolsTab(QWidget):
         v.addLayout(btn_row)
 
         # 提示
-        hint = QLabel(
-            "💡 提示:关闭窗口后会最小化到托盘;右键托盘图标可「退出」。\n"
-            "   如需开机启动会写入 HKCU 注册表项 (无需管理员权限)。"
-        )
+        hint = QLabel(t("tools_hint"))
         hint.setStyleSheet("color: #888; font-size: 11px; padding: 4px 0 0 0;")
         hint.setWordWrap(True)
         v.addWidget(hint)
@@ -224,7 +222,7 @@ class ToolsTab(QWidget):
         line3.setStyleSheet("color: #fca5a5;")
         v.addWidget(line3)
 
-        danger_box = QGroupBox("* 危险操作")
+        danger_box = QGroupBox(t("tools_danger_box"))
         danger_box.setStyleSheet(
             "QGroupBox { font-weight: bold; color: #dc2626; "
             "border: 1px solid #fca5a5; border-radius: 4px; margin-top: 6px; padding: 2px; }"
@@ -232,14 +230,7 @@ class ToolsTab(QWidget):
         dv = QVBoxLayout(danger_box)
         dv.setContentsMargins(8, 4, 8, 6)
 
-        warn_label = QLabel(
-            "* 卸载将删除:\n"
-            "   - 所有运行时数据(工作流、自定义应用、窗口状态)\n"
-            "   - 用户配置(后端地址、API Key、AI 感知档案)\n"
-            "   - 日志文件\n"
-            "   - 本程序 exe 文件\n"
-            "此操作不可逆,请确认已备份重要数据。"
-        )
+        warn_label = QLabel(t("tools_danger_warn"))
         warn_label.setStyleSheet(
             "color: #991b1b; font-size: 11px; padding: 4px; "
             "background: #fef2f2; border-radius: 4px; line-height: 1.6;"
@@ -247,7 +238,7 @@ class ToolsTab(QWidget):
         warn_label.setWordWrap(True)
         dv.addWidget(warn_label)
 
-        self.btn_uninstall = QPushButton("X 卸载本软件")
+        self.btn_uninstall = QPushButton(t("tools_btn_uninstall"))
         self.btn_uninstall.setStyleSheet(
             "QPushButton { background: #dc2626; color: white; font-weight: bold; "
             "padding: 7px 14px; border-radius: 4px; }"
@@ -308,17 +299,19 @@ class ToolsTab(QWidget):
 
     def _build_mcp_box(self) -> QGroupBox:
         """MCP Server 控制区"""
-        mcp_box = QGroupBox("🤖 MCP Server (AI 接入)")
+        from i18n import t
+
+        mcp_box = QGroupBox(t("tools_mcp_server"))
         mv = QVBoxLayout(mcp_box)
 
         # 状态显示 (初始为"未启动", 创建后会同步刷新)
-        self.lbl_mcp_status = QLabel("状态: 未启动")
+        self.lbl_mcp_status = QLabel(t("tools_status_not_started"))
         self.lbl_mcp_status.setStyleSheet("color: #666; font-size: 12px; padding: 4px;")
         mv.addWidget(self.lbl_mcp_status)
 
         # 按钮
         mcp_btn_row = QHBoxLayout()
-        self.btn_start_mcp = QPushButton("▶ 启动 MCP Server")
+        self.btn_start_mcp = QPushButton(t("tools_btn_start_mcp"))
         self.btn_start_mcp.setStyleSheet(
             "QPushButton { background:#10b981; color:white; font-weight:bold; padding:8px; }"
             "QPushButton:hover { background:#059669; }"
@@ -327,7 +320,7 @@ class ToolsTab(QWidget):
         self.btn_start_mcp.clicked.connect(self._start_mcp_server)
         mcp_btn_row.addWidget(self.btn_start_mcp)
 
-        self.btn_stop_mcp = QPushButton("⏹ 停止")
+        self.btn_stop_mcp = QPushButton(t("tools_btn_stop_mcp"))
         self.btn_stop_mcp.setStyleSheet(
             "QPushButton { background:#dc2626; color:white; font-weight:bold; padding:8px; }"
             "QPushButton:hover { background:#b91c1c; }"
@@ -339,7 +332,7 @@ class ToolsTab(QWidget):
         mv.addLayout(mcp_btn_row)
 
         # 配置示例
-        cfg_label = QLabel("📋 MCP 客户端配置示例 (mcp_config.json):")
+        cfg_label = QLabel(t("tools_mcp_cfg_label"))
         cfg_label.setStyleSheet("color: #555; font-weight: bold; padding: 4px 0 2px 0;")
         mv.addWidget(cfg_label)
         cfg_text = QTextEdit()
@@ -364,6 +357,8 @@ class ToolsTab(QWidget):
 
     def _build_mcp_docs_box(self) -> QGroupBox:
         """MCP 工具简介区 (可展开/折叠)"""
+        from i18n import t
+
         self.mcp_docs_expanded = True
         docs_box = QGroupBox()
         dv = QVBoxLayout(docs_box)
@@ -371,11 +366,11 @@ class ToolsTab(QWidget):
 
         # 标题 + 折叠按钮
         header_row = QHBoxLayout()
-        title = QLabel(f"📚 MCP 工具简介 (共 {len(MCP_TOOLS_DOCS)} 个)")
+        title = QLabel(t("tools_mcp_docs_title", n=len(MCP_TOOLS_DOCS)))
         title.setStyleSheet("font-weight: bold; font-size: 13px; color: #1e40af;")
         header_row.addWidget(title)
         header_row.addStretch()
-        self.btn_toggle_docs = QPushButton("▲ 折叠")
+        self.btn_toggle_docs = QPushButton(t("tools_btn_collapse"))
         self.btn_toggle_docs.setFixedWidth(80)
         self.btn_toggle_docs.setStyleSheet(
             "QPushButton { padding: 4px 8px; font-size: 11px; }"
@@ -406,7 +401,7 @@ class ToolsTab(QWidget):
             tf.addWidget(title_lbl)
 
             # 参数
-            param = QLabel(f"参数: <code>{tool['params']}</code>")
+            param = QLabel(t("tools_mcp_param_label") + f" <code>{tool['params']}</code>")
             param.setStyleSheet("color: #666; font-size: 11px; padding: 2px 0;")
             param.setTextFormat(Qt.RichText)
             tf.addWidget(param)
@@ -418,7 +413,7 @@ class ToolsTab(QWidget):
             tf.addWidget(desc)
 
             # 示例
-            ex_label = QLabel("示例:")
+            ex_label = QLabel(t("tools_mcp_example_label"))
             ex_label.setStyleSheet("color: #888; font-size: 10px; padding: 2px 0 0 0;")
             tf.addWidget(ex_label)
             ex = QLabel(f"<code>{tool['example']}</code>")
@@ -436,7 +431,7 @@ class ToolsTab(QWidget):
         """展开/折叠 MCP 简介"""
         if self.mcp_docs_expanded:
             self.mcp_docs_container.setVisible(False)
-            self.btn_toggle_docs.setText("▼ 展开")
+            self.btn_toggle_docs.setText(t("tools_btn_expand"))
             self.mcp_docs_expanded = False
         else:
             self.mcp_docs_container.setVisible(True)
@@ -445,26 +440,23 @@ class ToolsTab(QWidget):
 
     def _build_launcher_box(self) -> QGroupBox:
         """启动器信息"""
-        lb = QGroupBox("🚀 启动器 (桌面快捷方式)")
+        from i18n import t
+
+        lb = QGroupBox(t("tools_launcher_title"))
         lv = QVBoxLayout(lb)
 
-        info = QLabel(
-            "点击桌面上 <b>「桌面助手」</b> 快捷方式,可弹出菜单选择:\n"
-            "  🟢 启动 GUI\n"
-            "  🟡 启动 GUI + MCP server\n"
-            "  🔴 停止所有"
-        )
+        info = QLabel(t("tools_launcher_info"))
         info.setStyleSheet("color: #333; font-size: 12px; padding: 4px;")
         info.setWordWrap(True)
         lv.addWidget(info)
 
         btn_row = QHBoxLayout()
-        btn_install = QPushButton("📥 创建桌面快捷方式")
+        btn_install = QPushButton(t("tools_btn_install_shortcut"))
         btn_install.setStyleSheet("padding: 6px;")
         btn_install.clicked.connect(self._install_launcher_shortcut)
         btn_row.addWidget(btn_install)
 
-        btn_uninstall = QPushButton("🗑 删除桌面快捷方式")
+        btn_uninstall = QPushButton(t("tools_btn_uninstall_shortcut"))
         btn_uninstall.setStyleSheet("padding: 6px;")
         btn_uninstall.clicked.connect(self._uninstall_launcher_shortcut)
         btn_row.addWidget(btn_uninstall)
@@ -504,16 +496,14 @@ class ToolsTab(QWidget):
             self.chk_autostart.blockSignals(False)
             if enabled:
                 cmd = get_autostart_command() or ""
-                self.lbl_autostart_status.setText(
-                    f"状态: ✅ 已启用 (启动项: HKCU\\...\\Run\\DesktopAutoAssistant)\n命令: {cmd}"
-                )
+                self.lbl_autostart_status.setText(t("tools_status_autostart_enabled", cmd=cmd))
                 self.lbl_autostart_status.setStyleSheet("color: #16a34a; font-size: 11px; padding: 0 8px 4px 24px;")
             else:
-                self.lbl_autostart_status.setText("状态: ❌ 未启用 (勾选上面复选框以启用开机启动)")
+                self.lbl_autostart_status.setText(t("tools_status_autostart_disabled"))
                 self.lbl_autostart_status.setStyleSheet("color: #666; font-size: 11px; padding: 0 8px 4px 24px;")
         else:
             self.chk_autostart.setEnabled(False)
-            self.lbl_autostart_status.setText("状态: ⚠️ autostart 模块不可用")
+            self.lbl_autostart_status.setText(t("tools_status_autostart_unavailable"))
             self.lbl_autostart_status.setStyleSheet("color: #d97706; font-size: 11px; padding: 0 8px 4px 24px;")
 
         # 默认后台运行
@@ -523,27 +513,18 @@ class ToolsTab(QWidget):
         self.chk_start_bg.setChecked(bg)
         self.chk_start_bg.blockSignals(False)
         if bg:
-            self.lbl_start_bg_status.setText(
-                "状态: ✅ 启用 - 下次启动时默认仅托盘运行,窗口隐藏\n"
-                "  提示: 仍然可以双击托盘图标恢复窗口"
-            )
+            self.lbl_start_bg_status.setText(t("tools_status_startbg_enabled"))
             self.lbl_start_bg_status.setStyleSheet("color: #16a34a; font-size: 11px; padding: 0 8px 4px 24px;")
         else:
-            self.lbl_start_bg_status.setText("状态: ❌ 未启用 - 下次启动会显示主窗口")
+            self.lbl_start_bg_status.setText(t("tools_status_startbg_disabled"))
             self.lbl_start_bg_status.setStyleSheet("color: #666; font-size: 11px; padding: 0 8px 4px 24px;")
 
     def _do_uninstall(self):
+        from i18n import t
         reply = QMessageBox.warning(
             self,
-            "\u26d4 \u786e\u8ba4\u5378\u8f7d",
-            "\u4f60\u786e\u5b9a\u8981\u5378\u8f7d\u300c\u684c\u9762\u81ea\u52a8\u5316\u52a9\u624b\u300d\u5417\uff1f\n\n",
-            "\u5c06\u5220\u9664\uff1a\n",
-            "  \u00b7 \u6240\u6709\u8fd0\u884c\u65f6\u6570\u636e\uff08\u5de5\u4f5c\u6d41\u3001\u81ea\u5b9a\u4e49\u5e94\u7528\u3001\u914d\u7f6e\uff09\n",
-            "  \u00b7 \u65e5\u5fd7\u6587\u4ef6\n",
-            "  \u00b7 \u672c\u7a0b\u5e8f exe \u6587\u4ef6\n\n",
-            "\u26a0 \u6b64\u64cd\u4f5c\u4e0d\u53ef\u9006\uff01\n\n",
-            "\u70b9\u51fb\u300c\u786e\u5b9a\u300d\u5c06\u5173\u95ed\u7a0b\u5e8f\u5e76\u5220\u9664\u6240\u6709\u6570\u636e\u3002\n",
-            "\u70b9\u51fb\u300c\u53d6\u6d88\u300d\u653e\u5f03\u5378\u8f7d\u3002",
+            t("tools_uninstall_confirm_title"),
+            t("tools_uninstall_confirm_body"),
             QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
@@ -775,16 +756,14 @@ class ToolsTab(QWidget):
             sc.Arguments = "--silent-task"
             sc.WorkingDirectory = str(Path(exe_path).parent)
             sc.IconLocation = str(icon_path) if icon_path.exists() else exe_path
-            sc.Description = "桌面自动化助手"
+            sc.Description = t("app_title")
             sc.WindowStyle = 1
             sc.save()
 
             self.lbl_mcp_status.setText("状态: ✅ 桌面快捷方式已创建")
             QMessageBox.information(
                 self, "成功",
-                "桌面快捷方式已创建!\n\n"
-                "双击「桌面助手」即可启动本程序。\n"
-                "如果程序已在运行,会自动切换到已运行窗口。"
+                t("tools_shortcut_created_msg")
             )
         except Exception as e:
             self.lbl_mcp_status.setText(f"状态: ❌ 创建失败: {e}")

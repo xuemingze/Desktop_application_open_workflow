@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Optional
 from PySide6.QtCore import Qt, QThread, Signal, QRect, QPoint
+
+from i18n import t
 from PySide6.QtGui import QPainter, QPen, QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QListWidgetItem,
@@ -580,13 +582,13 @@ class WorkflowWorker(QThread):
 # ============================================================
 class WorkflowEditor(QWidget):
     STEP_TYPES = [
-        ("launch_app", "启动软件"),
-        ("wait", "等待"),
-        ("click_image", "截图匹配点击"),
-        ("key_press", "按键输入"),
-        ("type_text", "文字输入"),
-        ("click_coords", "坐标点击"),
-        ("search_file", "文件搜索"),
+        ("launch_app", t("step_launch_app")),
+        ("wait", t("step_wait")),
+        ("click_image", t("step_click_image")),
+        ("key_press", t("step_key_press")),
+        ("type_text", t("step_type_text")),
+        ("click_coords", t("step_click_coords")),
+        ("search_file", t("step_search_file")),
     ]
 
     def __init__(self, parent=None):
@@ -622,14 +624,14 @@ class WorkflowEditor(QWidget):
         left = QWidget()
         lv = QVBoxLayout(left)
         lv.setContentsMargins(0, 0, 0, 0)
-        lv.addWidget(QLabel("工作流列表:"))
+        lv.addWidget(QLabel(t("wf_list_title")))
         self.wf_list = QListWidget()
         self.wf_list.currentRowChanged.connect(self._on_wf_select)
         lv.addWidget(self.wf_list)
         wf_btn_row = QHBoxLayout()
-        self.btn_new_wf = QPushButton("+ 新建")
+        self.btn_new_wf = QPushButton(t("wf_btn_new"))
         self.btn_new_wf.clicked.connect(self._new_workflow)
-        self.btn_del_wf = QPushButton("删除")
+        self.btn_del_wf = QPushButton(t("wf_btn_delete"))
         self.btn_del_wf.clicked.connect(self._del_workflow)
         wf_btn_row.addWidget(self.btn_new_wf)
         wf_btn_row.addWidget(self.btn_del_wf)
@@ -644,9 +646,9 @@ class WorkflowEditor(QWidget):
 
         # 步骤工具栏
         toolbar = QHBoxLayout()
-        self.btn_add_step = QPushButton("+ 添加步骤")
+        self.btn_add_step = QPushButton(t("wf_btn_add_step"))
         self.btn_add_step.clicked.connect(self._add_step)
-        self.btn_del_step = QPushButton("删除")
+        self.btn_del_step = QPushButton(t("wf_btn_remove_step"))
         self.btn_del_step.clicked.connect(self._del_step)
         self.btn_up_step = QPushButton("↑")
         self.btn_up_step.clicked.connect(self._up_step)
@@ -666,22 +668,22 @@ class WorkflowEditor(QWidget):
         rv.addWidget(self.step_list)
 
         # 步骤详情编辑
-        detail = QGroupBox("步骤详情")
+        detail = QGroupBox(t("wf_step_section"))
         dv = QVBoxLayout(detail)
 
         # 步骤类型和名称
         type_row = QHBoxLayout()
-        type_row.addWidget(QLabel("类型:"))
+        type_row.addWidget(QLabel(t("wf_step_type")))
         self.step_type_combo = QComboBox()
         for key, name in self.STEP_TYPES:
             self.step_type_combo.addItem(name, key)
         self.step_type_combo.currentIndexChanged.connect(self._on_type_change)
         type_row.addWidget(self.step_type_combo)
-        type_row.addWidget(QLabel("名称:"))
+        type_row.addWidget(QLabel(t("wf_step_name")))
         self.step_name_edit = QLineEdit()
         self.step_name_edit.setPlaceholderText("步骤名称")
         type_row.addWidget(self.step_name_edit)
-        self.step_enabled = QCheckBox("启用")
+        self.step_enabled = QCheckBox(t("wf_step_enabled"))
         self.step_enabled.setChecked(True)
         type_row.addWidget(self.step_enabled)
         dv.addLayout(type_row)
@@ -690,13 +692,13 @@ class WorkflowEditor(QWidget):
         self.launch_widget = QWidget()
         lw = QVBoxLayout(self.launch_widget)
         lw.setContentsMargins(0, 0, 0, 0)
-        lw.addWidget(QLabel("从桌面快捷方式列表选择(可执行/停止):"))
+        lw.addWidget(QLabel(t("wf_select_app_hint")))
         self.launch_combo = QComboBox()
-        self.launch_combo.addItem("-- 选择软件 --", "")
+        self.launch_combo.addItem(t("wf_select_app_placeholder"), "")
         for sc in self.shortcuts:
             self.launch_combo.addItem(f"{sc.name}  →  {sc.target}", sc.target)
         lw.addWidget(self.launch_combo)
-        self.launch_path_label = QLabel("路径: ")
+        self.launch_path_label = QLabel(t("wf_path_label"))
         self.launch_path_label.setStyleSheet("color: #555; font-size: 11px;")
         lw.addWidget(self.launch_path_label)
         self.launch_combo.currentIndexChanged.connect(self._on_launch_select)
@@ -706,7 +708,7 @@ class WorkflowEditor(QWidget):
         self.wait_widget = QWidget()
         ww = QHBoxLayout(self.wait_widget)
         ww.setContentsMargins(0, 0, 0, 0)
-        ww.addWidget(QLabel("等待秒数:"))
+        ww.addWidget(QLabel(t("wf_step_param_seconds")))
         self.wait_spin = QSpinBox()
         self.wait_spin.setRange(1, 3600)
         self.wait_spin.setValue(2)
@@ -721,32 +723,32 @@ class WorkflowEditor(QWidget):
         iw = QVBoxLayout(self.image_widget)
         iw.setContentsMargins(0, 0, 0, 0)
         iw.setSpacing(4)
-        iw.addWidget(QLabel("模板图片:"))
+        iw.addWidget(QLabel(t("wf_step_param_template")))
         img_row = QHBoxLayout()
         self.image_path_edit = QLineEdit()
         self.image_path_edit.setPlaceholderText("samples/xxx.png")
-        self.btn_snip = QPushButton("✂️ 截图框选")
+        self.btn_snip = QPushButton(t("wf_btn_screenshot"))
         self.btn_snip.clicked.connect(self._screenshot_template)
-        self.btn_browse_img = QPushButton("📂 浏览")
+        self.btn_browse_img = QPushButton(t("btn_browse"))
         self.btn_browse_img.clicked.connect(self._browse_template)
         img_row.addWidget(self.image_path_edit, 1)
         img_row.addWidget(self.btn_snip)
         img_row.addWidget(self.btn_browse_img)
         iw.addLayout(img_row)
         conf_row = QHBoxLayout()
-        conf_row.addWidget(QLabel("匹配阈值:"))
+        conf_row.addWidget(QLabel(t("wf_step_param_confidence")))
         self.conf_spin = QSpinBox()
         self.conf_spin.setRange(5, 100)
         self.conf_spin.setValue(30)
         self.conf_spin.setSuffix("%")
         conf_row.addWidget(self.conf_spin)
-        self.show_desktop_chk = QCheckBox("先按 Win+D 显示桌面")
+        self.show_desktop_chk = QCheckBox(t("wf_chk_show_desktop"))
         self.show_desktop_chk.setChecked(False)  # 默认不按
         conf_row.addWidget(self.show_desktop_chk)
         conf_row.addStretch()
         iw.addLayout(conf_row)
         # 预览区
-        self.image_preview = QLabel("(无预览)")
+        self.image_preview = QLabel(t("wf_no_preview"))
         self.image_preview.setMinimumHeight(120)
         self.image_preview.setMaximumHeight(160)
         self.image_preview.setAlignment(Qt.AlignCenter)
@@ -755,7 +757,7 @@ class WorkflowEditor(QWidget):
         iw.addWidget(self.image_preview)
         # 点击类型
         click_row = QHBoxLayout()
-        click_row.addWidget(QLabel("点击类型:"))
+        click_row.addWidget(QLabel(t("wf_click_type")))
         self.click_type_combo = QComboBox()
         self.click_type_combo.addItem("双击 (默认)", "double")
         self.click_type_combo.addItem("单击", "single")
@@ -764,7 +766,7 @@ class WorkflowEditor(QWidget):
         iw.addLayout(click_row)
         # 捕捉坐标按钮
         capture_row = QHBoxLayout()
-        self.btn_capture_match = QPushButton("🔍 捕捉坐标")
+        self.btn_capture_match = QPushButton(t("wf_btn_capture_coord"))
         self.btn_capture_match.setToolTip("截图当前全屏→匹配模板→写入坐标→执行点击")
         self.btn_capture_match.clicked.connect(self._capture_and_click)
         self.capture_status = QLabel("")
@@ -778,7 +780,7 @@ class WorkflowEditor(QWidget):
         self.key_widget = QWidget()
         kw = QVBoxLayout(self.key_widget)
         kw.setContentsMargins(0, 0, 0, 0)
-        kw.addWidget(QLabel("按键 (支持组合键,如 ctrl+c / alt+tab / win+d):"))
+        kw.addWidget(QLabel(t("wf_key_press_hint")))
         self.key_edit = QLineEdit()
         kw.addWidget(self.key_edit)
         dv.addWidget(self.key_widget)
@@ -787,22 +789,22 @@ class WorkflowEditor(QWidget):
         self.text_widget = QWidget()
         tw = QVBoxLayout(self.text_widget)
         tw.setContentsMargins(0, 0, 0, 0)
-        tw.addWidget(QLabel("要输入的文字(支持中文/多行):"))
+        tw.addWidget(QLabel(t("wf_text_input_hint")))
         self.text_edit = QTextEdit()
         self.text_edit.setPlaceholderText("例: 今天天气怎么样 / 多行内容 / Hello world")
         self.text_edit.setMaximumHeight(120)
         tw.addWidget(self.text_edit)
         text_opt_row = QHBoxLayout()
-        text_opt_row.addWidget(QLabel("输入前延迟:"))
+        text_opt_row.addWidget(QLabel(t("wf_step_param_delay")))
         self.text_delay_spin = QDoubleSpinBox()
         self.text_delay_spin.setRange(0.0, 10.0)
         self.text_delay_spin.setSingleStep(0.1)
         self.text_delay_spin.setValue(0.3)
-        self.text_delay_spin.setSuffix(" 秒")
+        self.text_delay_spin.setSuffix(" " + t("wf_seconds_unit"))
         text_opt_row.addWidget(self.text_delay_spin)
-        self.text_clear_chk = QCheckBox("清空当前输入框(Ctrl+A 后 Delete)")
+        self.text_clear_chk = QCheckBox(t("wf_step_param_clear_first"))
         text_opt_row.addWidget(self.text_clear_chk)
-        self.text_enter_chk = QCheckBox("输入后按回车")
+        self.text_enter_chk = QCheckBox(t("wf_step_param_press_enter"))
         text_opt_row.addWidget(self.text_enter_chk)
         text_opt_row.addStretch()
         tw.addLayout(text_opt_row)
@@ -822,17 +824,17 @@ class WorkflowEditor(QWidget):
         self.y_spin = QSpinBox()
         self.y_spin.setRange(0, 9999)
         coord_row.addWidget(self.y_spin)
-        coord_row.addWidget(QLabel("点击:"))
+        coord_row.addWidget(QLabel(t("wf_click_coords_label")))
         self.click_combo = QComboBox()
-        self.click_combo.addItem("左键单击", "left_single")
-        self.click_combo.addItem("左键双击", "left_double")
-        self.click_combo.addItem("右键单击", "right_single")
+        self.click_combo.addItem(t("wf_click_left_single"), "left_single")
+        self.click_combo.addItem(t("wf_click_left_double"), "left_double")
+        self.click_combo.addItem(t("wf_click_right_single"), "right_single")
         coord_row.addWidget(self.click_combo)
         coord_row.addStretch()
         cw.addLayout(coord_row)
         # 捕捉坐标按钮行
         capture_row = QHBoxLayout()
-        self.btn_capture = QPushButton("🎯 捕捉当前鼠标坐标 (3秒倒计时)")
+        self.btn_capture = QPushButton(t("wf_btn_capture_mouse"))
         self.btn_capture.setStyleSheet(
             "QPushButton { background:#0891b2; color:white; padding:6px; font-weight:bold; }"
             "QPushButton:hover { background:#0e7490; }"
@@ -855,41 +857,41 @@ class WorkflowEditor(QWidget):
         sw.setSpacing(4)
         # 查询词
         qrow = QHBoxLayout()
-        qrow.addWidget(QLabel("搜索词:"))
+        qrow.addWidget(QLabel(t("sp_search_label")))
         self.search_query_edit = QLineEdit()
         self.search_query_edit.setPlaceholderText("如: 4月明细, 报告*.pdf, ext:docx")
         qrow.addWidget(self.search_query_edit, 1)
         sw.addLayout(qrow)
         # 可选限定目录
         prow = QHBoxLayout()
-        prow.addWidget(QLabel("限定目录:"))
+        prow.addWidget(QLabel(t("sp_path_label")))
         self.search_path_edit = QLineEdit()
         self.search_path_edit.setPlaceholderText("可选, 例: C:\\Users\\Public")
         prow.addWidget(self.search_path_edit, 1)
         sw.addLayout(prow)
         # 限制结果数
         lrow = QHBoxLayout()
-        lrow.addWidget(QLabel("最大结果:"))
+        lrow.addWidget(QLabel(t("sp_limit_label")))
         self.search_limit_spin = QSpinBox()
         self.search_limit_spin.setRange(1, 1000)
         self.search_limit_spin.setValue(10)
         lrow.addWidget(self.search_limit_spin)
-        lrow.addWidget(QLabel("  发现后动作:"))
+        lrow.addWidget(QLabel(t("sp_action_label")))
         self.search_action_combo = QComboBox()
-        self.search_action_combo.addItem("仅输出到日志", "log")
-        self.search_action_combo.addItem("⏵ 打开第一个结果 (默认应用)", "open_first")
-        self.search_action_combo.addItem("📝 用记事本打开", "open_notepad")
-        self.search_action_combo.addItem("🖼 在相册/图片查看器打开", "open_photo")
-        self.search_action_combo.addItem("📁 在文件资源管理器中选中", "explorer_select")
-        self.search_action_combo.addItem("📋 复制路径到剪贴板", "copy_path")
-        self.search_action_combo.addItem("💾 保存到变量 (供后续步骤用)", "save_var")
-        self.search_action_combo.addItem("🛠 用指定程序打开 (例: excel.exe / wps.exe)", "open_with")
+        self.search_action_combo.addItem(t("sp_action_log"), "log")
+        self.search_action_combo.addItem(t("sp_action_open_first"), "open_first")
+        self.search_action_combo.addItem(t("sp_action_notepad"), "open_notepad")
+        self.search_action_combo.addItem(t("sp_action_photo"), "open_photo")
+        self.search_action_combo.addItem(t("sp_action_explorer"), "explorer_select")
+        self.search_action_combo.addItem(t("sp_action_copy"), "copy_path")
+        self.search_action_combo.addItem(t("sp_action_save"), "save_var")
+        self.search_action_combo.addItem(t("sp_action_open_with"), "open_with")
         self.search_action_combo.currentIndexChanged.connect(self._on_search_action_change)
         lrow.addWidget(self.search_action_combo)
         lrow.addStretch()
         sw.addLayout(lrow)
         # 帮助
-        self.search_help = QLabel("💡 使用 Everything 搜索本地文件。需要本机安装 Everything 并关闭 HTTP 鉴权。")
+        self.search_help = QLabel(t("sp_everything_hint"))
         self.search_help.setStyleSheet("color: #888; font-size: 10px; padding: 2px 0;")
         self.search_help.setWordWrap(True)
         sw.addWidget(self.search_help)
@@ -900,7 +902,7 @@ class WorkflowEditor(QWidget):
         self.search_op_program_row.setVisible(False)  # 默认隐藏
         prow2 = QHBoxLayout(self.search_op_program_row)
         prow2.setContentsMargins(0, 0, 0, 0)
-        prow2.addWidget(QLabel("程序路径:"))
+        prow2.addWidget(QLabel(t("sp_program_path_label")))
         self.search_program_edit = QLineEdit()
         self.search_program_edit.setPlaceholderText("例: excel.exe  /  wps.exe  /  C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE")
         prow2.addWidget(self.search_program_edit, 1)
@@ -915,7 +917,7 @@ class WorkflowEditor(QWidget):
         self.search_op_args_row.setVisible(False)  # 默认隐藏
         arow = QHBoxLayout(self.search_op_args_row)
         arow.setContentsMargins(0, 0, 0, 0)
-        arow.addWidget(QLabel("额外参数:"))
+        arow.addWidget(QLabel(t("sp_extra_args_label")))
         self.search_args_edit = QLineEdit()
         self.search_args_edit.setPlaceholderText("可选, 例: /readonly  /  --view  /  多个用空格分隔")
         arow.addWidget(self.search_args_edit, 1)
@@ -929,24 +931,24 @@ class WorkflowEditor(QWidget):
 
         # 保存/重置按钮
         btn_row = QHBoxLayout()
-        self.btn_save_step = QPushButton("💾 保存步骤修改")
+        self.btn_save_step = QPushButton(t("wf_btn_save_step"))
         self.btn_save_step.clicked.connect(self._save_step)
         btn_row.addWidget(self.btn_save_step)
-        self.btn_save_all = QPushButton("💾 保存到文件")
+        self.btn_save_all = QPushButton(t("wf_btn_save_to_file"))
         self.btn_save_all.clicked.connect(self._save_workflow_file)
         btn_row.addWidget(self.btn_save_all)
         rv.addLayout(btn_row)
 
         # 执行控制
         exec_row = QHBoxLayout()
-        self.btn_run_wf = QPushButton("▶ 执行")
+        self.btn_run_wf = QPushButton(t("wf_btn_run"))
         self.btn_run_wf.setStyleSheet(
             "QPushButton { background:#16a34a; color:white; font-weight:bold; padding:8px; }"
             "QPushButton:hover { background:#15803d; }"
             "QPushButton:disabled { background:#9ca3af; }"
         )
         self.btn_run_wf.clicked.connect(self._run_workflow)
-        self.btn_stop_wf = QPushButton("⏹ 停止")
+        self.btn_stop_wf = QPushButton(t("wf_btn_stop"))
         self.btn_stop_wf.setStyleSheet(
             "QPushButton { background:#dc2626; color:white; font-weight:bold; padding:8px; }"
             "QPushButton:hover { background:#b91c1c; }"
@@ -970,7 +972,7 @@ class WorkflowEditor(QWidget):
             # 重新填充 launch_combo
             current = self.launch_combo.currentData()
             self.launch_combo.clear()
-            self.launch_combo.addItem("-- 选择软件 --", "")
+            self.launch_combo.addItem(t("wf_select_app_placeholder"), "")
             for sc in self.shortcuts:
                 self.launch_combo.addItem(f"{sc.name}  →  {sc.target}", sc.target)
             if current:
@@ -1069,7 +1071,7 @@ class WorkflowEditor(QWidget):
             cx = params.get("x")
             cy = params.get("y")
             if cx and cy:
-                self.capture_status.setText(f"📍 已捕捉坐标 ({cx},{cy})")
+                self.capture_status.setText(t("wf_coord_captured", cx=cx, cy=cy))
             else:
                 self.capture_status.setText("")
             self._update_image_preview()
@@ -1101,9 +1103,9 @@ class WorkflowEditor(QWidget):
     def _browse_search_program(self):
         """浏览选择程序"""
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择程序",
+            self, t("wf_select_program_title"),
             self.search_program_edit.text() or "C:\\Program Files",
-            "可执行文件 (*.exe *.bat *.cmd);;所有文件 (*.*)"
+            t("wf_exe_filter")
         )
         if path:
             self.search_program_edit.setText(path)
@@ -1163,7 +1165,7 @@ class WorkflowEditor(QWidget):
             return
         template_abs = str(Path(template_path).resolve())
         if not Path(template_abs).exists():
-            self.capture_status.setText(f"⚠️ 模板不存在: {template_path}")
+            self.capture_status.setText(t("wf_template_missing", path=template_path))
             return
 
         # 2. 可选: Win+D 显示桌面
@@ -1215,7 +1217,7 @@ class WorkflowEditor(QWidget):
             if best_pos and best_overall >= confidence_thresh:
                 cx = best_pos[0] + best_pos[2] // 2
                 cy = best_pos[1] + best_pos[3] // 2
-                self.capture_status.setText(f"✅ 找到 @ ({cx},{cy}) 置信度={best_overall:.2f}")
+                self.capture_status.setText(t("wf_match_found", cx=cx, cy=cy, conf=best_overall))
                 matched = True
             else:
                 self.capture_status.setText(f"⚠️ 未匹配,置信度={best_overall:.2f}<{confidence_thresh}")
@@ -1226,13 +1228,13 @@ class WorkflowEditor(QWidget):
             box = locate_on_screen(template_abs, confidence=confidence_thresh, screenshot=screen)
             if box:
                 cx, cy = get_center(box)
-                self.capture_status.setText(f"✅ PIL 找到 @ ({cx},{cy})")
+                self.capture_status.setText(t("wf_pil_found", cx=cx, cy=cy))
                 matched = True
             else:
                 self.capture_status.setText("⚠️ PIL 也未匹配")
                 return
         except Exception as e:
-            self.capture_status.setText(f"⚠️ 匹配异常: {e}")
+            self.capture_status.setText(t("wf_match_error", e=e))
             return
 
         if not matched:
@@ -1249,7 +1251,7 @@ class WorkflowEditor(QWidget):
                 p["x"] = cx
                 p["y"] = cy
                 step["params"] = p
-                self.capture_status.setText(f"✅ 已写入坐标 ({cx},{cy}) 并点击")
+                self.capture_status.setText(t("wf_coord_written", cx=cx, cy=cy))
 
         # 6. 执行点击
         time.sleep(0.1)
@@ -1276,7 +1278,7 @@ class WorkflowEditor(QWidget):
             x, y = pyautogui.position()
             self.x_spin.setValue(x)
             self.y_spin.setValue(y)
-            self.capture_status.setText(f"已捕捉: ({x}, {y})")
+            self.capture_status.setText(t("wf_coord_display", x=x, y=y))
             self.btn_capture.setEnabled(True)
             # 恢复主窗口
             main_win = self.window()
@@ -1284,7 +1286,7 @@ class WorkflowEditor(QWidget):
             main_win.raise_()
             self._append_log(f"捕捉到坐标: ({x}, {y})")
             return
-        self.capture_status.setText(f"{n} 秒后捕捉...")
+        self.capture_status.setText(t("wf_capture_countdown", n=n))
         from PySide6.QtCore import QTimer
         QTimer.singleShot(1000, lambda: self._capture_countdown(n - 1))
 
@@ -1309,7 +1311,7 @@ class WorkflowEditor(QWidget):
         img.save(str(out))
         self.image_path_edit.setText(str(out))
         self._update_image_preview()
-        self._append_log(f"截图已保存: {out}")
+        self._append_log(t("wf_screenshot_saved", out=out))
 
     def _browse_template(self):
         path, _ = QFileDialog.getOpenFileName(self, "选择模板图片", "samples", "PNG (*.png)")
@@ -1343,7 +1345,7 @@ class WorkflowEditor(QWidget):
         if ok and name.strip():
             name = name.strip()
             if name in self.workflows:
-                QMessageBox.warning(self, "提示", "工作流名称已存在")
+                QMessageBox.warning(self, t("msg_warning"), t("wf_msg_name_exists"))
                 return
             self.workflows[name] = {"name": name, "description": "", "steps": []}
             self._save_to_file()
@@ -1354,18 +1356,18 @@ class WorkflowEditor(QWidget):
         if row < 0:
             return
         name = self.wf_list.item(row).text()
-        if QMessageBox.question(self, "确认", f"删除工作流 {name}?") == QMessageBox.Yes:
+        if QMessageBox.question(self, t("msg_confirm"), t("wf_msg_confirm_delete", name=name)) == QMessageBox.Yes:
             del self.workflows[name]
             self._save_to_file()
             self._refresh_wf_list()
 
     def _save_workflow_file(self):
         self._save_to_file()
-        self._append_log("工作流已保存到 workflows.json")
+        self._append_log(t("wf_msg_saved"))
 
     def _add_step(self):
         if not self._current_workflow:
-            QMessageBox.warning(self, "提示", "请先选择工作流")
+            QMessageBox.warning(self, t("msg_warning"), t("wf_no_workflow"))
             return
         new_step = {
             "type": "wait",
@@ -1381,7 +1383,7 @@ class WorkflowEditor(QWidget):
         new_row = len(self._current_steps) - 1
         if new_row >= 0:
             self.step_list.setCurrentRow(new_row)
-            self._append_log(f"已添加新步骤,选中 row={new_row}")
+            self._append_log(t("wf_step_added", row=new_row))
 
     def _del_step(self):
         row = self.step_list.currentRow()
@@ -1418,7 +1420,7 @@ class WorkflowEditor(QWidget):
     def _save_step(self):
         row = self.step_list.currentRow()
         if row < 0 or row >= len(self._current_steps):
-            self._append_log(f"⚠️ 保存失败: 未选中步骤 (row={row}, total={len(self._current_steps)})")
+            self._append_log(t("wf_save_failed_no_step", row=row, total=len(self._current_steps)))
             return
         step = self._current_steps[row]
         step["type"] = self.step_type_combo.currentData()
@@ -1468,7 +1470,7 @@ class WorkflowEditor(QWidget):
             }
         wf_name = self._current_workflow
         if not wf_name:
-            self._append_log(f"⚠️ 保存失败: 未选中工作流")
+            self._append_log(t("wf_save_failed_no_wf"))
             return
         if wf_name not in self.workflows:
             self._append_log(f"⚠️ 保存失败: 工作流 '{wf_name}' 不在 self.workflows")
@@ -1476,17 +1478,17 @@ class WorkflowEditor(QWidget):
         self.workflows[wf_name]["steps"] = list(self._current_steps)
         self._save_to_file()
         self._refresh_step_list()
-        self._append_log(f"步骤已保存: {step['name']} (类型={step['type']})")
+        self._append_log(t("wf_step_saved", name=step["name"], type=step["type"]))
 
     def _run_workflow(self):
         row = self.wf_list.currentRow()
         if row < 0:
-            QMessageBox.warning(self, "提示", "请先选择工作流")
+            QMessageBox.warning(self, t("msg_warning"), t("wf_no_workflow"))
             return
         name = self.wf_list.item(row).text()
         wf = self.workflows.get(name, {})
         if not wf.get("steps"):
-            QMessageBox.warning(self, "提示", "工作流没有步骤")
+            QMessageBox.warning(self, t("msg_warning"), t("wf_msg_no_steps"))
             return
         self.btn_run_wf.setEnabled(False)
         self.btn_stop_wf.setEnabled(True)
