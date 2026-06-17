@@ -611,14 +611,14 @@ class ContextChatTab(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
 
-        # 顶部:标题 + 提示
+        # 顶部:标题 + 提示（标题紧凑，提示放在 chat 上方）
         top = QHBoxLayout()
-        title = QLabel("💬 AI 对话助手(可调用 MCP 工具)")
-        title.setFont(QFont("", 12, QFont.Bold))
+        title = QLabel("💬 AI 对话")
+        title.setFont(QFont("", 11, QFont.Bold))
         top.addWidget(title)
         top.addStretch()
-        hint = QLabel("支持:列出工作流 / 启动应用 / 跑工作流 / 搜文件")
-        hint.setStyleSheet("color: #666; font-size: 11px;")
+        hint = QLabel("支持:列工作流 / 启动应用 / 跑工作流 / 搜文件")
+        hint.setStyleSheet("color: #666; font-size: 10px;")
         top.addWidget(hint)
         root.addLayout(top)
 
@@ -629,9 +629,9 @@ class ContextChatTab(QWidget):
         self.chat_view.setStyleSheet(
             "QTextEdit { background:#fafafa; border:1px solid #e5e7eb; border-radius:4px; padding:8px; }"
         )
-        # 限制最大高度 + 优先垂直尺寸策略，确保输入区域始终可见
-        self.chat_view.setMaximumHeight(300)
-        self.chat_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # 限制最大高度 + Preferred 垂直策略（不强制扩展），让 layout 保留足够空间给输入区
+        self.chat_view.setMaximumHeight(450)
+        self.chat_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         root.addWidget(self.chat_view, stretch=1)
 
         # 输入区（无 QGroupBox 标题栏，节省垂直空间）

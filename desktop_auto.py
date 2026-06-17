@@ -1437,13 +1437,12 @@ class MainWindow(QMainWindow):
         )
 
         # ===== 整体布局: 用 QSplitter 干调拖动划分,避免嵌套后 stretch 失效 =====
-        from PySide6.QtWidgets import QSplitter, QScrollArea
-        # 右侧包到 QScrollArea,防止 widget 重叠
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(right)
-        scroll.setMinimumWidth(300)
-        scroll.setMaximumWidth(750)  # 限制右侧面板最大宽度,防止聊天区域过宽
+        from PySide6.QtWidgets import QSplitter
+        # 右侧不包 QScrollArea,直接让 right_tabs 填满右侧面板
+        # (原来用 QScrollArea 会导致 QTextEdit 被拉伸超限、输入区被挤走)
+        right.setMinimumWidth(300)
+        right.setMaximumWidth(750)  # 限制右侧面板最大宽度,防止聊天区域过宽
+        scroll = right  # 向后兼容名
 
         # ===== 左侧: 快捷方式列表 + 重新扫描按钮 =====
         left_panel = QWidget()
