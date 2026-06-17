@@ -143,11 +143,13 @@ class StepExecutor:
     @staticmethod
     def _click_image(params, log_func) -> bool:
         import pyautogui
-        from image_match import locate_on_screen, get_center
+        import numpy as np
         template = params.get("template", "")
         confidence = params.get("confidence", 0.7)
         show_desktop = params.get("show_desktop", False)
         click_type = params.get("click_type", "double")
+        fallback_x = params.get("x", 0)
+        fallback_y = params.get("y", 0)
         # 路径转换: 相对路径转绝对路径
         if template:
             template = str(Path(template).resolve())
@@ -162,31 +164,87 @@ class StepExecutor:
             log_func(f"  保持当前窗口状态(不按 Win+D)")
             time.sleep(0.2)
         log_func(f"  匹配 (阈值={confidence}): {template}")
+
+        # 先截图当前全屏
+        screen = pyautogui.screenshot()
+        screen_np = np.array(screen)
+        cx, cy = 0, 0
+        matched = False
+
+        # 1. 优先用 OpenCV 多尺度匹配 (快 10-50x)
         try:
-            # 先截图再调匹配 (避免 opencv 读模板问题)
-            screen = pyautogui.screenshot()
-            box = locate_on_screen(template, confidence=confidence, screenshot=screen)
-        except Exception as e:
-            log_func(f"  匹配异常: {e}")
-            return False
-        if box:
-            x, y, w, h = box
-            center = (x + w // 2, y + h // 2)
-            log_func(f"  找到: 区域=({x},{y},{w}x{h}) 中心={center}")
-            if click_type == "double":
-                pyautogui.doubleClick(center)
-                log_func(f"  已双击")
+            import cv2
+            screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_RGB2GRAY)
+            tpl_bgr = cv2.imdecode(np.fromfile(template, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if tpl_bgr is None:
+                raise RuntimeError(f"无法读取模板")
+            tpl_gray = cv2.cvtColor(tpl_bgr, cv2.COLOR_BGR2GRAY)
+            th, tw = tpl_gray.shape
+            sh, sw = screen_gray.shape
+            if tw > sw or th > sh:
+                raise RuntimeError("模板大于屏幕")
+            best_overall = 0.0
+            best_pos = None
+            best_scale = 1.0
+            for scale in [0.6, 0.8, 1.0, 1.2, 1.5]:
+                nw, nh = int(tw * scale), int(th * scale)
+                if nw < 8 or nh < 8 or nw > sw or nh > sh:
+                    continue
+                scaled = cv2.resize(tpl_gray, (nw, nh), interpolation=cv2.INTER_AREA)
+                result = cv2.matchTemplate(screen_gray, scaled, cv2.TM_CCOEFF_NORMED)
+                _, mv, _, ml = cv2.minMaxLoc(result)
+                if mv > best_overall:
+                    best_overall = mv
+                    best_pos = (ml[0], ml[1], nw, nh)
+                    best_scale = scale
+            if best_pos and best_overall >= confidence:
+                cx = best_pos[0] + best_pos[2] // 2
+                cy = best_pos[1] + best_pos[3] // 2
+                log_func(f"  ✅ OpenCV 找到: 缩放={best_scale} 置信度={best_overall:.3f} @ ({cx},{cy})")
+                matched = True
             else:
-                pyautogui.click(center)
-                log_func(f"  已单击")
-            return True
+                log_func(f"  ⚠️ OpenCV 置信度低: {best_overall:.3f}<{confidence} , 尝试 PIL...")
+        except ImportError:
+            log_func(f"  ⚠️ OpenCV 未安装, 尝试 PIL...")
+        except Exception as e:
+            log_func(f"  ⚠️ OpenCV 异常: {e}, 尝试 PIL...")
+
+        # 2. PIL 兜底
+        if not matched:
+            try:
+                from image_match import locate_on_screen, get_center
+                box = locate_on_screen(template, confidence=confidence, screenshot=screen)
+                if box:
+                    cx, cy = get_center(box)
+                    log_func(f"  ✅ PIL 找到 @ ({cx},{cy})")
+                    matched = True
+                else:
+                    log_func(f"  ❌ PIL 也未匹配")
+            except Exception as e:
+                log_func(f"  ⚠️ PIL 异常: {e}")
+
+        # 3. 都失败 → 用之前保存的 (x, y) 兜底
+        if not matched:
+            if fallback_x > 0 or fallback_y > 0:
+                cx, cy = fallback_x, fallback_y
+                log_func(f"  📛 使用之前保存的坐标兜底: ({cx},{cy})")
+                matched = True
+            else:
+                debug = Path("samples") / "_debug_workflow.png"
+                debug.parent.mkdir(exist_ok=True)
+                screen.save(str(debug))
+                log_func(f"  调试截图: {debug}")
+                return False
+
+        # 4. 点击
+        time.sleep(0.1)
+        if click_type == "double":
+            pyautogui.doubleClick(cx, cy)
+            log_func(f"  ✅ 已双击 ({cx},{cy})")
         else:
-            log_func(f"  未匹配到模板")
-            debug = Path("samples") / "_debug_workflow.png"
-            debug.parent.mkdir(exist_ok=True)
-            pyautogui.screenshot(str(debug))
-            log_func(f"  调试截图: {debug}")
-            return False
+            pyautogui.click(cx, cy)
+            log_func(f"  ✅ 已单击 ({cx},{cy})")
+        return True
 
     @staticmethod
     def _key_press(params, log_func) -> bool:
