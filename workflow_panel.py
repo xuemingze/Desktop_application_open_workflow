@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, QThread, Signal, QRect, QPoint
 from PySide6.QtGui import QPainter, QPen, QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QListWidgetItem,
-    QLabel, QLineEdit, QComboBox, QSpinBox, QFileDialog, QTextEdit, QGroupBox,
+    QLabel, QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QFileDialog, QTextEdit, QGroupBox,
     QMessageBox, QCheckBox, QSplitter, QInputDialog, QDialog, QSizePolicy
 )
 
@@ -97,6 +97,8 @@ class StepExecutor:
                 return StepExecutor._click_image(params, log_func)
             elif step_type == "key_press":
                 return StepExecutor._key_press(params, log_func)
+            elif step_type == "type_text":
+                return StepExecutor._type_text(params, log_func)
             elif step_type == "click_coords":
                 return StepExecutor._click_coords(params, log_func)
             elif step_type == "search_file":
@@ -256,6 +258,57 @@ class StepExecutor:
             pyautogui.hotkey(*key_list)
         else:
             pyautogui.press(keys)
+        return True
+
+    @staticmethod
+    def _type_text(params, log_func) -> bool:
+        """输入一段文字(支持中文/表情符，走剪贴板粘贴)。"""
+        import pyautogui
+        import pyperclip
+        text = params.get("text", "")
+        delay_before = float(params.get("delay_before", 0.3))
+        press_enter = bool(params.get("press_enter", False))
+        clear_first = bool(params.get("clear_first", False))
+        if not text:
+            log_func("  文本为空，跳过")
+            return True
+        log_func(f"  输入文字 ({len(text)} 字符): {text[:40] + ('...' if len(text)>40 else '')}")
+        if delay_before > 0:
+            time.sleep(delay_before)
+        # 清空当前输入框
+        if clear_first:
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(0.1)
+            pyautogui.press('delete')
+            time.sleep(0.1)
+        # 采用剪贴板粘贴以支持中文 / Unicode
+        try:
+            old_clip = pyperclip.paste()
+        except Exception:
+            old_clip = None
+        try:
+            pyperclip.copy(text)
+            time.sleep(0.1)
+            pyautogui.hotkey('ctrl', 'v')
+            time.sleep(0.2)
+        except Exception as e:
+            log_func(f"  剪贴板粘贴失败，回退 typewrite: {e}")
+            try:
+                pyautogui.typewrite(text, interval=0.02)
+            except Exception as e2:
+                log_func(f"  typewrite 也失败(中文不支持): {e2}")
+                return False
+        finally:
+            # 还原原剪贴板
+            if old_clip is not None:
+                try:
+                    pyperclip.copy(old_clip)
+                except Exception:
+                    pass
+        if press_enter:
+            time.sleep(0.1)
+            pyautogui.press('enter')
+            log_func("  已按回车")
         return True
 
     @staticmethod
@@ -531,6 +584,7 @@ class WorkflowEditor(QWidget):
         ("wait", "等待"),
         ("click_image", "截图匹配点击"),
         ("key_press", "按键输入"),
+        ("type_text", "文字输入"),
         ("click_coords", "坐标点击"),
         ("search_file", "文件搜索"),
     ]
@@ -728,6 +782,32 @@ class WorkflowEditor(QWidget):
         self.key_edit = QLineEdit()
         kw.addWidget(self.key_edit)
         dv.addWidget(self.key_widget)
+
+        # ============ 文字输入 专用控件 ============
+        self.text_widget = QWidget()
+        tw = QVBoxLayout(self.text_widget)
+        tw.setContentsMargins(0, 0, 0, 0)
+        tw.addWidget(QLabel("要输入的文字(支持中文/多行):"))
+        self.text_edit = QTextEdit()
+        self.text_edit.setPlaceholderText("例: 今天天气怎么样 / 多行内容 / Hello world")
+        self.text_edit.setMaximumHeight(120)
+        tw.addWidget(self.text_edit)
+        text_opt_row = QHBoxLayout()
+        text_opt_row.addWidget(QLabel("输入前延迟:"))
+        self.text_delay_spin = QDoubleSpinBox()
+        self.text_delay_spin.setRange(0.0, 10.0)
+        self.text_delay_spin.setSingleStep(0.1)
+        self.text_delay_spin.setValue(0.3)
+        self.text_delay_spin.setSuffix(" 秒")
+        text_opt_row.addWidget(self.text_delay_spin)
+        self.text_clear_chk = QCheckBox("清空当前输入框(Ctrl+A 后 Delete)")
+        text_opt_row.addWidget(self.text_clear_chk)
+        self.text_enter_chk = QCheckBox("输入后按回车")
+        text_opt_row.addWidget(self.text_enter_chk)
+        text_opt_row.addStretch()
+        tw.addLayout(text_opt_row)
+        tw.addWidget(QLabel("<i style='color:#666; font-size:11px;'>提示: 采用剪贴板粘贴，支持中文、表情、特殊字符。</i>"))
+        dv.addWidget(self.text_widget)
 
         # ============ 坐标点击 专用控件 ============
         self.coord_widget = QWidget()
@@ -995,6 +1075,11 @@ class WorkflowEditor(QWidget):
             self._update_image_preview()
         elif step_type == "key_press":
             self.key_edit.setText(params.get("keys", ""))
+        elif step_type == "type_text":
+            self.text_edit.setPlainText(params.get("text", ""))
+            self.text_delay_spin.setValue(params.get("delay_before", 0.3))
+            self.text_clear_chk.setChecked(params.get("clear_first", False))
+            self.text_enter_chk.setChecked(params.get("press_enter", False))
         elif step_type == "click_coords":
             self.x_spin.setValue(params.get("x", 0))
             self.y_spin.setValue(params.get("y", 0))
@@ -1039,6 +1124,7 @@ class WorkflowEditor(QWidget):
         self.wait_widget.setVisible(step_type == "wait")
         self.image_widget.setVisible(step_type == "click_image")
         self.key_widget.setVisible(step_type == "key_press")
+        self.text_widget.setVisible(step_type == "type_text")
         self.coord_widget.setVisible(step_type == "click_coords")
         self.search_widget.setVisible(step_type == "search_file")
 
@@ -1358,6 +1444,13 @@ class WorkflowEditor(QWidget):
             step["params"] = params
         elif step["type"] == "key_press":
             step["params"] = {"keys": self.key_edit.text()}
+        elif step["type"] == "type_text":
+            step["params"] = {
+                "text": self.text_edit.toPlainText(),
+                "delay_before": self.text_delay_spin.value(),
+                "clear_first": self.text_clear_chk.isChecked(),
+                "press_enter": self.text_enter_chk.isChecked(),
+            }
         elif step["type"] == "click_coords":
             step["params"] = {
                 "x": self.x_spin.value(),
