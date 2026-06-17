@@ -1337,7 +1337,8 @@ class SnippingWindow(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("桌面自动化助手")
+        from i18n import t as _t
+        self.setWindowTitle(_t("app_title"))
         self.resize(960, 640)
 
         self.shortcuts: list[ShortcutInfo] = []
@@ -1538,21 +1539,22 @@ class MainWindow(QMainWindow):
         wv.addWidget(self.workflow_editor)
 
         # === Tab 2: 文件搜索 ===
+        from i18n import t as _t
         try:
             from search_panel import SearchPanel
             self.search_panel = SearchPanel(self)
-            self.right_tabs.addTab(self.search_panel, "🔍 文件搜索")
+            self.right_tabs.addTab(self.search_panel, _t("tab_search"))
         except Exception as e:
             log.warning(f"文件搜索标签加载失败: {e}")
 
         # 添加到选项卡
-        self.right_tabs.addTab(quick_tab, "🚀 快速启动")
-        self.right_tabs.addTab(workflow_tab, "🔄 工作流")
+        self.right_tabs.addTab(quick_tab, _t("tab_quick_launch"))
+        self.right_tabs.addTab(workflow_tab, _t("tab_workflow"))
         # === Tab 4: 工具 (MCP server 控制 + 简介) ===
         try:
             from tools_tab import ToolsTab
             self.tools_tab = ToolsTab(self)
-            self.right_tabs.addTab(self.tools_tab, "🛠️ 工具")
+            self.right_tabs.addTab(self.tools_tab, _t("tab_tools"))
         except Exception as e:
             log.warning(f"工具标签加载失败: {e}")
 
@@ -1560,7 +1562,7 @@ class MainWindow(QMainWindow):
         try:
             from context_tab import ContextTab
             self.context_tab = ContextTab(self)
-            self.right_tabs.addTab(self.context_tab, "🧠 AI 感知")
+            self.right_tabs.addTab(self.context_tab, _t("tab_ai_perception"))
         except Exception as e:
             import traceback
             tb = traceback.format_exc()

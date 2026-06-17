@@ -11,6 +11,8 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6-orange.svg)](https://www.qt.io/qt-for-python)
 
+中文 · [English](README_EN.md)
+
 ---
 
 ## ✨ 核心特性

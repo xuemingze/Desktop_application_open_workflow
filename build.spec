@@ -10,6 +10,7 @@ block_cipher = None
 
 # 收集 PySide6 的所有子模块,避免运行时 ImportError
 hiddenimports = [
+    'i18n',
     'PySide6.QtCore',
     'PySide6.QtGui',
     'PySide6.QtWidgets',
@@ -69,6 +70,7 @@ except Exception as e:
 datas = [
     ('workflow_panel.py', '.'),
     ('image_match.py', '.'),
+    ('i18n.py', '.'),
     ('mcp_embedded.py', '.'),
     ('mcp_patch.py', '.'),
     ('autostart.py', '.'),

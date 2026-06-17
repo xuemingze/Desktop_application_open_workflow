@@ -29,7 +29,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QGroupBox, QTextEdit, QFrame, QScrollArea, QCheckBox, QMessageBox
+    QGroupBox, QTextEdit, QFrame, QScrollArea, QCheckBox, QMessageBox, QComboBox
 )
 
 # 复用父项目的运行时目录解析
@@ -123,6 +123,9 @@ class ToolsTab(QWidget):
 
         # ===== 系统设置 (开机启动 / 后台运行) =====
         iv.addWidget(self._build_system_box())
+
+        # ===== 语言设置 =====
+        iv.addWidget(self._build_language_box())
 
         # ===== MCP Server 控制 =====
         iv.addWidget(self._build_mcp_box())
@@ -258,6 +261,50 @@ class ToolsTab(QWidget):
         # 启动时同步加载状态 (不走延迟)
         self._refresh_system_status()
         return gb
+
+    def _build_language_box(self) -> QGroupBox:
+        """语言切换区"""
+        from i18n import t, get_lang
+        gb = QGroupBox(t("tools_language"))
+        v = QVBoxLayout(gb)
+        v.setContentsMargins(10, 6, 10, 10)
+        v.setSpacing(8)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel(t("tools_lang_label")))
+        self.lang_combo = QComboBox()
+        self.lang_combo.addItem(t("tools_lang_zh"), "zh")
+        self.lang_combo.addItem(t("tools_lang_en"), "en")
+        cur = get_lang()
+        idx = self.lang_combo.findData(cur)
+        if idx >= 0:
+            self.lang_combo.setCurrentIndex(idx)
+        self.lang_combo.currentIndexChanged.connect(self._on_lang_change)
+        row.addWidget(self.lang_combo)
+        row.addStretch()
+        v.addLayout(row)
+
+        hint = QLabel(t("tools_lang_apply_hint"))
+        hint.setStyleSheet("color: #666; font-size: 11px;")
+        v.addWidget(hint)
+        return gb
+
+    def _on_lang_change(self, idx):
+        """语言切换回调 - 保存后提示重启"""
+        from i18n import t, set_lang
+        new_lang = self.lang_combo.itemData(idx)
+        if not new_lang:
+            return
+        try:
+            set_lang(new_lang)
+            lang_name = self.lang_combo.itemText(idx)
+            QMessageBox.information(
+                self,
+                t("msg_lang_changed_title"),
+                t("msg_lang_changed_body", lang=lang_name),
+            )
+        except Exception as e:
+            QMessageBox.warning(self, t("msg_error"), str(e))
 
     def _build_mcp_box(self) -> QGroupBox:
         """MCP Server 控制区"""
