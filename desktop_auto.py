@@ -1484,26 +1484,9 @@ class MainWindow(QMainWindow):
         ov = QVBoxLayout(outer)
         ov.setContentsMargins(6, 6, 6, 6)
         ov.addWidget(splitter, 3)
-
-        # 可折叠日志区：按钮 + 日志 用简单 QVBoxLayout,折叠时只改 log_view 的 maxHeight
-        self.btn_toggle_log = QPushButton("▼ 操作日志", outer)
-        self.btn_toggle_log.setFixedHeight(25)
-        self.btn_toggle_log.setStyleSheet(
-            "QPushButton { background:#374151; color:#d1d5db; font-weight:bold; "
-            "padding: 3px 8px; border-radius:3px; text-align:left; }"
-            "QPushButton:hover { background:#4b5563; }"
-        )
-        self.btn_toggle_log.clicked.connect(self._toggle_log_view)
-        ov.addWidget(self.btn_toggle_log)
-
-        # 日志面板默认展开状态。设置合理的默认 maxHeight,折叠时改为 0
-        self._log_collapsed = False
-        self._log_default_height = 150
-        self.log_view.setMinimumHeight(0)
-        self.log_view.setMaximumHeight(self._log_default_height)
-        self.log_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        ov.addWidget(QLabel("操作日志:"))
         ov.addWidget(self.log_view, 1)
-
+        self.setCentralWidget(outer)
         self.setCentralWidget(outer)
 
         # 强制最小尺寸防坍缩
@@ -1525,15 +1508,6 @@ class MainWindow(QMainWindow):
         # btn_onekey_start / btn_onekey_stop 已替换为工作流面板
         self.btn_cleanup.clicked.connect(self.cleanup_residuals)
         # MCP server 控制已转移到【工具】标签页
-
-    def _toggle_log_view(self) -> None:
-        """折叠/展开底部日志区（修改 log_view 的 maxHeight,轻量级不卡顿）。"""
-        self._log_collapsed = not self._log_collapsed
-        if self._log_collapsed:
-            self.log_view.setMaximumHeight(0)
-        else:
-            self.log_view.setMaximumHeight(self._log_default_height)
-        self.btn_toggle_log.setText("▶ 操作日志" if self._log_collapsed else "▼ 操作日志")
 
         # 启动时自动扫描
         self.refresh_shortcuts()
