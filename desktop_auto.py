@@ -1442,7 +1442,8 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setWidget(right)
-        scroll.setMinimumWidth(560)
+        scroll.setMinimumWidth(300)
+        scroll.setMaximumWidth(750)  # 限制右侧面板最大宽度,防止聊天区域过宽
 
         # ===== 左侧: 快捷方式列表 + 重新扫描按钮 =====
         left_panel = QWidget()
@@ -1477,7 +1478,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(left_panel)
         splitter.addWidget(scroll)
         splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(1, 2)  # 1:1 均分,右侧不超过 900
         splitter.setSizes([500, 820])  # 右侧宽一些
 
         outer = QWidget(self)

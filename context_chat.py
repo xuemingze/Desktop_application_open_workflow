@@ -603,6 +603,8 @@ class ContextChatTab(QWidget):
         self._inline_status_phase = ""
         self._max_history = 20               # 保留最近 20 轮
         self._build_ui()
+        # 限制最大宽度,防止对话气泡过宽
+        self.setMaximumWidth(900)
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -627,11 +629,13 @@ class ContextChatTab(QWidget):
         self.chat_view.setStyleSheet(
             "QTextEdit { background:#fafafa; border:1px solid #e5e7eb; border-radius:4px; padding:8px; }"
         )
+        # 限制最大高度，确保输入区域始终可见
+        self.chat_view.setMaximumHeight(500)
         root.addWidget(self.chat_view, stretch=1)
 
-        # 输入区
-        input_gb = QGroupBox("输入")
-        iv = QVBoxLayout(input_gb)
+        # 输入区（无 QGroupBox 标题栏，节省垂直空间）
+        input_hud = QWidget()
+        iv = QVBoxLayout(input_hud)
         input_row = QHBoxLayout()
         self.input_edit = QLineEdit()
         self.input_edit.setPlaceholderText("例: 帮我打开微信 / 跑一下 zzz日常 工作流 / 搜索4月明细")
@@ -679,7 +683,7 @@ class ContextChatTab(QWidget):
         ctrl_row.addWidget(btn_clear)
 
         iv.addLayout(ctrl_row)
-        root.addWidget(input_gb)
+        root.addWidget(input_hud)
 
         # 状态栏
         self.status_label = QLabel("就绪")
