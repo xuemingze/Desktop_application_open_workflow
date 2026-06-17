@@ -33,7 +33,7 @@ from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QTextEdit, QLineEdit, QGroupBox, QCheckBox, QSpinBox, QFormLayout,
-    QMessageBox, QDialog,
+    QMessageBox, QDialog, QSizePolicy,
 )
 
 from context_agent import LLMBackend, OpenAICompatibleBackend, parse_intent_response
@@ -629,8 +629,9 @@ class ContextChatTab(QWidget):
         self.chat_view.setStyleSheet(
             "QTextEdit { background:#fafafa; border:1px solid #e5e7eb; border-radius:4px; padding:8px; }"
         )
-        # 限制最大高度，确保输入区域始终可见
-        self.chat_view.setMaximumHeight(500)
+        # 限制最大高度 + 优先垂直尺寸策略，确保输入区域始终可见
+        self.chat_view.setMaximumHeight(300)
+        self.chat_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         root.addWidget(self.chat_view, stretch=1)
 
         # 输入区（无 QGroupBox 标题栏，节省垂直空间）
