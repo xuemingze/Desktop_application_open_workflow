@@ -33,6 +33,7 @@ from proactive_sniff import (
     UserProfile, ProactiveQuestion, BehaviorInterestMatcher,
 )
 from context_chat import ContextChatTab, MiniChatDialog, set_tavily_api_key
+from i18n import t
 
 # ---------------------------------------------------------------------------
 # 后台 Worker: 拉取模型列表 (避免同步 HTTP 阻塞 UI)
@@ -151,7 +152,7 @@ class ContextTab(QWidget):
 
         # 顶部：总开关
         top = QHBoxLayout()
-        self.master_switch = QCheckBox("🟢 启用上下文感知")
+        self.master_switch = QCheckBox(t("ctx_master_switch"))
         self.master_switch.setFont(QFont("", 11, QFont.Bold))
         self.master_switch.toggled.connect(self._on_master_toggle)
         top.addWidget(self.master_switch)
@@ -166,7 +167,7 @@ class ContextTab(QWidget):
         sub = QTabWidget()
 
         # === Tab 1: 感知行为 ===
-        sub.addTab(self._build_sensor_panel(), "🎛️ 感知行为")
+        sub.addTab(self._build_sensor_panel(), t("ctx_tab_sensor"))
 
         # === Tab 1: AI 对话 (调用 MCP 工具) — 默认第一项 ===
         self.context_chat_tab = ContextChatTab(self)
@@ -177,22 +178,22 @@ class ContextTab(QWidget):
         self.toast_broadcast.connect(self.context_chat_tab.on_intent)
         # 同步用户点击气泡
         self._toast_manager.toast_clicked.connect(self.context_chat_tab.on_toast_clicked)
-        sub.addTab(self.context_chat_tab, "💬 AI 对话")
+        sub.addTab(self.context_chat_tab, t("ctx_tab_chat"))
 
         # === Tab 2: 嗅探规则 ===
-        sub.addTab(self._build_rules_panel(), "📋 嗅探规则")
+        sub.addTab(self._build_rules_panel(), t("ctx_tab_rules"))
 
         # === Tab 3: 进程黑名单 ===
-        sub.addTab(self._build_blacklist_panel(), "🚫 进程黑名单")
+        sub.addTab(self._build_blacklist_panel(), t("ctx_tab_blacklist"))
 
         # === Tab 4: 后端设置 ===
-        sub.addTab(self._build_backend_panel(), "⚙️ 后端")
+        sub.addTab(self._build_backend_panel(), t("ctx_tab_backend"))
 
         # === Tab 5: 主动嗅探 ===
-        sub.addTab(self._build_proactive_panel(), "🎯 主动嗅探")
+        sub.addTab(self._build_proactive_panel(), t("ctx_tab_proactive"))
 
         # === Tab 6: 活动日志 ===
-        sub.addTab(self._build_log_panel(), "📊 日志")
+        sub.addTab(self._build_log_panel(), t("ctx_tab_log"))
 
         root.addWidget(sub, stretch=1)
 
@@ -201,29 +202,29 @@ class ContextTab(QWidget):
         w = QWidget()
         layout = QVBoxLayout(w)
 
-        gb = QGroupBox("传感器（多选）")
+        gb = QGroupBox(t("ctx_sensor_box"))
         v = QVBoxLayout(gb)
 
-        self.chk_clipboard = QCheckBox("📋 剪贴板监听（推荐开启，零开销）")
+        self.chk_clipboard = QCheckBox(t("ctx_chk_clipboard"))
         self.chk_clipboard.setChecked(True)
         v.addWidget(self.chk_clipboard)
 
-        self.chk_window = QCheckBox("🪟 前台窗口切换监听")
+        self.chk_window = QCheckBox(t("ctx_chk_window"))
         self.chk_window.setChecked(True)
         v.addWidget(self.chk_window)
 
-        self.chk_file = QCheckBox("📁 文件系统监视（手动添加目录）")
+        self.chk_file = QCheckBox(t("ctx_chk_file"))
         self.chk_file.setChecked(False)
         v.addWidget(self.chk_file)
 
-        self.chk_process = QCheckBox("⚙️ 进程启动/退出监听（配合主动嗅探用户档案触发）")
+        self.chk_process = QCheckBox(t("ctx_chk_process"))
         self.chk_process.setChecked(True)
         v.addWidget(self.chk_process)
 
         layout.addWidget(gb)
 
         # 文件监视路径
-        path_gb = QGroupBox("文件监视路径")
+        path_gb = QGroupBox(t("ctx_file_watch_path"))
         pv = QVBoxLayout(path_gb)
         path_row = QHBoxLayout()
         self.path_list = QListWidget()
@@ -231,9 +232,9 @@ class ContextTab(QWidget):
         path_row.addWidget(self.path_list, stretch=1)
 
         btn_col = QVBoxLayout()
-        btn_add = QPushButton("➕ 添加目录")
+        btn_add = QPushButton(t("ctx_btn_add_dir"))
         btn_add.clicked.connect(self._on_add_path)
-        btn_rm = QPushButton("➖ 移除选中")
+        btn_rm = QPushButton(t("ctx_btn_rm_dir"))
         btn_rm.clicked.connect(self._on_rm_path)
         btn_col.addWidget(btn_add)
         btn_col.addWidget(btn_rm)
@@ -244,11 +245,11 @@ class ContextTab(QWidget):
 
         # 行为按钮
         btn_row = QHBoxLayout()
-        btn_test = QPushButton("🧪 测试剪贴板捕获")
+        btn_test = QPushButton(t("ctx_btn_test_clipboard"))
         btn_test.clicked.connect(self._on_test_capture)
-        btn_test_toast = QPushButton("💬 测试气泡")
+        btn_test_toast = QPushButton(t("ctx_btn_test_toast"))
         btn_test_toast.clicked.connect(self._on_test_toast)
-        btn_clear_toasts = QPushButton("🧹 清除所有气泡")
+        btn_clear_toasts = QPushButton(t("ctx_btn_clear_toasts"))
         btn_clear_toasts.clicked.connect(self._toast_manager.stop_all)
         btn_row.addWidget(btn_test)
         btn_row.addWidget(btn_test_toast)
@@ -264,7 +265,7 @@ class ContextTab(QWidget):
         w = QWidget()
         layout = QVBoxLayout(w)
 
-        info = QLabel("💡 只有当剪贴板内容命中下方任一规则时，才会被发送到 AI 推理。\n"
+        info = QLabel(t("ctx_clipboard_hint") + "\n"
                      "取消勾选可禁用对应规则。")
         info.setStyleSheet("color: #666;")
         layout.addWidget(info)
@@ -274,31 +275,31 @@ class ContextTab(QWidget):
         self.rule_list.itemChanged.connect(self._on_rule_item_changed)
         layout.addWidget(self.rule_list)
 
-        learning_gb = QGroupBox("学习规则设置")
+        learning_gb = QGroupBox(t("ctx_learning_settings"))
         lf = QFormLayout(learning_gb)
         self.default_translate_lang_input = QLineEdit("中文")
-        self.default_translate_lang_input.setPlaceholderText("例如：中文 / English / 日本語")
+        self.default_translate_lang_input.setPlaceholderText(t("ctx_placeholder_trans_lang"))
         self.default_translate_lang_input.editingFinished.connect(self._save_config)
-        lf.addRow("默认翻译语言:", self.default_translate_lang_input)
+        lf.addRow(t("ctx_default_trans_lang"), self.default_translate_lang_input)
         tip = QLabel("勾选规则后：检测到英文 → 推送 AI 翻译；检测到学术词汇 → 推送 AI 解释。")
         tip.setStyleSheet("color:#666;")
-        lf.addRow("说明:", tip)
+        lf.addRow(t("ctx_rule_tip_label"), tip)
         layout.addWidget(learning_gb)
         self._load_learning_config_into_ui()
 
         # 自定义规则
-        custom_gb = QGroupBox("添加自定义规则")
+        custom_gb = QGroupBox(t("ctx_custom_rule"))
         cv = QFormLayout(custom_gb)
         self.rule_name_input = QLineEdit()
-        self.rule_name_input.setPlaceholderText("规则名称，如 Git 仓库路径")
+        self.rule_name_input.setPlaceholderText(t("ctx_placeholder_rule_name"))
         self.rule_pattern_input = QLineEdit()
-        self.rule_pattern_input.setPlaceholderText("正则表达式，如 ^git@")
-        cv.addRow("名称:", self.rule_name_input)
-        cv.addRow("正则:", self.rule_pattern_input)
+        self.rule_pattern_input.setPlaceholderText(t("ctx_placeholder_pattern"))
+        cv.addRow(t("ctx_rule_name"), self.rule_name_input)
+        cv.addRow(t("ctx_rule_pattern"), self.rule_pattern_input)
         btn_row = QHBoxLayout()
-        btn_add = QPushButton("➕ 添加")
+        btn_add = QPushButton(t("ctx_btn_add_rule"))
         btn_add.clicked.connect(self._on_add_rule)
-        btn_rm = QPushButton("➖ 删除选中")
+        btn_rm = QPushButton(t("ctx_btn_rm_rule"))
         btn_rm.clicked.connect(self._on_rm_rule)
         btn_row.addWidget(btn_add)
         btn_row.addWidget(btn_rm)
@@ -314,7 +315,7 @@ class ContextTab(QWidget):
         w = QWidget()
         layout = QVBoxLayout(w)
 
-        warn = QLabel("🛡️ 黑名单中的进程绝对不会被感知（剪贴板内容不会进入 AI 链路）。\n"
+        warn = QLabel(t("ctx_blacklist_hint") + "\n"
                      "密码管理器、SSH 私钥工具等建议加入。")
         warn.setStyleSheet("color: #c00;")
         layout.addWidget(warn)
@@ -323,14 +324,14 @@ class ContextTab(QWidget):
         self.blacklist_list.setMaximumHeight(280)
         layout.addWidget(self.blacklist_list)
 
-        add_gb = QGroupBox("添加进程")
+        add_gb = QGroupBox(t("ctx_add_process"))
         av = QHBoxLayout(add_gb)
         self.blacklist_input = QLineEdit()
-        self.blacklist_input.setPlaceholderText("进程名，如 1Password.exe")
+        self.blacklist_input.setPlaceholderText(t("ctx_placeholder_process"))
         av.addWidget(self.blacklist_input, stretch=1)
-        btn_add = QPushButton("➕ 添加")
+        btn_add = QPushButton(t("ctx_btn_add_rule"))
         btn_add.clicked.connect(self._on_add_blacklist)
-        btn_rm = QPushButton("➖ 移除选中")
+        btn_rm = QPushButton(t("ctx_btn_rm_dir"))
         btn_rm.clicked.connect(self._on_rm_blacklist)
         av.addWidget(btn_add)
         av.addWidget(btn_rm)
@@ -344,19 +345,19 @@ class ContextTab(QWidget):
         w = QWidget()
         layout = QVBoxLayout(w)
 
-        gb = QGroupBox("AI 后端")
+        gb = QGroupBox(t("ctx_backend_title"))
         f = QFormLayout(gb)
 
         self.backend_combo = QComboBox()
-        self.backend_combo.addItems(["EchoBackend (本地测试，不发请求)",
-                                    "OpenAI 兼容 (Hermes/Qianlia/本地模型)"])
-        f.addRow("后端类型:", self.backend_combo)
+        self.backend_combo.addItems([t("ctx_backend_echo"),
+                                    t("ctx_backend_openai")])
+        f.addRow(t("ctx_backend_type"), self.backend_combo)
 
         self.base_url_input = QLineEdit("http://127.0.0.1:11434/v1")
-        f.addRow("Base URL:", self.base_url_input)
+        f.addRow(t("ctx_base_url"), self.base_url_input)
 
         self.api_key_input = QLineEdit("EMPTY")
-        f.addRow("API Key:", self.api_key_input)
+        f.addRow(t("ctx_api_key"), self.api_key_input)
 
         self.model_input = QComboBox()
         self.model_input.setEditable(True)
@@ -364,31 +365,31 @@ class ContextTab(QWidget):
         # 默认保留一个占位项,用户可输入也以后拉取后覆盖
         self.model_input.addItem("qwen2.5:7b")
         self.model_input.setCurrentText("qwen2.5:7b")
-        f.addRow("Model:", self.model_input)
+        f.addRow(t("ctx_model"), self.model_input)
 
         self.timeout_spin = QSpinBox()
         self.timeout_spin.setRange(2, 120)
         self.timeout_spin.setValue(15)
-        self.timeout_spin.setSuffix(" 秒")
-        f.addRow("超时:", self.timeout_spin)
+        self.timeout_spin.setSuffix(t("ctx_seconds_suffix"))
+        f.addRow(t("ctx_timeout"), self.timeout_spin)
 
         self.tavily_key_input = QLineEdit()
         self.tavily_key_input.setEchoMode(QLineEdit.Password)
-        self.tavily_key_input.setPlaceholderText("可选：Tavily API Key，联网搜索优先使用 Tavily")
-        f.addRow("Tavily Key:", self.tavily_key_input)
+        self.tavily_key_input.setPlaceholderText(t("ctx_placeholder_tavily"))
+        f.addRow(t("ctx_tavily_key"), self.tavily_key_input)
 
         layout.addWidget(gb)
 
         btn_row = QHBoxLayout()
-        btn_apply = QPushButton("💾 应用设置")
+        btn_apply = QPushButton(t("ctx_btn_save_backend"))
         btn_apply.clicked.connect(self._on_apply_backend)
-        btn_test = QPushButton("🧪 测试连通")
+        btn_test = QPushButton(t("ctx_btn_test_conn"))
         btn_test.clicked.connect(self._on_test_backend)
         btn_row.addWidget(btn_apply)
         btn_row.addWidget(btn_test)
 
         # 拉取模型列表
-        self.btn_fetch_models = QPushButton("🔄 拉取模型列表")
+        self.btn_fetch_models = QPushButton(t("ctx_btn_fetch_models"))
         self.btn_fetch_models.setToolTip("从当前 Base URL + API Key 拉取可用模型 (OpenAI 协议: GET /v1/models)")
         self.btn_fetch_models.clicked.connect(self._on_fetch_models)
         btn_row.addWidget(self.btn_fetch_models)
@@ -397,7 +398,7 @@ class ContextTab(QWidget):
         layout.addLayout(btn_row)
 
         # 工作流交互说明
-        info_gb = QGroupBox("工作流交互")
+        info_gb = QGroupBox(t("ctx_workflow_interaction"))
         iv = QVBoxLayout(info_gb)
         info = QLabel("• 气泡点击后会调用 AI 推荐的工具（MCP 工具或工作流）\n"
                      "• 当前支持的工具：search_local_files / run_workflow / launch_shortcut\n"
@@ -418,7 +419,7 @@ class ContextTab(QWidget):
 
         # 顶部：开关
         top = QHBoxLayout()
-        self.proactive_switch = QCheckBox("🎯 启用主动嗅探")
+        self.proactive_switch = QCheckBox(t("ctx_proactive_switch"))
         self.proactive_switch.setFont(QFont("", 11, QFont.Bold))
         self.proactive_switch.toggled.connect(self._on_proactive_toggle)
         top.addWidget(self.proactive_switch)
@@ -426,64 +427,64 @@ class ContextTab(QWidget):
         layout.addLayout(top)
 
         # 每日次数
-        count_gb = QGroupBox("每日主动次数")
+        count_gb = QGroupBox(t("ctx_daily_count"))
         cv = QFormLayout(count_gb)
         self.daily_count_spin = QSpinBox()
         self.daily_count_spin.setRange(0, 20)
         self.daily_count_spin.setValue(3)
-        self.daily_count_spin.setSuffix(" 次/天")
+        self.daily_count_spin.setSuffix(t("ctx_count_suffix"))
         self.daily_count_spin.valueChanged.connect(self._on_daily_count_change)
-        cv.addRow("次数:", self.daily_count_spin)
+        cv.addRow(t("ctx_count_label"), self.daily_count_spin)
 
         self.proactive_status = QLabel("状态: 未启动")
         self.proactive_status.setStyleSheet("color: #888;")
-        cv.addRow("", self.proactive_status)
+        cv.addRow(t("ctx_proactive_status"), self.proactive_status)
         layout.addWidget(count_gb)
 
         # 用户档案
-        profile_gb = QGroupBox("用户档案（驱动话题主题）")
+        profile_gb = QGroupBox(t("ctx_profile_gb"))
         pv = QFormLayout(profile_gb)
         self.profile_hobbies = QLineEdit()
-        self.profile_hobbies.setPlaceholderText("例如：爬山、摄影、围棋")
+        self.profile_hobbies.setPlaceholderText(t("ctx_placeholder_hobbies"))
         self.profile_hobbies.textChanged.connect(self._on_profile_change)
-        pv.addRow("爱好:", self.profile_hobbies)
+        pv.addRow(t("ctx_profile_hobbies"), self.profile_hobbies)
 
         self.profile_interests = QLineEdit()
-        self.profile_interests.setPlaceholderText("例如：AI、加密货币、独立游戏")
+        self.profile_interests.setPlaceholderText(t("ctx_placeholder_interests"))
         self.profile_interests.textChanged.connect(self._on_profile_change)
-        pv.addRow("兴趣:", self.profile_interests)
+        pv.addRow(t("ctx_profile_interests"), self.profile_interests)
 
         self.profile_learning = QLineEdit()
-        self.profile_learning.setPlaceholderText("例如：Rust 编程、系统设计")
+        self.profile_learning.setPlaceholderText(t("ctx_placeholder_learning"))
         self.profile_learning.textChanged.connect(self._on_profile_change)
-        pv.addRow("学习:", self.profile_learning)
+        pv.addRow(t("ctx_profile_learning"), self.profile_learning)
 
         self.profile_work = QLineEdit()
-        self.profile_work.setPlaceholderText("例如：桌面自动化、Python 后端")
+        self.profile_work.setPlaceholderText(t("ctx_placeholder_work"))
         self.profile_work.textChanged.connect(self._on_profile_change)
-        pv.addRow("工作:", self.profile_work)
+        pv.addRow(t("ctx_profile_work"), self.profile_work)
 
         self.profile_keywords = QLineEdit()
-        self.profile_keywords.setPlaceholderText("例如：鸣潮,原神,崩坏星穹铁道")
+        self.profile_keywords.setPlaceholderText(t("ctx_placeholder_keywords"))
         self.profile_keywords.textChanged.connect(self._on_profile_change)
-        pv.addRow("行为关键词:", self.profile_keywords)
+        pv.addRow(t("ctx_profile_keywords"), self.profile_keywords)
 
-        kw_hint = QLabel("💡 当检测到窗口/进程名包含这些关键词时，立即推送相关话题（5分钟/次冷却）")
+        kw_hint = QLabel(t("ctx_kw_hint"))
         kw_hint.setStyleSheet("color: #888; font-size: 11px;")
         pv.addRow("", kw_hint)
 
         layout.addWidget(profile_gb)
 
         # 历史问题
-        history_gb = QGroupBox("最近问过的问题")
+        history_gb = QGroupBox(t("ctx_history_gb"))
         hv = QVBoxLayout(history_gb)
         self.proactive_history_view = QListWidget()
         self.proactive_history_view.setMaximumHeight(150)
         hv.addWidget(self.proactive_history_view)
         btn_row = QHBoxLayout()
-        btn_now = QPushButton("💡 现在生成一个")
+        btn_now = QPushButton(t("ctx_btn_now"))
         btn_now.clicked.connect(self._on_proactive_now)
-        btn_clear = QPushButton("🧹 清空历史")
+        btn_clear = QPushButton(t("ctx_btn_clear"))
         btn_clear.clicked.connect(self._on_proactive_clear)
         btn_row.addWidget(btn_now)
         btn_row.addWidget(btn_clear)
@@ -492,7 +493,7 @@ class ContextTab(QWidget):
         layout.addWidget(history_gb)
 
         # 提示
-        info = QLabel("💡 问题会像聊天一样在右下角弹出气泡，可以点击互动或忽略 5 秒后自动消失。")
+        info = QLabel(t("ctx_proactive_hint2"))
         info.setStyleSheet("color: #666;")
         layout.addWidget(info)
 
@@ -538,12 +539,12 @@ class ContextTab(QWidget):
                 "process": self.chk_process.isChecked(),
             }
             self._sensor_manager.start(modes)
-            self.status_label.setText("🟢 运行中")
+            self.status_label.setText(t("ctx_status_running"))
             self.status_label.setStyleSheet("color: #0a0;")
             self._append_log(f"[系统] 上下文感知已启动，启用模式: {modes}")
         else:
             self._sensor_manager.stop_all()
-            self.status_label.setText("⚪ 已停止")
+            self.status_label.setText(t("ctx_status_stopped"))
             self.status_label.setStyleSheet("color: #888;")
             self._append_log("[系统] 上下文感知已停止")
 
@@ -630,13 +631,13 @@ class ContextTab(QWidget):
 
         # 规则 -> 动作 映射表
         RULE_FALLBACK = {
-            "IP 地址":       ("launch_shortcut",  "mstsc",            f"检测到 IP {text},打开远程桌面？"),
+            t("ctx_ip_address"):       ("launch_shortcut",  "mstsc",            f"检测到 IP {text},打开远程桌面？"),
             "报错信息":      ("search_local_files", text[:30],          "发现报错,搜索相关日志?"),
             "URL":          ("launch_shortcut",  text,                f"检测到链接,打开?"),
             "域名":         ("launch_shortcut",  "https://" + text,   f"检测到域名,打开?"),
             "Windows 路径": ("launch_shortcut",  "explorer",          f"打开路径 {text}?"),
             "Unix 路径":    ("search_local_files", text,                f"搜索路径 {text}?"),
-            "Nginx 配置":   ("search_local_files", "nginx.conf",        "查找 nginx 配置?"),
+            t("ctx_nginx_config"):   ("search_local_files", "nginx.conf",        "查找 nginx 配置?"),
             "命令行":        ("search_local_files", text,                "查找相关脚本?"),
             "单据/表格":    ("search_local_files", text[:30],          "查找单据相关文件?"),
         }

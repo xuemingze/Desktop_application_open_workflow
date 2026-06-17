@@ -1360,33 +1360,33 @@ class MainWindow(QMainWindow):
         self.list_widget.itemDoubleClicked.connect(self.run_action)
 
         # ===== 右侧:控制面板 =====
-        self.info_label = QLabel("选中一个快捷方式", self)
+        self.info_label = QLabel(t("ql_info_selected"), self)
         self.info_label.setWordWrap(True)
         self.info_label.setStyleSheet("color: #555;")
 
         # 启动方式 radio (顺序按推荐度: 鼠标双击 > Popen > Shell > 图像)
         self.mode_group = QButtonGroup(self)
-        self.radio_direct = QRadioButton("🚀 直接启动 (Popen,最优先,最稳定)", self)
-        self.radio_desktop = QRadioButton("🖱️ 鼠标双击桌面图标 (备选)", self)
-        self.radio_shellexec = QRadioButton("Shell 启动 (cmd /c,特殊场景)", self)
-        self.radio_image = QRadioButton("📸 捕捉坐标点击", self)
+        self.radio_direct = QRadioButton(t("ql_radio_direct"), self)
+        self.radio_desktop = QRadioButton(t("ql_radio_desktop"), self)
+        self.radio_shellexec = QRadioButton(t("ql_radio_shell"), self)
+        self.radio_image = QRadioButton(t("ql_radio_image"), self)
         self.radio_direct.setChecked(True)
         self.mode_group.addButton(self.radio_desktop, 1)
         self.mode_group.addButton(self.radio_direct, 2)
         self.mode_group.addButton(self.radio_shellexec, 3)
         self.mode_group.addButton(self.radio_image, 4)
 
-        self.chk_notepad = QCheckBox("启动后模拟键鼠交互 (仅记事本生效)", self)
+        self.chk_notepad = QCheckBox(t("ql_chk_notepad"), self)
 
-        self.samples_label = QLabel("当前模板: 无", self)
+        self.samples_label = QLabel(t("ql_template_none"), self)
         self.samples_label.setWordWrap(True)
 
-        self.btn_refresh = QPushButton("🔄 刷新桌面", self)
-        self.btn_snipping = QPushButton("✂️ 截图框选为模板", self)
-        self.btn_load_samples = QPushButton("📂 从文件加载模板", self)
-        self.btn_run = QPushButton("▶  执行", self)
+        self.btn_refresh = QPushButton(t("ql_btn_refresh"), self)
+        self.btn_snipping = QPushButton(t("ql_btn_screenshot"), self)
+        self.btn_load_samples = QPushButton(t("ql_btn_load_template"), self)
+        self.btn_run = QPushButton(t("ql_btn_run"), self)
         self.btn_run.setStyleSheet("font-weight: bold; padding: 6px; min-height: 24px;")
-        self.btn_stop = QPushButton("⏹  停止", self)
+        self.btn_stop = QPushButton(t("ql_btn_stop"), self)
         self.btn_stop.setStyleSheet("min-height: 24px;")
         self.btn_stop.setEnabled(False)
 
@@ -1399,7 +1399,7 @@ class MainWindow(QMainWindow):
         self.cleanup_kw = QLineEdit(self)
         self.cleanup_kw.setPlaceholderText("aipy  lobe  mobax  ... (空格分隔多个关键词)")
         self.cleanup_kw.setClearButtonEnabled(True)
-        self.btn_cleanup = QPushButton("🧹 清理残留进程", self)
+        self.btn_cleanup = QPushButton(t("ql_btn_cleanup"), self)
         self.btn_cleanup.setStyleSheet(
             "QPushButton { background:#f59e0b; color:white; font-weight:bold; padding:6px; min-height: 24px; }"
             "QPushButton:hover { background:#d97706; }"
@@ -1425,9 +1425,9 @@ class MainWindow(QMainWindow):
         rv.setSpacing(6)
         quick_outer.addWidget(quick_scroll)
 
-        rv.addWidget(QLabel("目标信息:"))
+        rv.addWidget(QLabel(t("ql_label_target") + ":"))
         rv.addWidget(self.info_label)
-        gb = QGroupBox("启动方式 (4 选 1)", quick_tab)
+        gb = QGroupBox(t("ql_launch_mode_box"), quick_tab)
         gv = QVBoxLayout(gb)
         gv.addWidget(self.radio_desktop)
         gv.addWidget(self.radio_direct)
@@ -1437,7 +1437,7 @@ class MainWindow(QMainWindow):
         rv.addWidget(gb)
 
         # ===== 启动方式绑定 (快捷方式级别) =====
-        bind_box = QGroupBox("🔗 启动方式绑定 (双击/工作流 都生效)")
+        bind_box = QGroupBox(t("ql_bind_box"))
         bv = QVBoxLayout(bind_box)
         bv.setContentsMargins(8, 4, 8, 6)
         bv.setSpacing(4)
@@ -1446,8 +1446,8 @@ class MainWindow(QMainWindow):
         self.lbl_launch_mode_hint.setWordWrap(True)
         bv.addWidget(self.lbl_launch_mode_hint)
         bind_row = QHBoxLayout()
-        self.btn_bind_launch_mode = QPushButton("💾 绑定当前启动方式")
-        self.btn_bind_launch_mode.setToolTip("把当前选择的启动方式绑定到本快捷方式。以后双击/工作流调用都会用这个 mode。")
+        self.btn_bind_launch_mode = QPushButton(t("ql_btn_bind_mode"))
+        self.btn_bind_launch_mode.setToolTip(t("ql_bind_mode_tooltip"))
         self.btn_bind_launch_mode.setStyleSheet(
             "QPushButton { background:#2563eb; color:white; font-weight:bold; padding:5px 10px; }"
             "QPushButton:hover { background:#1d4ed8; }"
@@ -1456,8 +1456,8 @@ class MainWindow(QMainWindow):
         self.btn_bind_launch_mode.clicked.connect(self._bind_launch_mode)
         self.btn_bind_launch_mode.setEnabled(False)
         bind_row.addWidget(self.btn_bind_launch_mode)
-        self.btn_clear_launch_mode = QPushButton("🗑 清除绑定")
-        self.btn_clear_launch_mode.setToolTip("清除本快捷方式的启动方式绑定,以后跟随机 UI 单选按钮")
+        self.btn_clear_launch_mode = QPushButton(t("ql_btn_clear_bind"))
+        self.btn_clear_launch_mode.setToolTip(t("ql_clear_bind_tooltip"))
         self.btn_clear_launch_mode.clicked.connect(self._clear_launch_mode)
         self.btn_clear_launch_mode.setEnabled(False)
         bind_row.addWidget(self.btn_clear_launch_mode)
@@ -1466,14 +1466,14 @@ class MainWindow(QMainWindow):
         rv.addWidget(bind_box)
 
         rv.addWidget(self.chk_notepad)
-        rv.addWidget(QLabel("图标模板 (图像模式需要,其他模式可选):"))
+        rv.addWidget(QLabel(t("ql_label_template") + ":"))
         rv.addWidget(self.samples_label)
         hb = QHBoxLayout()
         hb.addWidget(self.btn_snipping)
         hb.addWidget(self.btn_load_samples)
         rv.addLayout(hb)
         # ===== 坐标点击 (代替图像识别) =====
-        coord_group = QGroupBox("🎯 坐标点击 (图像模式可选,免截图)")
+        coord_group = QGroupBox(t("ql_coord_box"))
         cg_v = QVBoxLayout(coord_group)
         coord_row = QHBoxLayout()
         coord_row.addWidget(QLabel("X:"))
@@ -1484,16 +1484,16 @@ class MainWindow(QMainWindow):
         self.coord_y = QSpinBox()
         self.coord_y.setRange(0, 9999)
         coord_row.addWidget(self.coord_y)
-        coord_row.addWidget(QLabel("点击:"))
+        coord_row.addWidget(QLabel(t("ql_click_label") + ":"))
         self.coord_click_type = QComboBox()
-        self.coord_click_type.addItem("双击 (默认)", "left_double")
-        self.coord_click_type.addItem("左键单击", "left_single")
-        self.coord_click_type.addItem("右键单击", "right_single")
+        self.coord_click_type.addItem(t("ql_click_double") + " (" + t("ql_default") + ")", "left_double")
+        self.coord_click_type.addItem(t("ql_click_single"), "left_single")
+        self.coord_click_type.addItem(t("ql_click_right"), "right_single")
         coord_row.addWidget(self.coord_click_type)
         coord_row.addStretch()
         cg_v.addLayout(coord_row)
         capture_row = QHBoxLayout()
-        self.btn_capture_coord = QPushButton("🎯 捕捉坐标 (Win+D 后 3秒)")
+        self.btn_capture_coord = QPushButton(t("ql_btn_capture_coord"))
         self.btn_capture_coord.setStyleSheet(
             "QPushButton { background:#0891b2; color:white; padding:6px; font-weight:bold; }"
             "QPushButton:hover { background:#0e7490; }"
@@ -1506,23 +1506,23 @@ class MainWindow(QMainWindow):
         capture_row.addStretch()
         cg_v.addLayout(capture_row)
         rv.addWidget(coord_group)
-        rv.addWidget(QLabel("启动参数 (空格分隔,可选):"))
+        rv.addWidget(QLabel(t("ql_label_args") + ":"))
         rv.addWidget(self.args_edit)
         rv.addStretch(1)
         rv.addWidget(self.btn_run)
         rv.addWidget(self.btn_stop)
 
         # 一键启停区域 (已替换为工作流面板)
-        onekey_box = QGroupBox("一键启停 (批量) - 已升级为工作流", quick_tab)
+        onekey_box = QGroupBox(t("ql_onekey_box"), quick_tab)
         obv = QVBoxLayout(onekey_box)
-        obv.addWidget(QLabel("💡 请使用下方「工作流」面板"))
-        obv.addWidget(QLabel("(支持: 启动软件、截图匹配点击、按键、等待、坐标点击)"))
+        obv.addWidget(QLabel(t("ql_onekey_hint")))
+        obv.addWidget(QLabel(t("ql_onekey_sub")))
         rv.addWidget(onekey_box)
 
         # 清理残留
-        clean_box = QGroupBox("🧹 清理历史残留 (按进程名关键词)", quick_tab)
+        clean_box = QGroupBox(t("ql_cleanup_box"), quick_tab)
         cv = QVBoxLayout(clean_box)
-        cv.addWidget(QLabel("关键词:"))
+        cv.addWidget(QLabel(t("ql_cleanup_label")))
         cv.addWidget(self.cleanup_kw)
         cv.addWidget(self.btn_cleanup)
         clean_box.setMinimumHeight(130)
@@ -1919,7 +1919,7 @@ class MainWindow(QMainWindow):
         import pyautogui as pa
         from PySide6.QtCore import QTimer
         self.btn_capture_coord.setEnabled(False)
-        self.coord_status.setText("按 Win+D 显示桌面...")
+        self.coord_status.setText(t("ql_coord_display_wind"))
         # 先 Win+D
         pa.hotkey('win', 'd')
         # 隐藏主窗口
@@ -1982,7 +1982,7 @@ class MainWindow(QMainWindow):
         self.shortcuts = scan_desktop_shortcuts()
         for sc in self.shortcuts:
             item = QListWidgetItem(f"{sc.name}   →   {sc.target}")
-            item.setToolTip("双击打开,如打开失败,使用快速启动")
+            item.setToolTip(t("ql_item_tooltip"))
             self.list_widget.addItem(item)
         self._append_log(f"🔍 扫描到 {len(self.shortcuts)} 个快捷方式")
         if self.shortcuts:
@@ -2074,18 +2074,18 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _mode_name(mode: str) -> str:
         return {
-            "": "(未绑定,跟随 UI)",
-            "desktop": "鼠标双击桌面图标",
-            "direct": "直接启动 (Popen)",
-            "shell": "Shell 启动 (cmd /c)",
-            "image": "图像识别 / 坐标点击",
+            "": t("ql_mode_unbound"),
+            "desktop": t("ql_mode_desktop"),
+            "direct": t("ql_mode_direct"),
+            "shell": t("ql_mode_shell"),
+            "image": t("ql_mode_image"),
         }.get(mode, mode)
 
     def _refresh_launch_mode_hint(self) -> None:
         """刷新 "绑定启动方式" 区提示。"""
         sc = self._current()
         if not sc:
-            self.lbl_launch_mode_hint.setText("未选择快捷方式")
+            self.lbl_launch_mode_hint.setText(t("ql_info_selected"))
             self.btn_bind_launch_mode.setEnabled(False)
             self.btn_clear_launch_mode.setEnabled(False)
             return
@@ -2096,7 +2096,7 @@ class MainWindow(QMainWindow):
             )
         else:
             self.lbl_launch_mode_hint.setText(
-                f"「{sc.name}」未绑定启动方式。双击/工作流 调用时使用当前 UI 选择的 mode。"
+                t("ql_launch_unbound", sc=sc.name)
             )
         self.btn_bind_launch_mode.setEnabled(True)
         self.btn_clear_launch_mode.setEnabled(bool(sc.launch_mode))
@@ -2180,7 +2180,7 @@ class MainWindow(QMainWindow):
     def _refresh_samples_label(self) -> None:
         sc = self._current()
         if not sc or not sc.icon_samples:
-            self.samples_label.setText("当前模板: 无")
+            self.samples_label.setText(t("ql_template_none"))
         else:
             names = "\n".join(Path(s).name for s in sc.icon_samples)
             self.samples_label.setText(f"当前模板 ({len(sc.icon_samples)}):\n{names}")

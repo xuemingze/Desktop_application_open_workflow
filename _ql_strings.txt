@@ -1,0 +1,337 @@
+L2: 桌面自动化助手 (PySide6)
+L4: 功能:
+L5: 1. 扫描桌面所有 .lnk 快捷方式
+L6: 2. 选中后:既支持「直接启动」(稳定),也支持「图像识别点击」(通用)
+L7: 3. 图像识别支持多模板(普通/悬停/选中),Win10 高 DPI / 多屏兼容
+L8: 4. 程序启动后用 pywinauto 等窗口就绪,不再硬 sleep
+L9: 5. 自带截图框选工具,可以直接把桌面图标保存为模板
+L10: 6. 操作日志实时显示在 UI 中
+L12: 依赖:
+L70:         print(f"[env] 缺依赖,自动安装: {missing}", flush=True)
+L76:             print(f"[env] 自动安装失败: {e}\n请手动: pip install {' '.join(missing)}", flush=True)
+L85:     命令行参数路由网关
+L87:     处理 --install-shortcut / --remove-shortcut 等无头任务,
+L88:     执行完毕后直接 sys.exit(), 不加载 GUI。
+L120:         shortcut_path = desktop / "桌面助手.lnk"
+L127:         sc.Description = "桌面自动化助手"
+L130:         print(f"[CLI] 桌面快捷方式已创建: {shortcut_path}")
+L132:         print(f"[CLI] 创建快捷方式失败: {e}")
+L136:     shortcut_path = desktop / "桌面助手.lnk"
+L139:         print(f"[CLI] 已删除: {shortcut_path}")
+L141:         print(f"[CLI] 快捷方式不存在: {shortcut_path}")
+L144:     print("[CLI] 静默任务模式启动")
+L145:     print("[CLI] 静默任务完成")
+L179:         print("[单实例] 已通过命名管道转发任务")
+L182:         print(f"[单实例] 命名管道转发失败,回退到前台激活: {e}")
+L192:         title_keyword = "桌面自动化助手"
+L204:             print("[单实例] 未找到已运行窗口")
+L216:         print(f"[单实例] 已切换到窗口: {win32gui.GetWindowText(hwnd)}")
+L219:         print(f"[单实例] 前台激活失败: {e}")
+L228:     尝试获取单实例锁。
+L229:     返回 True 表示当前进程是主实例, 可以继续加载 GUI。
+L230:     返回 False 表示已有主实例在运行, 当前进程应退出。
+L311:     icon_samples: list[str] = field(default_factory=list)  # 多模板路径
+L312:     launch_mode: str = ""  # 绑定的启动方式 (desktop/direct/shell/image/coord),空=跟随 UI 单选按钮
+L313:     _coord_x: int = 0     # 绑定的坐标 (快捷方式级别,优先于 UI)
+L336:     + 追加自定义应用 (custom_apps.json)"""
+L339:         log.warning(f"桌面路径不存在: {desktop}")
+L345:         log.error(f"WScript.Shell 初始化失败: {e}")
+L360:             log.warning(f"跳过 {lnk.name}: {e}")
+L367:             lnk_path="",  # 自定义不是快捷方式
+L393: USER_DATA_DIR = Path.home() / "桌面自动化助手"
+L399:         pass  # 权限不足时降级到 exe 同目录
+L409:                 log.info(f"[迁移] {old_path.name} -> {USER_DATA_DIR}")
+L445:         log.warning(f"shortcut_meta.json 读取失败: {e}")
+L457:         log.warning(f"shortcut_meta.json 保存失败: {e}")
+L467:         log.warning(f"custom_apps.json 读取失败: {e}")
+L482:         raise FileNotFoundError(f"目标不存在: {target}")
+L535:             self.log_signal.emit(f"IPC 服务不可用: {e}")
+L538:         self.log_signal.emit("IPC 命名管道服务已启动")
+L581:                     self.log_signal.emit(f"IPC 服务异常: {e}")
+L588:         self.log_signal.emit("IPC 命名管道服务已停止")
+L602:         self.coord = coord or {}  # 坐标点击参数: {"x", "y", "click_type"}
+L628:                 raise ValueError(f"未知模式: {self.mode}")
+L631:             self.finished_signal.emit(True, "执行完成")
+L633:             log.exception("执行失败")
+L640:             QMessageBox.warning(None, "提示", f"快捷方式目标路径为空: {info.name}\n请重新扫描或检查快捷方式是否有效。")
+L643:             QMessageBox.warning(None, "提示", f"目标程序不存在: {info.target}\n请检查快捷方式是否指向有效路径。")
+L645:         self.log_signal.emit(f"🚀 直接启动 (Popen): {info.target}")
+L650:             self.log_signal.emit(f"   📂 使用工作目录: {cwd}")
+L664:             raise FileNotFoundError(f"目标程序不存在: {info.target}")
+L665:         self.log_signal.emit(f"🚀 Shell 启动: {info.target}")
+L667:         self.log_signal.emit(f"   📂 工作目录: {cwd}")
+L674:             self.log_signal.emit(f"   🎛️ 启动参数: {' '.join(self.extra_args)}")
+L676:         self.log_signal.emit(f"   🔧 执行: cmd /c {cmd_str}")
+L695:             self.log_signal.emit(f"🎯 坐标点击模式: ({x}, {y}) 类型={click_type}")
+L697:             self.log_signal.emit(f"   按 Win+D 显示桌面...")
+L706:             self.log_signal.emit(f"   ✅ 已点击")
+L712:             raise FileNotFoundError("请先设置坐标(X>0 或 Y>0)或加载图标模板")
+L713:         self.log_signal.emit(f"⚠️ 未设置坐标,使用模板匹配 (可能失败)")
+L721:                     self.log_signal.emit(f"✅ 命中模板: {Path(sample).name} @ {center}")
+L724:                 self.log_signal.emit(f"⚠️ 模板 {Path(sample).name} 识别失败: {e}")
+L726:             raise RuntimeError("屏幕上找不到该图标,请设置坐标 (X>0 或 Y>0)")
+L733:         self.log_signal.emit(f"🖱️ 鼠标双击桌面图标: {info.name}")
+L741:             self.log_signal.emit(f"   ❌ 模板匹配失败: {e}")
+L748:             self.log_signal.emit(f"   🎯 使用用户手动设置的坐标 ({x}, {y}) 类型={click_type}")
+L759:             self.log_signal.emit(f"   ✅ 已点击")
+L763:         raise RuntimeError("模板匹配失败且未设置坐标，请重新采集模板或手动设置坐标。")
+L768:         self.log_signal.emit(f"   🪟 最小化所有窗口露出桌面...")
+L771:         pyautogui.hotkey('win', 'd')  # Win+D 显示桌面
+L777:         self.log_signal.emit(f"   📂 枚举桌面 IShellFolder...")
+L781:             raise RuntimeError(f"拿不到 desktop folder: {e}")
+L801:         self.log_signal.emit(f"   共 {len(items)} 个桌面项目")
+L810:                 self.log_signal.emit(f"   🎯 匹配 {idx}: {name}")
+L814:             raise RuntimeError(f"桌面 IShellFolder 找不到 {info.name}")
+L841:         self.log_signal.emit(f"   🔍 查找 Progman...")
+L844:             self.log_signal.emit(f"   ✅ 找到 Progman,枚举子窗口...")
+L847:             self.log_signal.emit(f"   ⚠️ Progman 未找到")
+L850:             self.log_signal.emit(f"   🔍 Progman 下没找到 SysListView32,枚举 WorkerW...")
+L862:         self.log_signal.emit(f"   📋 ListView 查找结果: hwnd={defvw}")
+L865:             self.log_signal.emit(f"   ⚠️ 桌面 ListView 找不到,退到网格估算 (idx={target_logical_idx})")
+L866:             raise RuntimeError("ListView 找不到,logical_idx 仍可用")
+L868:             self.log_signal.emit(f"   ✅ 找到 ListView hwnd={defvw}, idx={target_logical_idx}")
+L886:             self.log_signal.emit(f"   ⚠️ LVM_GETITEMPOSITION 返回 0,0,改用网格估算")
+L889:             pt.x = 30 + col * 95 + 16  # 图标中心
+L891:             self.log_signal.emit(f"   📍 A段网格估算(客户区坐标): ({pt.x}, {pt.y}) (idx={target_logical_idx})")
+L893:             pt.x += 16  # 图标中心
+L895:             self.log_signal.emit(f"   📍 A段真实坐标(客户区坐标): ({pt.x}, {pt.y})")
+L901:         self.log_signal.emit(f"   🖱️ 后台双击 (SendMessage) hwnd={hex(defvw)}")
+L911:         self.log_signal.emit(f"   ✅ 后台双击完成")
+L917:         self.log_signal.emit(f"   🚀 通过 explorer.exe 启动: {info.name}")
+L922:             self.log_signal.emit(f"   ✅ explorer 调用完成")
+L924:             self.log_signal.emit(f"   ⚠️ explorer 启动失败: {e}")
+L929:         self.log_signal.emit(f"   📸 找桌面截图模板...")
+L934:                 f"请先用「截图框选」工具对桌面 {info.name} 图标截一张图,保存到 samples/ 目录"
+L938:         self.log_signal.emit(f"   🪟 最小化所有窗口露出桌面...")
+L940:         pyautogui.hotkey('win', 'd')  # Win+D 显示桌面
+L944:         self.log_signal.emit(f"   找到 {len(candidates)} 个模板,开始匹配...")
+L947:                 self.log_signal.emit(f"   🔍 匹配模板: {c.name}")
+L952:                 self.log_signal.emit(f"   📸 全屏截图已保存: {debug_path}")
+L963:                         raise RuntimeError(f"无法读取模板: {c}")
+L968:                         raise RuntimeError("模板大于屏幕")
+L987:                         self.log_signal.emit(f"   ✅ OpenCV 找到: 缩放={best_scale} 置信度={best_overall:.3f} @ ({cx}, {cy})")
+L990:                         self.log_signal.emit(f"   ✅ 双击完成")
+L991:                         return  # 匹配成功，直接返回，不走兜底
+L993:                         self.log_signal.emit(f"   ⚠️ OpenCV 置信度低: {best_overall:.3f}, 尝试 PIL...")
+L995:                     self.log_signal.emit(f"   ⚠️ OpenCV 未安装, 用 PIL 兜底...")
+L997:                     self.log_signal.emit(f"   ⚠️ OpenCV 异常: {e}, 用 PIL 兜底...")
+L1006:                             self.log_signal.emit(f"   ✅ PIL 找到: ({cx}, {cy})")
+L1010:                             self.log_signal.emit(f"   ✅ 双击完成")
+L1011:                             return  # 匹配成功，直接返回
+L1013:                             self.log_signal.emit(f"   ❌ PIL 也未匹配")
+L1015:                         self.log_signal.emit(f"   ⚠️ PIL 匹配异常: {e}")
+L1017:                 self.log_signal.emit(f"   ⚠️ 匹配异常 {c.name}: {e}")
+L1019:         raise RuntimeError("截图匹配也没找到")
+L1025:         self.log_signal.emit(f"   📂 C 段: 仅枚举 IShellFolder...")
+L1029:             self.log_signal.emit(f"   ⚠️ 拿不到 desktop folder: {e}")
+L1044:                 self.log_signal.emit(f"   🎯 C 段匹配 idx={i}: {name_obj}")
+L1105:         pt_x = 20 + col * COL_W + 16  # 客户区坐标(图标中心)
+L1107:         self.log_signal.emit(f"   📍 网格估算 (idx={logical_idx}, col={col}, row={row})")
+L1117:             self.log_signal.emit(f"   🖱️ C段后台双击 (SendMessage) hwnd={hex(defvw)}")
+L1125:             self.log_signal.emit(f"   ✅ 后台双击完成")
+L1130:             self.log_signal.emit(f"   🖱️ 鼠标双击坐标: ({click_x}, {click_y})")
+L1135:             self.log_signal.emit(f"   ✅ 双击完成")
+L1139:         self.log_signal.emit(f"⏳ 等待窗口就绪 (hint={hint})...")
+L1150:                     self.log_signal.emit(f"   📝 解析快捷方式目标: {target_exe}")
+L1152:                 self.log_signal.emit(f"   ⚠️ 快捷方式解析失败: {e}")
+L1156:         self.log_signal.emit(f"   🔍 查找进程名: {target_exe}")
+L1160:         STABLE_SECONDS = 1.5  # 进程必须持续存在 1.5s 才算真就绪
+L1176:                             f"✅ 进程已运行 {STABLE_SECONDS}s+: {name} (PID={pid})"
+L1183:                             f"❌ 进程 {target_exe} 启动后秒退!请手动双击该 exe 验证能否起起。"
+L1191:                     f"⚠️ 进程 {target_exe} 存在但未达稳定阈值,可能仍在加载中..."
+L1195:                     f"❌ {timeout}s 内未发现进程 {target_exe} 运行。\n"
+L1196:                     f"   可能原因: exe 自身崩溃 / 缺 DLL / 杀毒拦截 / 需管理员权限。\n"
+L1197:                     f"   建议: 手动双击该快捷方式测试是否能起来。"
+L1200:             self.log_signal.emit(f"⚠️ psutil 检查失败: {e}")
+L1203:         self.log_signal.emit("🔎 未按进程名命中,退化用 pywinauto 找窗口标题...")
+L1212:             self.log_signal.emit("✅ 窗口标题已就绪")
+L1218:         self.log_signal.emit("⚠️ 未命中进程/窗口,固定等待 2s")
+L1223:         self.log_signal.emit("📝 开始键鼠交互(记事本)")
+L1226:             "这是通过 Python 自动模拟键鼠输入的测试文本!\n"
+L1227:             "支持中文、换行、快捷键 Ctrl+S / Ctrl+V"
+L1235:         self.log_signal.emit("✅ 交互完成")
+L1247:             self.log_signal.emit(f"   💾 已保存匹配坐标: ({cx}, {cy})")
+L1249:             self.log_signal.emit(f"   ⚠️ 保存坐标失败: {e}")
+L1258:     关键: 统一使用"逻辑坐标" (DPI-缩放后),避免在 125%/150% 屏幕上坐标偏移。
+L1259:     截图时拿真实物理像素,但画到 widget 上时按 devicePixelRatio 缩放。
+L1260:     保存时使用选中区在物理像素图中的子区域(坐标*ratio)。
+L1347:         self.state: dict = self._load_state()  # 记忆上次启动的 PID
+L1352:         self.list_widget.setUniformItemSizes(True)  # 固定行高,不会压扁
+L1363:         self.info_label = QLabel("选中一个快捷方式", self)
+L1369:         self.radio_direct = QRadioButton("🚀 直接启动 (Popen,最优先,最稳定)", self)
+L1370:         self.radio_desktop = QRadioButton("🖱️ 鼠标双击桌面图标 (备选)", self)
+L1371:         self.radio_shellexec = QRadioButton("Shell 启动 (cmd /c,特殊场景)", self)
+L1372:         self.radio_image = QRadioButton("📸 捕捉坐标点击", self)
+L1379:         self.chk_notepad = QCheckBox("启动后模拟键鼠交互 (仅记事本生效)", self)
+L1381:         self.samples_label = QLabel("当前模板: 无", self)
+L1384:         self.btn_refresh = QPushButton("🔄 刷新桌面", self)
+L1385:         self.btn_snipping = QPushButton("✂️ 截图框选为模板", self)
+L1386:         self.btn_load_samples = QPushButton("📂 从文件加载模板", self)
+L1387:         self.btn_run = QPushButton("▶  执行", self)
+L1389:         self.btn_stop = QPushButton("⏹  停止", self)
+L1400:         self.cleanup_kw.setPlaceholderText("aipy  lobe  mobax  ... (空格分隔多个关键词)")
+L1402:         self.btn_cleanup = QPushButton("🧹 清理残留进程", self)
+L1428:         rv.addWidget(QLabel("目标信息:"))
+L1430:         gb = QGroupBox("启动方式 (4 选 1)", quick_tab)
+L1440:         bind_box = QGroupBox("🔗 启动方式绑定 (双击/工作流 都生效)")
+L1444:         self.lbl_launch_mode_hint = QLabel("未选择快捷方式")
+L1449:         self.btn_bind_launch_mode = QPushButton("💾 绑定当前启动方式")
+L1450:         self.btn_bind_launch_mode.setToolTip("把当前选择的启动方式绑定到本快捷方式。以后双击/工作流调用都会用这个 mode。")
+L1459:         self.btn_clear_launch_mode = QPushButton("🗑 清除绑定")
+L1460:         self.btn_clear_launch_mode.setToolTip("清除本快捷方式的启动方式绑定,以后跟随机 UI 单选按钮")
+L1469:         rv.addWidget(QLabel("图标模板 (图像模式需要,其他模式可选):"))
+L1476:         coord_group = QGroupBox("🎯 坐标点击 (图像模式可选,免截图)")
+L1487:         coord_row.addWidget(QLabel("点击:"))
+L1489:         self.coord_click_type.addItem("双击 (默认)", "left_double")
+L1490:         self.coord_click_type.addItem("左键单击", "left_single")
+L1491:         self.coord_click_type.addItem("右键单击", "right_single")
+L1496:         self.btn_capture_coord = QPushButton("🎯 捕捉坐标 (Win+D 后 3秒)")
+L1509:         rv.addWidget(QLabel("启动参数 (空格分隔,可选):"))
+L1516:         onekey_box = QGroupBox("一键启停 (批量) - 已升级为工作流", quick_tab)
+L1518:         obv.addWidget(QLabel("💡 请使用下方「工作流」面板"))
+L1519:         obv.addWidget(QLabel("(支持: 启动软件、截图匹配点击、按键、等待、坐标点击)"))
+L1523:         clean_box = QGroupBox("🧹 清理历史残留 (按进程名关键词)", quick_tab)
+L1525:         cv.addWidget(QLabel("关键词:"))
+L1548:             log.warning(f"文件搜索标签加载失败: {e}")
+L1559:             log.warning(f"工具标签加载失败: {e}")
+L1569:             log.warning(f"AI 感知标签加载失败: {e}")
+L1573:                 log_bus.emit(f"[加载] ❌ AI 感知 tab 加载失败: {e}\n{tb}")
+L1594:         right.setMaximumWidth(750)  # 限制右侧面板最大宽度,防止聊天区域过宽
+L1595:         scroll = right  # 向后兼容名
+L1605:         list_title = QLabel("桌面快捷方式:")
+L1612:         self.btn_add_custom.setToolTip("添加自定义启动程序")
+L1617:         self.btn_remove_custom.setToolTip("删除当前选中的自定义程序 (仅删除自定义添加的)")
+L1621:         self.btn_refresh.setToolTip("重新扫描桌面快捷方式")
+L1630:         splitter.setStretchFactor(1, 2)  # 1:1 均分,右侧不超过 900
+L1631:         splitter.setSizes([500, 820])  # 右侧宽一些
+L1637:         ov.addWidget(QLabel("操作日志:"))
+L1669:         self._truly_quit = False  # 区分"隐藏到托盘"和"真正退出"
+L1689:             log_bus.emit("[全局日志] 已启用,文件: " + str(log_path))
+L1691:             self._append_log(f"[全局日志] 初始化失败: {e}")
+L1705:             self._append_log("[IPC] 收到关闭命令, 退出主窗口...")
+L1708:         self._append_log(f"[IPC] 收到任务: {argv}")
+L1741:                         "桌面自动化助手",
+L1742:                         "已最小化到托盘，双击图标可恢复窗口。",
+L1771:             self._append_log("[托盘] 系统不支持托盘图标,跳过初始化")
+L1778:         self._tray_icon.setToolTip("桌面自动化助手")
+L1783:         act_show = QAction("📖  显示主界面", self)
+L1787:         act_hide = QAction("🙈  隐藏到托盘", self)
+L1794:         act_mcp = QAction("🤖  启动/重启 MCP Server", self)
+L1799:         act_tools = QAction("🔧  打开【工具】页", self)
+L1804:         act_chat = QAction("💬  打开【AI对话】页", self)
+L1810:         act_quit = QAction("❌  退出", self)
+L1820:         self._append_log("[托盘] 系统托盘图标已启用")
+L1847:         self._append_log("[系统] 退出程序...")
+L1865:                         if "工具" in w.tabText(i):
+L1882:                     if "AI 对话" in sub.tabText(j):
+L1922:         self.coord_status.setText("按 Win+D 显示桌面...")
+L1937:             self.coord_status.setText(f"✅ 已捕捉: ({x}, {y})")
+L1941:             self.showNormal()  # 确保不被最小化
+L1949:         self.coord_status.setText(f"⏱ {n} 秒后捕捉...")
+L1978:             self._append_log(f"⚠️ 状态保存失败: {e}")
+L1985:             item.setToolTip("双击打开,如打开失败,使用快速启动")
+L1987:         self._append_log(f"🔍 扫描到 {len(self.shortcuts)} 个快捷方式")
+L2007:             self, "选择要添加的应用",
+L2009:             "可执行文件 (*.exe *.bat *.cmd);;所有文件 (*.*)"
+L2014:         name, ok = QInputDialog.getText(self, "应用名称", "应用名称 (留空用文件名):", text=default_name)
+L2020:             self._append_log(f"✅ 已添加自定义应用: {app['name']} → {app['target']}")
+L2023:             QMessageBox.warning(self, "路径不存在", str(e))
+L2025:             QMessageBox.warning(self, "添加失败", str(e))
+L2031:             QMessageBox.information(self, "提示", "请先选中一个应用")
+L2033:         if sc.lnk_path:  # 是 .lnk 快捷方式,不是自定义
+L2034:             QMessageBox.information(self, "提示", "只能删除自定义添加的应用 (桌面快捷方式请直接删除 .lnk 文件)")
+L2036:         if QMessageBox.question(self, "确认删除", f"删除自定义应用「{sc.name}」?") != QMessageBox.Yes:
+L2039:             self._append_log(f"🗑 已删除: {sc.name}")
+L2042:             QMessageBox.warning(self, "删除失败", "未找到该应用")
+L2050:             f"目标: {sc.target}<br>"
+L2051:             f"工作目录: {sc.work_dir or '(默认)'}<br>"
+L2052:             f"快捷方式: {sc.lnk_path}<br>"
+L2053:             f"绑定启动方式: <b style='color:#2563eb;'>{self._mode_name(sc.launch_mode)}</b>"
+L2077:             "": "(未绑定,跟随 UI)",
+L2078:             "desktop": "鼠标双击桌面图标",
+L2079:             "direct": "直接启动 (Popen)",
+L2080:             "shell": "Shell 启动 (cmd /c)",
+L2081:             "image": "图像识别 / 坐标点击",
+L2088:             self.lbl_launch_mode_hint.setText("未选择快捷方式")
+L2094:                 f"「{sc.name}」已绑定: <b>{self._mode_name(sc.launch_mode)}</b>。<br>"
+L2095:                 f"双击/工作流 调用时将使用该 mode，不再受 UI 单选按钮影响。"
+L2099:                 f"「{sc.name}」未绑定启动方式。双击/工作流 调用时使用当前 UI 选择的 mode。"
+L2126:         self._append_log(f"🔗 已绑定「{sc.name}」启动方式: {self._mode_name(mode)}")
+L2129:                 f"   📍 同时保存坐标: ({self.coord_x.value()}, {self.coord_y.value()}) 类型={self.coord_click_type.currentData()}"
+L2142:         self._append_log(f"   💾 已保存匹配坐标: ({cx}, {cy})")
+L2155:         self._append_log(f"🗑 已清除「{sc.name}」的启动方式绑定")
+L2160:         返回 True=已处理, False=未找到对应 sc (由 workflow 走 fallback)。"""
+L2183:             self.samples_label.setText("当前模板: 无")
+L2186:             self.samples_label.setText(f"当前模板 ({len(sc.icon_samples)}):\n{names}")
+L2192:             QMessageBox.warning(self, "提示", "请先在左侧选一个快捷方式")
+L2206:             self._append_log("⚠️ 选区太小,已取消")
+L2217:         self._append_log(f"📸 模板已保存: {out}")
+L2228:         self._append_log(f"📂 打开文件对话框: {initial}")
+L2232:             self, "选择模板图片", initial, "PNG 图片 (*.png)",
+L2237:             self._append_log(f"📂 已加载 {len(files)} 个模板")
+L2239:             self._append_log("📂 未选择任何文件")
+L2246:             QMessageBox.warning(self, "提示", "请先选择一个快捷方式")
+L2248:         self._append_log(f"[启动] 双击: {sc.name} → {sc.target}")
+L2261:             self._append_log(f"📂 文档类快捷方式,打开所在目录: {target_path.parent}")
+L2275:             QMessageBox.warning(self, "提示", "图像识别模式需要先有模板,请用「截图框选」")
+L2278:             QMessageBox.warning(self, "提示", "坐标点击模式需要先设置有效坐标")
+L2303:         self._append_log(f"▶ 启动任务: {sc.name}  (mode={mode})")
+L2311:             self._append_log("⏹ 已请求停止 worker")
+L2340:                     self._append_log(f"⏹ 已终止进程: {target_exe}, PID={killed}")
+L2342:                     self._append_log(f"⏹ 未找到运行中的进程: {target_exe}")
+L2344:                 self._append_log(f"⚠️ 终止进程失败: {e}")
+L2348:         self.worker = None  # 彻底清理,下次 run 从头开始
+L2355:             QMessageBox.warning(self, "提示", "请输入至少一个关键词 (例如 aipy  lobe)")
+L2373:             self._append_log(f"🧹 未发现含 {keywords} 的进程")
+L2381:             self, "确认清理",
+L2382:             f"将 taskkill /F 强制结束 {len(targets)} 个进程:\n{detail}\n\n是否继续?",
+L2397:                     self._append_log(f"  ✅ 清理 PID={pid} ({name})")
+L2399:                     self._append_log(f"  ⚠️ PID={pid} 失败: {r.stderr.strip() or r.stdout.strip()}")
+L2403:         self._append_log(f"🧹 清理完成: {killed}/{len(targets)} 个")
+L2413:             QMessageBox.warning(self, "提示", "请先勾选「作用于全部」或在左侧选中一个快捷方式")
+L2425:             QMessageBox.warning(self, "提示", "所选项目没有有效的 target 路径")
+L2429:             self, "确认启动",
+L2430:             f"即将启动 {len(valid)} 个程序"
+L2431:             + (f" (跳过 {skipped} 个无效)" if skipped else "")
+L2432:             + "\n是否继续?",
+L2438:         self._append_log(f"🚀 一键启动 {len(valid)} 个程序")
+L2467:         self._append_log(f"📝 已记录本次启动 {len(pids)} 个 PID")
+L2478:             QMessageBox.information(self, "提示", "没有可关闭的进程 (state 为空或进程已退出)")
+L2483:             self, "确认关闭",
+L2484:             f"将关闭以下 {len(all_pids)} 个进程:\n{detail}\n\n是否继续?",
+L2502:         self._append_log(f"🛑 已尝试关闭 {killed}/{len(all_pids)} 个进程")
+L2510:         import psutil  # 局部导入,允许缺失时报错
+L2539:     检测: sys.stdout 关联到控制台 (Windows 上 python.exe 启动会有 tty,pythonw.exe 没有)
+L2559:         return  # 本身是 pythonw.exe 启动的,不用重起
+L2575:     PySide6 6.x 在 Win10/11 上会试加载 MS Sans Serif / Modern / Roman / Script 等
+L2576:     几 95 时代老字体,找不到会发 DirectWrite 警告。这些是良性的,
+L2577:     装 PySide6 的应用控制台会被刷屏。用 qInstallMessageHandler 过滤掉。
+L2618:         print("[单实例] --replace 模式: 关闭旧实例后启动新 GUI")
+L2620:         print("[单实例] 已发送关闭命令, 等待旧实例退出...")
+L2622:         print("[单实例] 等待完毕, 准备启动新 GUI")
+L2624:         print("[单实例] 已有实例在运行, 通过 IPC 转发任务...")
+L2626:         print("[单实例] 任务已转发, 当前进程退出")
+L2630:     app.setApplicationName("桌面自动化助手")
+L2658:         "正在创建用户数据目录…",
+L2659:         "正在迁移旧配置文件…",
+L2660:         "正在加载后端配置…",
+L2661:         "正在初始化传感器…",
+L2662:         "正在启动 AI 感知…",
+L2663:         "启动完成，即将显示主窗口…",
+L2681:         win._tray_hint_shown = True  # 跳过“已隐藏”提示
+L2683:         print("[启动] 默认后台运行,窗口已隐藏,可在托盘恢复")
+L2691:     pd.setWindowTitle("桌面自动化助手 - 启动中")
+L2736:         print(f"[WARN] MCP 兼容补丁失败: {e}", file=sys.stderr)
+L2746:         print(f"[ERR] MCP 依赖缺失: {e}", file=sys.stderr)
+L2747:         print("[ERR] 需要安装: pip install mcp", file=sys.stderr)
+L2755:                 Tool(name="list_workflows", description="列出所有工作流", inputSchema={"type": "object", "properties": {"name": {"type": "string"}}}),
+L2756:                 Tool(name="list_shortcuts", description="列出桌面快捷方式", inputSchema={"type": "object", "properties": {}}),
+L2757:                 Tool(name="run_workflow", description="执行工作流", inputSchema={"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}),
+L2758:                 Tool(name="launch_shortcut", description="启动快捷方式", inputSchema={"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}),
+L2759:                 Tool(name="search_local_files", description="Everything 全盘搜索 (支持通配符 *.py / 文件名 4月明细 / 大小 size:>10MB / 日期 dm:today)", inputSchema={"type": "object", "properties": {
+L2760:                     "query": {"type": "string", "description": "搜索词,如: 4月明细"},
+L2761:                     "limit": {"type": "number", "description": "返回结果数,默认50"},
+L2762:                     "path": {"type": "string", "description": "限定目录,如 C:\\Users\\Public"},
+L2763:                     "sort": {"type": "string", "description": "排序: name/date/size,默认 date"},
+L2774:                         if not wf: return [TextContent(type="text", text=json.dumps({"ok": False, "error": f"不存在: {target}"}, ensure_ascii=False))]
+L2797:                 return [TextContent(type="text", text=json.dumps({"ok": False, "error": f"未知: {name}"}, ensure_ascii=False))]

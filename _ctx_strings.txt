@@ -1,0 +1,268 @@
+")
+        # 2. 推全局 log_bus (后台线程写文件 + Qt Signal 转发到主窗口 log)
+        # 同一个 _append_log 被 _append_log 订阅会成环: 但 log_bus.emit 里加了内容不同
+        # 这里改为只在消息未带 [AI感知] 前缀时才发
+        if not msg.startswith("
+")
+        top.addWidget(self.status_label)
+        root.addLayout(top)
+
+        # 子标签页
+        sub = QTabWidget()
+
+        # === Tab 1: 感知行为 ===
+        sub.addTab(self._build_sensor_panel(), "
+"):
+            self._model_fetch_worker.deleteLater()
+            self._model_fetch_worker = None
+
+    # ---- 日志 ----
+    def _append_log(self, msg: str):
+        ts = datetime.now().strftime("
+"AI 感知 - 主标签页（GUI 集成）
+
+包含 4 个子面板：
+1. 总开关 + 传感器选择（剪贴板/窗口/文件/进程）
+2. 嗅探规则编辑（含启用/禁用）
+3. 进程黑名单编辑
+4. 后端设置 + 实时活动日志
+
+装配 ContextSensorManager + Gatekeeper + ToastManager + ContextAgent
+"
+"接收到 ContextCapsule，过滤后送 AI 推理
+
+        注意：process 启动/退出事件不走剪贴板规则，也不全量送 AI。
+        它由 BehaviorInterestMatcher 根据用户档案/行为关键词过滤后再主动推送，避免日志和 AI 请求噪声。
+        "
+"
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        # 顶部：开关
+        top = QHBoxLayout()
+        self.proactive_switch = QCheckBox("
+": True})
+            # 检查档案是否为空
+            if self._proactive_scheduler.profile().is_empty():
+                QMessageBox.warning(self, "
+"
+        # q 已在 BehaviorInterestMatcher 内写入 _proactive_history，这里只刷新 UI
+        self._refresh_proactive_history()
+        icon_map = {"
+"兑底: 根据嗅探规则名直接弹一条气泡,不依赖 LLM
+
+        场景: LLM 返回 need_action=false (小模型不够智能),但规则已明确
+        匹配到 IP/URL/报错/路径等 → 应该帮用户推一跟动作。
+        "
+"从当前 Base URL + API Key 拉取可用模型列表 (OpenAI 协议 GET /v1/models)
+
+        走 QThread,避免 urllib 同步阻塞 UI 造成「一直拉取中」的假象。
+        "
+"))
+        except Exception as e:
+            self.failed.emit(str(e))
+            return
+        # 解析 (OpenAI 格式: {"
+", self.proactive_status)
+        layout.addWidget(count_gb)
+
+        # 用户档案
+        profile_gb = QGroupBox("
+":
+            # 行为匹配器通过独立 signal 连接会收到同一 capsule；这里不再全量记录/放行
+            return
+
+        self._append_log(f"
+", kw_hint)
+
+        layout.addWidget(profile_gb)
+
+        # 历史问题
+        history_gb = QGroupBox("
+"\n\n💡 提示:连接被拒绝,可能是后端服务没启动。\n  - Ollama: 请在另一个终端运行 `ollama serve`\n  - 本地代理: 检查代理是否在指定端口运行"
+")
+
+        # === Tab 3: 进程黑名单 ===
+        sub.addTab(self._build_blacklist_panel(), "
+")
+
+        # === Tab 5: 主动嗅探 ===
+        sub.addTab(self._build_proactive_panel(), "
+")
+
+        # === Tab 4: 后端设置 ===
+        sub.addTab(self._build_backend_panel(), "
+")
+
+        # === Tab 2: 嗅探规则 ===
+        sub.addTab(self._build_rules_panel(), "
+")
+
+        # === Tab 6: 活动日志 ===
+        sub.addTab(self._build_log_panel(), "
+"[后端] 拉取成功,共 {len(ids)} 个模型: {ids[:5]}{'...' if len(ids) > 5 else ''}"
+")
+        # 1. 写本 tab 的本地 log_view
+        self.log_view.append(f"
+"状态: 运行中 | 已问 {status['fired']}/{status['total']} | 下次: {next_str}"
+"• 当前支持的工具：search_local_files / run_workflow / launch_shortcut\n"
+"[点击] 用户点击气泡: {intent.suggested_action}({intent.action_param})"
+"从当前 Base URL + API Key 拉取可用模型 (OpenAI 协议: GET /v1/models)"
+"请解释下面内容中的学术词汇/概念：先用通俗中文解释，再给一个例子，最后列出关键词。\n\n{text}"
+"请把下面这段英文翻译成{lang}，保留专有名词，并在必要时补充一句上下文说明：\n\n{text}"
+"获取到 {len(ids)} 个模型, 已在下拉框中。\n请选择后点“应用设置”生效。"
+"[学习规则] 按规则「{rule_name}」生成推荐: {data['msg']}"
+"勾选规则后：检测到英文 → 推送 AI 翻译；检测到学术词汇 → 推送 AI 解释。"
+"用户刚点击了一个桌面主动气泡。请把它当作当前对话上文，不要说你不知道气泡内容。\n"
+"QHBoxLayout 包成 QWidget 便于嵌入 QFormLayout"
+"[后端] 拉取模型: GET {base_url}/models (后台线程)"
+"内容前30字: {capsule.clipboard_text[:30]!r}"
+"💡 当检测到窗口/进程名包含这些关键词时，立即推送相关话题（5分钟/次冷却）"
+"💡 问题会像聊天一样在右下角弹出气泡，可以点击互动或忽略 5 秒后自动消失。"
+"🛡️ 黑名单中的进程绝对不会被感知（剪贴板内容不会进入 AI 链路）。\n"
+"💡 只有当剪贴板内容命中下方任一规则时，才会被发送到 AI 推理。\n"
+"[后端] 切换到: {type(backend).__name__}"
+"\n\n💡 提示:连接超时,请检查 URL 是否正确,服务是否可达。"
+"• 气泡点击后会调用 AI 推荐的工具（MCP 工具或工作流）\n"
+"可选：Tavily API Key，联网搜索优先使用 Tavily"
+"[兑底] 按规则「{rule_name}」生成推荐: {msg}"
+"\n\n💡 提示:域名解析失败,请检查 Base URL 拼写。"
+"行为兴趣触发器产出的问题 → 转成气泡 + 同步到 AI 对话页"
+"请先填写用户档案（爱好/兴趣/学习/工作），否则话题主题会随机。"
+"OpenAI 兼容 (Hermes/Qianlia/本地模型)"
+"用户点击了气泡 → 打开小聊天窗，并同步 AI 对话标签页记录"
+"[放行] 命中规则: {result.rule_name}"
+"[拦截] {result.blocked_reason}"
+"打开/激活小聊天窗，复用 AI 对话标签页的同一份记录。"
+"[系统] 上下文感知已启动，启用模式: {modes}"
+"响应格式不认识:\n{str(data)[:300]}"
+"⚙️ 进程启动/退出监听（配合主动嗅探用户档案触发）"
+"主动嗅探面板——用户档案 + 每日次数 + 调度状态"
+"EchoBackend (本地测试，不发请求)"
+"• 推荐工作流需要先在「工作流」标签页创建\n"
+"后端无响应，请检查 URL/Key/Model"
+"📘 翻译为{lang}: {preview}"
+"• 整个过程可在「日志」标签页查看实时活动"
+"例如：中文 / English / 日本語"
+"后端响应:\n{result[:200]}"
+"检测到 IP {text},打开远程桌面？"
+"直接测试气泡渲染链路，不经过 AI/规则。"
+"行为主动嗅探 - {q.category}"
+"动作参数: {param[:1000]}"
+"密码管理器、SSH 私钥工具等建议加入。"
+"主动嗅探 - {q.category}"
+"嗅探规则面板——启用/禁用 + 自定义"
+"进程名，如 1Password.exe"
+"[后端] 拉取模型失败: {err}"
+"例如：桌面自动化、Python 后端"
+"上一次拉取还在进行中,请稍候..."
+"感知行为面板——选择启用哪些传感器"
+"📋 剪贴板监听（推荐开启，零开销）"
+"[文件] 添加监视路径: {d}"
+"建议动作: {action}\n"
+"📁 文件系统监视（手动添加目录）"
+"例如：AI、加密货币、独立游戏"
+"例如：Rust 编程、系统设计"
+"例如：鸣潮,原神,崩坏星穹铁道"
+"规则名称，如 Git 仓库路径"
+"🎓 解释: {preview}"
+"[Toast] 手动测试气泡"
+"[配置] 保存失败: {e}"
+"兑底-{rule_name}"
+"剪贴板为空，请先复制一些内容"
+"学习-{rule_name}"
+"[系统] 上下文感知已停止"
+"正则表达式不合法: {e}"
+"正则表达式，如 ^git@"
+"气泡内容: {msg}\n"
+"气泡类型: {tag}\n"
+"立即触发一次生成（调试用）"
+"请先填写 Base URL"
+"[AI感知] {msg}"
+"[主动嗅探] 历史已清空"
+"发现报错,搜索相关日志?"
+"取消勾选可禁用对应规则。"
+"打开路径 {text}?"
+"搜索路径 {text}?"
+"查找 nginx 配置?"
+"[系统] 关闭中..."
+"例如：爬山、摄影、围棋"
+"未提取到任何模型 id"
+"Windows 路径"
+"你是一个测试 AI。"
+"后端 AI 设置面板"
+"🪟 前台窗口切换监听"
+"AI 感知主标签页"
+"今天剩余次数已用完"
+"查找单据相关文件?"
+"检测到域名,打开?"
+"检测到链接,打开?"
+"🧪 测试剪贴板捕获"
+"AI 后端已切换"
+"Nginx 配置"
+"⏳ 拉取中..."
+"实时活动日志面板"
+"这是一条测试气泡"
+"选择要监视的目录"
+"💡 现在生成一个"
+"🔄 拉取模型列表"
+"🧹 清除所有气泡"
+"Unix 路径"
+"传感器（多选）"
+"查找相关脚本?"
+"桌面自动化助手"
+"添加自定义规则"
+"状态: 未启动"
+"进程黑名单面板"
+"默认翻译语言:"
+"➕ 添加目录"
+"➖ 删除选中"
+"➖ 移除选中"
+"学习规则设置"
+"文件监视路径"
+"测试气泡渲染"
+"行为关键词:"
+"💬 测试气泡"
+"💾 应用设置"
+"🧪 测试连通"
+"🧹 清空历史"
+"0 条记录"
+"AI 后端"
+"IP 地址"
+"⚪ 已停止"
+"单据/表格"
+"后端无响应"
+"后端类型:"
+"工作流交互"
+"🟢 运行中"
+" 次/天"
+"(测试)"
+"➕ 添加"
+"学术词汇"
+"应用成功"
+"报错信息"
+"拉取失败"
+"拉取成功"
+"正则错误"
+"测试失败"
+"添加进程"
+"生成失败"
+"英文文本"
+"连通失败"
+"连通成功"
+"🧹 清空"
+"兴趣:"
+"名称:"
+"命令行"
+"学习:"
+"工作:"
+"已停止"
+"次数:"
+"正则:"
+"爱好:"
+"说明:"
+"超时:"
+" 秒"
+"中文"
+"域名"
+"提示"
