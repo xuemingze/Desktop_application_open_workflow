@@ -30,6 +30,8 @@ hiddenimports = [
     'pyperclip',
     'psutil',
     'numpy',
+    'cv2',
+    'cv2.cv2',
     'mcp',
     'mcp.server',
     'mcp.server.stdio',
@@ -87,7 +89,6 @@ excludes = [
     'jupyter',
     'IPython',
     'notebook',
-    'cv2',  # 故意排除,避免 DLL 问题
     'typer',  # mcp.cli 需要 typer,我们不用 CLI
     'mcp.cli',  # 不打包 CLI 避免 typer 依赖
     'mcp.cli.cli',

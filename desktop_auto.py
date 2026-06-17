@@ -33,6 +33,7 @@ import logging
 import json
 import subprocess
 import threading
+import numpy as np
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
@@ -978,16 +979,65 @@ class LaunchWorker(QThread):
                 screen.save(str(debug_path))
                 self.log_signal.emit(f"   📸 全屏截图已保存: {debug_path}")
 
-                box = pyautogui.locateOnScreen(str(c), confidence=0.6)  # 降低阈值
-                if box:
-                    center = pyautogui.center(box)
-                    self.log_signal.emit(f"   ✅ 找到: {c.name} @ {center}")
-                    time.sleep(0.2)
-                    pyautogui.doubleClick(center)
-                    self.log_signal.emit(f"   ✅ 双击完成")
-                    return
-                else:
-                    self.log_signal.emit(f"   ❌ 未匹配: {c.name}")
+                # 优先用 OpenCV 匹配（快 10-50x），PIL 作为最后兜底
+                matched = False
+                try:
+                    import cv2
+                    screen_np = np.array(screen)
+                    screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_RGB2GRAY)
+                    tpl_bgr = cv2.imread(str(c))
+                    if tpl_bgr is None:
+                        raise RuntimeError(f"无法读取模板: {c}")
+                    tpl_gray = cv2.cvtColor(tpl_bgr, cv2.COLOR_BGR2GRAY)
+                    th, tw = tpl_gray.shape
+                    sh, sw = screen_gray.shape
+                    if tw > sw or th > sh:
+                        raise RuntimeError("模板大于屏幕")
+                    # 多尺度匹配 (含 0.8x 125% DPI)
+                    best_overall = 0.0
+                    best_pos = None
+                    best_scale = 1.0
+                    for scale in [0.6, 0.8, 1.0, 1.2, 1.5]:
+                        nw, nh = int(tw * scale), int(th * scale)
+                        if nw < 8 or nh < 8 or nw > sw or nh > sh:
+                            continue
+                        scaled = cv2.resize(tpl_gray, (nw, nh), interpolation=cv2.INTER_AREA)
+                        result = cv2.matchTemplate(screen_gray, scaled, cv2.TM_CCOEFF_NORMED)
+                        _, mv, _, ml = cv2.minMaxLoc(result)
+                        if mv > best_overall:
+                            best_overall = mv
+                            best_pos = (ml[0], ml[1], nw, nh)
+                            best_scale = scale
+                    if best_pos and best_overall >= 0.35:
+                        cx = best_pos[0] + best_pos[2] // 2
+                        cy = best_pos[1] + best_pos[3] // 2
+                        self.log_signal.emit(f"   ✅ OpenCV 找到: 缩放={best_scale} 置信度={best_overall:.3f} @ ({cx}, {cy})")
+                        pyautogui.doubleClick(cx, cy)
+                        self.log_signal.emit(f"   ✅ 双击完成")
+                        matched = True
+                    else:
+                        self.log_signal.emit(f"   ⚠️ OpenCV 置信度低: {best_overall:.3f}, 尝试 PIL...")
+                except ImportError:
+                    self.log_signal.emit(f"   ⚠️ OpenCV 未安装, 用 PIL 兜底...")
+                except Exception as e:
+                    self.log_signal.emit(f"   ⚠️ OpenCV 异常: {e}, 用 PIL 兜底...")
+
+                if not matched:
+                    # PIL 兜底（仅在 OpenCV 不可用时）
+                    try:
+                        from image_match import locate_on_screen, get_center
+                        box = locate_on_screen(str(c), confidence=0.6, screenshot=screen)
+                        if box:
+                            cx, cy = get_center(box)
+                            self.log_signal.emit(f"   ✅ PIL 找到: ({cx}, {cy})")
+                            time.sleep(0.2)
+                            pyautogui.doubleClick(cx, cy)
+                            self.log_signal.emit(f"   ✅ 双击完成")
+                            matched = True
+                        else:
+                            self.log_signal.emit(f"   ❌ PIL 也未匹配")
+                    except Exception as e:
+                        self.log_signal.emit(f"   ⚠️ PIL 匹配异常: {e}")
             except Exception as e:
                 self.log_signal.emit(f"   ⚠️ 匹配异常 {c.name}: {e}")
                 continue

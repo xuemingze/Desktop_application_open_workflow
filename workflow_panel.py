@@ -811,6 +811,8 @@ class WorkflowEditor(QWidget):
         rv.addLayout(exec_row)
 
         layout.addWidget(right)
+        # 初始隐藏除第一个类型外所有控件,避免重影
+        self._on_type_change(0)
         self._refresh_wf_list()
 
     def refresh_shortcuts(self):

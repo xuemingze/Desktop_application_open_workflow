@@ -1,12 +1,64 @@
 """
 纯 PIL 模板匹配 - 不依赖 OpenCV
 - 截图后用 PIL.Image 加载
-- 用 numpy 做像素级匹配
+- 用 numpy 向量化 NCC 计算
 - 不受 OpenCV DLL 缺失影响
 """
 import numpy as np
 from PIL import Image
 from typing import Optional, Tuple
+
+
+def _compute_ncc_map(screen: np.ndarray, template: np.ndarray, step: int = 4) -> Tuple[np.ndarray, np.ndarray]:
+    """向量化 NCC 计算 - 一次算出所有位置的 NCC 分数
+
+    Args:
+        screen: 屏幕截图数组 (H, W, C) float32 或 (H, W) float32
+        template: 模板数组 (h, w, C) float32 或 (h, w) float32
+        step: 步长 (粗搜索用,精细搜索用 1)
+
+    Returns:
+        (ncc_map, positions): NCC 分数矩阵 (Y, X) 和对应的位置数组
+    """
+    # 转灰度简化计算 (单通道足够匹配)
+    if screen.ndim == 3:
+        screen = screen.mean(axis=2)
+    if template.ndim == 3:
+        template = template.mean(axis=2)
+
+    s_h, s_w = screen.shape
+    t_h, t_w = template.shape
+
+    if t_h > s_h or t_w > s_w:
+        return np.array([[]]), np.array([])
+
+    # 模板预计算
+    t_mean = template.mean()
+    t_norm = (template - t_mean).ravel()
+    t_std = np.sqrt((t_norm ** 2).sum()) + 1e-6
+
+    # 用 stride_tricks 创建滑动窗口视图
+    # screen shape: (H, W) -> sliding_window_view((), (t_h, t_w))
+    # -> shape: (H-t_h+1, W-t_w+1, t_h, t_w)
+    windows = np.lib.stride_tricks.sliding_window_view(screen, (t_h, t_w))
+
+    # 提取所有候选位置 (带步长)
+    if step > 1:
+        windows = windows[::step, ::step]  # 子采样
+
+    n_y, n_x = windows.shape[:2]
+
+    # 向量化计算
+    flat = windows.reshape(n_y, n_x, -1).astype(np.float32)  # (n_y, n_x, t_h*t_w)
+    w_mean = flat.mean(axis=2, keepdims=True)                 # (n_y, n_x, 1)
+    w_norm = flat - w_mean
+    w_std = np.sqrt((w_norm ** 2).sum(axis=2, keepdims=True)) + 1e-6  # (n_y, n_x, 1)
+
+    # NCC = sum(t_norm * w_norm) / (t_std * w_std)
+    dot = (w_norm * t_norm).sum(axis=2)                       # (n_y, n_x)
+    ncc = dot / (t_std * w_std.squeeze(axis=2))
+
+    return ncc, np.array([[y * step, x * step] for y in range(n_y) for x in range(n_x)])
 
 
 def locate_on_screen(template_path: str, confidence: float = 0.7, screenshot: Optional[Image.Image] = None) -> Optional[Tuple[int, int, int, int]]:
@@ -29,48 +81,40 @@ def locate_on_screen(template_path: str, confidence: float = 0.7, screenshot: Op
     t_arr = np.array(template, dtype=np.float32)
     s_arr = np.array(screenshot, dtype=np.float32)
 
-    # 4. 简单滑窗匹配 (用 SSD 反向 = 越接近 1 越像)
+    # 4. 模板大于屏幕,直接返回
     if t_w > s_w or t_h > s_h:
         return None
 
-    # 简单方法: 逐位置计算归一化互相关
-    best_score = -1
-    best_pos = (0, 0)
+    # 5. 粗搜索 - 步长 4 (速度优先)
+    ncc_map, positions = _compute_ncc_map(s_arr, t_arr, step=4)
+    if ncc_map.size == 0:
+        return None
 
-    # 步长优化: 实际生产用 numpy 的 stride_tricks,但为了简单用 for
-    # 用 1/4 子采样加速
-    step = 2
-    t_norm = t_arr - t_arr.mean()
-    t_std = t_norm.std() + 1e-6
+    # 找最佳位置
+    best_idx = np.argmax(ncc_map)
+    best_y, best_x = positions[best_idx]
+    best_score = ncc_map.flat[best_idx]
 
-    for y in range(0, s_h - t_h + 1, step):
-        for x in range(0, s_w - t_w + 1, step):
-            window = s_arr[y:y+t_h, x:x+t_w]
-            w_mean = window.mean()
-            w_norm = window - w_mean
-            w_std = w_norm.std() + 1e-6
-            # NCC
-            ncc = (t_norm * w_norm).mean() / (t_std * w_std)
-            if ncc > best_score:
-                best_score = ncc
-                best_pos = (x, y)
+    # 6. 精细搜索 - 在 best_pos 周围 step=1 搜索
+    margin = 8
+    y_start = max(0, best_y - margin)
+    y_end = min(s_h - t_h, best_y + margin)
+    x_start = max(0, best_x - margin)
+    x_end = min(s_w - t_w, best_x + margin)
 
-    # 5. 在 best_pos 附近做精细搜索
-    bx, by = best_pos
-    for y in range(max(0, by-step), min(s_h - t_h, by+step) + 1):
-        for x in range(max(0, bx-step), min(s_w - t_w, bx+step) + 1):
-            window = s_arr[y:y+t_h, x:x+t_w]
-            w_mean = window.mean()
-            w_norm = window - w_mean
-            w_std = w_norm.std() + 1e-6
-            ncc = (t_norm * w_norm).mean() / (t_std * w_std)
-            if ncc > best_score:
-                best_score = ncc
-                best_pos = (x, y)
+    if y_end > y_start and x_end > x_start:
+        crop = s_arr[y_start:y_end + t_h, x_start:x_end + t_w]
+        ncc_fine, fine_pos = _compute_ncc_map(crop, t_arr, step=1)
+        if ncc_fine.size > 0:
+            fine_idx = np.argmax(ncc_fine)
+            fine_score = ncc_fine.flat[fine_idx]
+            if fine_score > best_score:
+                best_score = fine_score
+                best_y = y_start + fine_pos[fine_idx][0]
+                best_x = x_start + fine_pos[fine_idx][1]
 
     if best_score >= confidence:
-        x, y = best_pos
-        return (x, y, t_w, t_h)
+        return (int(best_x), int(best_y), t_w, t_h)
     return None
 
 
