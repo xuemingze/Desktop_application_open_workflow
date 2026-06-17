@@ -22,7 +22,19 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent))
 from workflow_panel import StepExecutor
 
-WORKFLOWS_FILE = Path(__file__).parent / "workflows.json"
+# 工作流文件路径: 优先用用户主目录下的《桌面自动化助手》(与 GUI 保存位置一致)，
+# 后端、老路径(项目目录) 作为冷备。
+def _resolve_workflows_file() -> Path:
+    user_path = Path.home() / "桌面自动化助手" / "workflows.json"
+    if user_path.exists():
+        return user_path
+    legacy = Path(__file__).parent / "workflows.json"
+    if legacy.exists():
+        return legacy
+    # 都不存在时也返回新路径(后续写入位置统一)
+    return user_path
+
+WORKFLOWS_FILE = _resolve_workflows_file()
 
 
 def scan_desktop_shortcuts() -> list[dict]:
@@ -67,10 +79,12 @@ def scan_desktop_shortcuts() -> list[dict]:
 
 
 def load_workflows() -> dict[str, dict]:
-    if not WORKFLOWS_FILE.exists():
+    # 每次调用重新解析，避免 启动时 GUI 还未迁移完成的竞Race
+    workflows_file = _resolve_workflows_file()
+    if not workflows_file.exists():
         return {}
     try:
-        return json.loads(WORKFLOWS_FILE.read_text(encoding="utf-8"))
+        return json.loads(workflows_file.read_text(encoding="utf-8"))
     except Exception as e:
         return {"_error": str(e)}
 
