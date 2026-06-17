@@ -1506,6 +1506,8 @@ class WorkflowEditor(QWidget):
     def _on_worker_log(self, msg):
         if self.parent_window and hasattr(self.parent_window, '_append_log'):
             self.parent_window._append_log(msg)
+        # 同时推送到气泡 toast (后台运行可见反馈)
+        self._push_workflow_toast(msg)
 
     def _on_worker_done(self, ok, msg):
         self.btn_run_wf.setEnabled(True)
@@ -1513,6 +1515,63 @@ class WorkflowEditor(QWidget):
         if self.parent_window and hasattr(self.parent_window, '_append_log'):
             prefix = "OK" if ok else "FAIL"
             self.parent_window._append_log(f"[{prefix}] {msg}")
+        # 完成信息走 toast
+        wf_name = getattr(self.worker, 'workflow', {}).get('name', '工作流') if self.worker else '工作流'
+        if ok:
+            self._fire_toast(f"✅ {wf_name} 执行完成 ({msg})", intent_name=f"工作流完成: {wf_name}")
+        else:
+            self._fire_toast(f"❌ {wf_name} 执行失败 ({msg})", intent_name=f"工作流失败: {wf_name}")
+
+    def _push_workflow_toast(self, msg: str):
+        """过滤并推送重要的执行日志到气泡。"""
+        if not msg:
+            return
+        text = msg.strip()
+        if not text:
+            return
+        # 跳过过于噢碎的输出: 纯进度、空行、调试信息
+        skip_prefixes = (
+            '[1/', '[2/', '[3/', '[4/', '[5/', '[6/', '[7/', '[8/', '[9/',
+            '步骤数:', '执行完成:',
+            '   ', '  ', '​',  # 缩进子日志不发
+        )
+        if text.startswith(skip_prefixes):
+            return
+        # 跳过独立的 名称、空指示
+        noise = ('---', '已请求停止')
+        if any(text.startswith(n) for n in noise):
+            return
+        # 气泡最多 70 字符
+        if len(text) > 70:
+            text = text[:67] + '...'
+        # 判断 intent: 重要事件 vs 一般事件
+        is_important = any(
+            kw in text for kw in ('开始执行', '成功', '失败', '异常', '未匹配', '❌', '✅')
+        )
+        if not is_important:
+            return
+        self._fire_toast(text, intent_name='工作流进度')
+
+    def _fire_toast(self, message: str, intent_name: str = '工作流'):
+        """推送消息到 ContextTab 的 ToastManager。主窗口可见时也会显示，
+        后台运行时是主要可见渠道。"""
+        try:
+            ctx_tab = getattr(self.parent_window, 'context_tab', None)
+            if ctx_tab is None:
+                return
+            toast_mgr = getattr(ctx_tab, '_toast_manager', None)
+            if toast_mgr is None:
+                return
+            from context_toast import ToastIntent
+            intent = ToastIntent(
+                intent=intent_name,
+                message=message,
+                suggested_action='workflow_log',
+                action_param='',
+            )
+            toast_mgr.show_toast(intent)
+        except Exception:
+            pass
 
     def _append_log(self, msg):
         if self.parent_window and hasattr(self.parent_window, '_append_log'):
