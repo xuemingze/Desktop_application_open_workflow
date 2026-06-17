@@ -1262,6 +1262,20 @@ class LaunchWorker(QThread):
         pyautogui.press("enter")
         self.log_signal.emit("✅ 交互完成")
 
+    def _save_match_coord(self, info, cx: int, cy: int) -> None:
+        """将模板匹配得到的中心坐标保存到元数据,供坐标点击兜底使用。"""
+        try:
+            meta = load_shortcut_meta()
+            key = _shortcut_key(info)
+            entry = meta.get(key, {})
+            entry["coord_x"] = cx
+            entry["coord_y"] = cy
+            meta[key] = entry
+            save_shortcut_meta(meta)
+            self.log_signal.emit(f"   💾 已保存匹配坐标: ({cx}, {cy})")
+        except Exception as e:
+            self.log_signal.emit(f"   ⚠️ 保存坐标失败: {e}")
+
 
 # ---------------------------------------------------------------------------
 # 6. 全屏截图 + 框选(手动做模板)
