@@ -136,9 +136,9 @@ class StepExecutor:
     @staticmethod
     def _wait(params, log_func) -> bool:
         seconds = params.get("seconds", 2)
-        log_func(f"  等待 {seconds} 秒")
+        log_func(f"⏳ 等待 {seconds} 秒")
         for i in range(seconds, 0, -1):
-            log_func(f"  {i}...")
+            log_func(f"⏳ 倒数: {i} 秒")
             time.sleep(1)
         return True
 
@@ -1546,7 +1546,7 @@ class WorkflowEditor(QWidget):
             text = text[:67] + '...'
         # 判断 intent: 重要事件 vs 一般事件
         is_important = any(
-            kw in text for kw in ('开始执行', '成功', '失败', '异常', '未匹配', '❌', '✅')
+            kw in text for kw in ('开始执行', '成功', '失败', '异常', '未匹配', '❌', '✅', '⏳')
         )
         if not is_important:
             return
