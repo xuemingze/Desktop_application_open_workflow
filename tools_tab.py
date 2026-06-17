@@ -104,8 +104,8 @@ class ToolsTab(QWidget):
         self.mcp_proc: Optional[subprocess.Popen] = None
 
         self._build_ui()
-        # 启动时检查 MCP 状态
-        QTimer.singleShot(500, self._refresh_mcp_status)
+        # 启动时立即同步检查状态 (不走 QTimer 延迟, 避免“检测中”闪现)
+        self._refresh_mcp_status()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -149,7 +149,7 @@ class ToolsTab(QWidget):
         self.chk_autostart.toggled.connect(self._on_autostart_toggle)
         v.addWidget(self.chk_autostart)
 
-        self.lbl_autostart_status = QLabel("状态: 检测中...")
+        self.lbl_autostart_status = QLabel("状态: 未启动")
         self.lbl_autostart_status.setStyleSheet("color: #666; font-size: 11px; padding: 0 8px 4px 24px;")
         self.lbl_autostart_status.setWordWrap(True)
         v.addWidget(self.lbl_autostart_status)
@@ -167,7 +167,7 @@ class ToolsTab(QWidget):
         self.chk_start_bg.toggled.connect(self._on_start_bg_toggle)
         v.addWidget(self.chk_start_bg)
 
-        self.lbl_start_bg_status = QLabel("状态: 检测中...")
+        self.lbl_start_bg_status = QLabel("状态: 未启用")
         self.lbl_start_bg_status.setStyleSheet("color: #666; font-size: 11px; padding: 0 8px 4px 24px;")
         self.lbl_start_bg_status.setWordWrap(True)
         v.addWidget(self.lbl_start_bg_status)
@@ -255,8 +255,8 @@ class ToolsTab(QWidget):
 
         v.addWidget(danger_box)
 
-        # 延迟加载状态 (等 QApplication 完成初始化后)
-        QTimer.singleShot(300, self._refresh_system_status)
+        # 启动时同步加载状态 (不走延迟)
+        self._refresh_system_status()
         return gb
 
     def _build_mcp_box(self) -> QGroupBox:
@@ -264,8 +264,8 @@ class ToolsTab(QWidget):
         mcp_box = QGroupBox("🤖 MCP Server (AI 接入)")
         mv = QVBoxLayout(mcp_box)
 
-        # 状态显示
-        self.lbl_mcp_status = QLabel("状态: 检测中...")
+        # 状态显示 (初始为"未启动", 创建后会同步刷新)
+        self.lbl_mcp_status = QLabel("状态: 未启动")
         self.lbl_mcp_status.setStyleSheet("color: #666; font-size: 12px; padding: 4px;")
         mv.addWidget(self.lbl_mcp_status)
 

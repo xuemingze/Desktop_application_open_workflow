@@ -727,25 +727,25 @@ class LaunchWorker(QThread):
         pyautogui.click(center)
         self._wait_window_ready(info.name, timeout=20)
 
-    # ---- 5.2b 拟人化: 双击桌面快捷方式 (3 段降级) ----
+    # ---- 5.2b 双击桌面快捷方式 (仅模板匹配, 不再走多段兜底) ----
     def _launch_desktop_click(self) -> None:
         info = self.info
         self.log_signal.emit(f"🖱️ 鼠标双击桌面图标: {info.name}")
 
-        # B. 先用截图模板匹配(最精准) — 这是首选
+        # B. 仅使用截图模板匹配 (最精准) - 不再走 A/C/explorer 兜底
         try:
             self._launch_desktop_click_by_image(info)
             self._wait_window_ready(info.name, timeout=20)
             return
         except Exception as e:
-            self.log_signal.emit(f"   ⚠️ 模板匹配失败: {e}")
+            self.log_signal.emit(f"   ❌ 模板匹配失败: {e}")
 
-        # B'. UI 坐标优先 (X>0 或 Y>0) — 如果用户手动设置过坐标,直接采用
+        # B'. 仅在用户手动设置了坐标时才采用 (用户主动指定, 不算自动兜底)
         x = self.coord.get("x", 0) if self.coord else 0
         y = self.coord.get("y", 0) if self.coord else 0
         click_type = self.coord.get("click_type", "left_double") if self.coord else "left_double"
         if x > 0 or y > 0:
-            self.log_signal.emit(f"   🎯 使用 UI 设置的坐标 ({x}, {y}) 类型={click_type},跳过桌面枚举")
+            self.log_signal.emit(f"   🎯 使用用户手动设置的坐标 ({x}, {y}) 类型={click_type}")
             import pyautogui as pa
             import time as _t
             pa.hotkey('win', 'd')
@@ -760,35 +760,7 @@ class LaunchWorker(QThread):
             self._wait_window_ready(info.name, timeout=20)
             return
 
-        # A. 走 IShellFolder API 拿真实图标位置
-        logical_idx = None
-        try:
-            logical_idx = self._launch_desktop_click_via_shell(info)  # A 段内部已执行双击
-            self._wait_window_ready(info.name, timeout=20)
-            return
-        except Exception as e:
-            self.log_signal.emit(f"   ⚠️ IShellFolder 方式失败: {e}")
-        # C. 网格猜测 (如果 A 拿到了 logical_idx,就能猜)
-        try:
-            if logical_idx is None:
-                # 走 IShellFolder 拿 idx (不调 ListView,只取名字+idx)
-                logical_idx = self._fetch_logical_idx_only(info)
-            if logical_idx is not None:
-                self._click_at_logical_idx(logical_idx)
-            else:
-                raise RuntimeError("连 logical_idx 都没拿到")
-            self._wait_window_ready(info.name, timeout=20)
-            return
-        except Exception as e:
-            self.log_signal.emit(f"   ⚠️ 网格猜测失败: {e}")
-        # 最后兜底: 通过 explorer.exe 启动(绕过 runtime 环境限制)
-        try:
-            self._launch_via_explorer(info)
-            self._wait_window_ready(info.name, timeout=20)
-            return
-        except Exception as e:
-            self.log_signal.emit(f"   ⚠️ explorer 兜底失败: {e}")
-        raise RuntimeError("3 段降级全部失败")
+        raise RuntimeError("模板匹配失败且未设置坐标，请重新采集模板或手动设置坐标。")
 
     def _launch_desktop_click_via_shell(self, info):
         """A 段: 走 IShellFolder + ListView 拿真实坐标"""
@@ -1016,7 +988,7 @@ class LaunchWorker(QThread):
                         self._save_match_coord(info, cx, cy)
                         pyautogui.doubleClick(cx, cy)
                         self.log_signal.emit(f"   ✅ 双击完成")
-                        matched = True
+                        return  # 匹配成功，直接返回，不走兜底
                     else:
                         self.log_signal.emit(f"   ⚠️ OpenCV 置信度低: {best_overall:.3f}, 尝试 PIL...")
                 except ImportError:
@@ -1036,7 +1008,7 @@ class LaunchWorker(QThread):
                             time.sleep(0.2)
                             pyautogui.doubleClick(cx, cy)
                             self.log_signal.emit(f"   ✅ 双击完成")
-                            matched = True
+                            return  # 匹配成功，直接返回
                         else:
                             self.log_signal.emit(f"   ❌ PIL 也未匹配")
                     except Exception as e:
