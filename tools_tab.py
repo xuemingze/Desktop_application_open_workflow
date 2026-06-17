@@ -429,13 +429,14 @@ class ToolsTab(QWidget):
 
     def _toggle_mcp_docs(self) -> None:
         """展开/折叠 MCP 简介"""
+        from i18n import t
         if self.mcp_docs_expanded:
             self.mcp_docs_container.setVisible(False)
             self.btn_toggle_docs.setText(t("tools_btn_expand"))
             self.mcp_docs_expanded = False
         else:
             self.mcp_docs_container.setVisible(True)
-            self.btn_toggle_docs.setText("▲ 折叠")
+            self.btn_toggle_docs.setText(t("tools_btn_collapse"))
             self.mcp_docs_expanded = True
 
     def _build_launcher_box(self) -> QGroupBox:
@@ -488,6 +489,7 @@ class ToolsTab(QWidget):
 
     def _refresh_system_status(self) -> None:
         """刷新开机启动 / 后台运行 状态显示"""
+        from i18n import t
         # 开机启动
         if _AUTOSTART_OK:
             enabled = is_autostart_enabled()
