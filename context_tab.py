@@ -21,7 +21,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QCheckBox, QPushButton,
     QLabel, QListWidget, QListWidgetItem, QLineEdit, QTextEdit, QSpinBox,
-    QFormLayout, QTabWidget, QFileDialog, QMessageBox, QComboBox, QSizePolicy,
+    QFormLayout, QTabWidget, QFileDialog, QMessageBox, QComboBox, QSizePolicy, QSpacerItem,
 )
 
 from context_sensor import ContextSensorManager, ContextCapsule
