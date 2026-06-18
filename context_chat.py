@@ -4,12 +4,12 @@ AI 对话标签页 - 集成 MCP 工具的聊天助手
 
 支持的能力(与 MCP server 一致):
 - list_workflows / list_shortcuts / run_workflow / launch_shortcut / search_local_files
+- read_file_content / open_system_file (新增文件操作)
 
 实现方式:
 - 用户消息 → 拼系统提示(含工具说明)→ LLM
-- LLM 返回 JSON {"action": "tool_name", "args": {...}, "reply": "回复语"}
+- 支持多轮 Agent Loop (ReAct 模式)：LLM 可连续调用多次工具 (如先搜索，再打开)
 - 解析 action 并调用对应本地函数
-- 把工具结果回填给 LLM,让 LLM 生成最终自然语言回复
 - 整个流程在 QThread 中跑,不阻塞 UI
 """
 from __future__ import annotations
@@ -41,12 +41,19 @@ from context_toast import ToastIntent
 from mcp_embedded import (
     scan_desktop_shortcuts, load_workflows, run_workflow_sync, launch_shortcut_sync,
 )
+
 try:
     from search_panel import search_everything
     _HAS_SEARCH = True
 except Exception:
     _HAS_SEARCH = False
 
+# 引入 Phase B 的文件工具
+try:
+    from file_tools import read_file_content_sync, open_system_file_sync
+except ImportError:
+    def read_file_content_sync(*args, **kwargs): return {"ok": False, "error": "file_tools未安装"}
+    def open_system_file_sync(*args, **kwargs): return {"ok": False, "error": "file_tools未安装"}
 
 # ---------------------------------------------------------------------------
 # 工具函数(与 MCP 工具一一对应)
@@ -74,7 +81,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "search_local_files",
-        "description": "用 Everything 全盘搜索本地文件。需要 query 参数。",
+        "description": "用 Everything 全盘搜索本地文件或文件夹。需要 query 参数。",
         "params": {
             "query": "搜索词",
             "limit": "返回结果数(默认 10)",
@@ -89,6 +96,23 @@ TOOL_DEFINITIONS = [
             "limit": "返回结果数（默认 5）",
         },
     },
+    {
+        "name": "read_file_content",
+        "description": "安全地读取文本文件内容。遇到报错排查、理解日记、查看配置时使用。",
+        "params": {
+            "path": "文件的绝对路径",
+            "max_lines": "最大读取行数，默认 200 行",
+            "read_from_tail": "是否从尾部倒序读取，看日志报错必备"
+        },
+    },
+    {
+        "name": "open_system_file",
+        "description": "调用 Windows 默认程序直接在用户桌面上打开文件/文件夹，或在资源管理器中定位。",
+        "params": {
+            "path": "文件或文件夹的绝对路径",
+            "method": "default (默认应用打开) 或 explorer (在资源管理器中定位)"
+        },
+    }
 ]
 
 
@@ -146,30 +170,22 @@ def tool_search_local_files(query: str, limit: int = 10, path: str = "") -> dict
 
 
 def tool_web_search(query: str, limit: int = 5) -> dict:
-    """联网搜索。
-
-    需用户开启【联网】开关。若配置了 Tavily API Key，优先使用 Tavily；否则使用 Bing 兜底。
-    """
     if not _WEB_ENABLED:
         return {"ok": False, "error": "联网开关未开启,请在 AI 对话页上方开启【联网】"}
     if _TAVILY_API_KEY:
         tavily_result = _tool_tavily_search(query, limit)
         if tavily_result.get("ok"):
             return tavily_result
-        # 401 是 Key/授权问题，要明确暴露；但仍允许 Bing 兜底，避免用户完全无结果
         bing_result = _tool_bing_search(query, limit)
         if bing_result.get("ok"):
-            auth_note = "Tavily Key 未授权/无效，请检查 AI 感知 → 后端 → Tavily Key" if tavily_result.get("auth_error") else f"Tavily 失败：{tavily_result.get('error', '')}"
+            auth_note = "Tavily Key 未授权/无效" if tavily_result.get("auth_error") else f"Tavily 失败：{tavily_result.get('error', '')}"
             bing_result["note"] = f"{auth_note}；已改用 Bing 增强搜索"
-            if tavily_result.get("auth_error"):
-                bing_result["tavily_auth_error"] = True
         return bing_result
     return _tool_bing_search(query, limit)
 
 
 def _enhance_web_query(query: str) -> str:
     q = (query or "").strip()
-    # 游戏攻略查询太短时，Bing 容易把“异环”拆成汉字/百科；补充英文名和攻略站关键词
     if "异环" in q or "娜娜莉" in q or "娜娜莉" in q:
         extras = ["Neverness to Everness", "NTE", "攻略", "培养", "配队", "弧盘", "空幕", "游民星空", "TapTap", "51WAN", "NTE Guide"]
         for word in extras:
@@ -200,60 +216,35 @@ def _curated_game_results(query: str) -> list[dict]:
     if "异环" in q and ("娜娜莉" in q or "nanally" in q or "nanali" in q):
         return [
             {
-                "title": "《异环》娜娜莉培养一图流 娜娜莉出装与配队推荐 - 游民星空",
+                "title": "《异环》娜娜莉培养一图流 - 游民星空",
                 "url": "https://www.gamersky.com/handbook/202604/2129360.shtml",
                 "snippet": "娜娜莉定位灵属性主力输出。推荐森林萤火之心卡带，优先普攻与极轨终结；弧盘优先专武预备备，配队推荐娜娜莉+主角+九原+早雾。",
                 "source_hint": "curated",
-            },
-            {
-                "title": "异环娜娜莉培养攻略 娜娜莉如何进行培养 - 51WAN",
-                "url": "https://www.51wan.com/gonglue/ciiz2073",
-                "snippet": "娜娜莉为灵属性核心输出，觉醒战斗向优先 1/3/5，跑图向可选 6；无专武可用 A 级弧盘欧拉欧拉。",
-                "source_hint": "curated",
-            },
-            {
-                "title": "异环 Wiki 官网 - NTE Guide",
-                "url": "https://nteguide.com",
-                "snippet": "异环 Wiki / NTE Guide，提供角色、Build、配装、队伍和工具资料，可作为后续查角色数据的补充来源。",
-                "source_hint": "curated",
-            },
+            }
         ]
     return []
 
 
 def _is_low_quality_search_result(title: str, url: str, snippet: str) -> bool:
     text = f"{title} {url} {snippet}".lower()
-    bad_domains = [
-        "baike.baidu.com", "hanyu.baidu.com", "zdic.net", "cidian", "baike.sogou.com",
-        "dictionary", "wiktionary", "wikipedia.org/wiki/异",
-    ]
+    bad_domains = ["baike.baidu.com", "hanyu.baidu.com", "zdic.net", "cidian", "baike.sogou.com", "dictionary", "wiktionary"]
     if any(d in text for d in bad_domains):
         return True
-    # 明显是汉字解释而不是游戏攻略
     bad_terms = ["汉语文字", "现代汉语", "异体字", "一级字", "读作", "本义", "拼音"]
     return any(t in text for t in bad_terms)
 
 
 def _tool_tavily_search(query: str, limit: int = 5) -> dict:
     try:
-        import urllib.error
-        import urllib.request
+        import urllib.error, urllib.request
         payload = json.dumps({
-            "query": query,
-            "max_results": max(1, min(int(limit), 10)),
-            "search_depth": "basic",
-            "include_answer": False,
-            "include_raw_content": False,
+            "query": query, "max_results": max(1, min(int(limit), 10)),
+            "search_depth": "basic", "include_answer": False, "include_raw_content": False,
             "api_key": _TAVILY_API_KEY,
         }).encode("utf-8")
         req = urllib.request.Request(
-            "https://api.tavily.com/search",
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {_TAVILY_API_KEY}",
-            },
-            method="POST",
+            "https://api.tavily.com/search", data=payload, method="POST",
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {_TAVILY_API_KEY}"}
         )
         with urllib.request.urlopen(req, timeout=20) as r:
             data = json.loads(r.read().decode("utf-8", errors="ignore"))
@@ -262,14 +253,8 @@ def _tool_tavily_search(query: str, limit: int = 5) -> dict:
             title = str(item.get("title", ""))[:200]
             url = str(item.get("url", ""))
             snippet = str(item.get("content", item.get("snippet", "")))[:500]
-            if _is_low_quality_search_result(title, url, snippet):
-                continue
-            results.append({
-                "title": title,
-                "url": url,
-                "snippet": snippet,
-                "score": item.get("score"),
-            })
+            if not _is_low_quality_search_result(title, url, snippet):
+                results.append({"title": title, "url": url, "snippet": snippet, "score": item.get("score")})
         results = _dedupe_search_results(_curated_game_results(query) + results, limit)
         return {"ok": True, "count": len(results), "results": results, "source": "Tavily"}
     except Exception as e:
@@ -288,95 +273,47 @@ def _tool_bing_search(query: str, limit: int = 5) -> dict:
         import urllib.request, urllib.parse, re as _re
         enhanced_query = _enhance_web_query(query)
         q = urllib.parse.quote(enhanced_query)
-        url = f"https://www.bing.com/search?q={q}"
         req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            },
+            f"https://www.bing.com/search?q={q}",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0"}
         )
-        # 联网搜索: 独立 15 秒超时
         with urllib.request.urlopen(req, timeout=15) as r:
             html = r.read().decode("utf-8", errors="ignore")
         results = []
-        # Bing 结果: <li class="b_algo"> ... <h2 ...><a href="URL">title</a></h2> <div class="b_caption"><p>summary</p></div>
-        # 取 b_algo 块 (不依赖中间顺序)
         blocks = _re.findall(r'<li class="b_algo"[^>]*>.*?</li>', html, _re.DOTALL)
         for b in blocks[: max(limit * 4, 12)]:
-            # 标题 + 链接
             h2 = _re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>\s*</h2>', b, _re.DOTALL)
-            if not h2:
-                continue
+            if not h2: continue
             href = _html.unescape(h2.group(1))
             title = _html.unescape(_re.sub(r"<[^>]+>", "", h2.group(2))).strip()
-            # 摘要 (b_caption > p)
             cap = _re.search(r'<div class="b_caption"[^>]*>\s*<p[^>]*>(.*?)</p>', b, _re.DOTALL)
             snippet = _html.unescape(_re.sub(r"<[^>]+>", "", cap.group(1))).strip() if cap else ""
-            if _is_low_quality_search_result(title, href, snippet):
-                continue
-            results.append({
-                "title": title[:200],
-                "url": href,
-                "snippet": snippet[:300],
-            })
-            if len(results) >= limit:
-                break
-        # 兦底: 如果没拿到,返回原始 html 前 1KB
+            if not _is_low_quality_search_result(title, href, snippet):
+                results.append({"title": title[:200], "url": href, "snippet": snippet[:300]})
+            if len(results) >= limit: break
+        
         curated = _curated_game_results(query)
-        seen_urls = set()
-        merged_results = []
-        # 对明确的游戏角色培养问题，优先展示攻略源，避免官网/百科排在前面误导总结
-        for item in curated + results:
-            url0 = item.get("url")
-            if url0 in seen_urls:
-                continue
-            merged_results.append(item)
-            seen_urls.add(url0)
-            if len(merged_results) >= limit:
-                break
-        results = merged_results
-        results = _dedupe_search_results(results, limit)
-        if not results:
-            return {
-                "ok": True, "count": 0, "results": [],
-                "source": "Bing", "query": enhanced_query, "note": "未能解析出高质量结构化结果,可考虑更换 Tavily Key 或优化查询词",
-            }
-        source = "Bing+Curated" if curated else "Bing"
-        return {"ok": True, "count": len(results), "results": results, "source": source, "query": enhanced_query}
+        merged_results = _dedupe_search_results(curated + results, limit)
+        if not merged_results:
+            return {"ok": True, "count": 0, "results": [], "source": "Bing", "query": enhanced_query, "note": "未解析出高质量结果"}
+        return {"ok": True, "count": len(merged_results), "results": merged_results, "source": "Bing+Curated" if curated else "Bing", "query": enhanced_query}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
-# 联网开关 / Tavily Key (运行时由 UI 切换)
 _WEB_ENABLED = False
 _TAVILY_API_KEY = ""
-
 
 def set_tavily_api_key(api_key: str) -> None:
     global _TAVILY_API_KEY
     _TAVILY_API_KEY = (api_key or "").strip()
-    try:
-        from log_bus import log_bus
-        log_bus.emit(f"[AI对话] Tavily {'已配置' if _TAVILY_API_KEY else '未配置'}")
-    except Exception:
-        pass
-
 
 def get_tavily_api_key() -> str:
     return _TAVILY_API_KEY
 
-
 def set_web_enabled(enabled: bool) -> None:
     global _WEB_ENABLED
     _WEB_ENABLED = bool(enabled)
-    try:
-        from log_bus import log_bus
-        log_bus.emit(f"[AI对话] 联网 {'启用' if enabled else '停用'}")
-    except Exception:
-        pass
-
 
 def is_web_enabled() -> bool:
     return _WEB_ENABLED
@@ -393,8 +330,13 @@ TOOL_DISPATCH = {
     "web_search": lambda args: tool_web_search(
         args.get("query", ""), int(args.get("limit", 5))
     ),
+    "read_file_content": lambda args: read_file_content_sync(
+        args.get("path", ""), int(args.get("max_lines", 200)), bool(args.get("read_from_tail", False))
+    ),
+    "open_system_file": lambda args: open_system_file_sync(
+        args.get("path", ""), args.get("method", "default")
+    ),
 }
-
 
 # ---------------------------------------------------------------------------
 # 系统提示词
@@ -431,7 +373,7 @@ def build_chat_system_prompt(web_enabled: Optional[bool] = None) -> str:
 {{
   "action": "工具名",
   "args": {{ "参数名": "参数值" }},
-  "reply": "对用户说的话,告诉用户在做什么"
+  "reply": "对用户说的话,告诉用户在做什么 (此项可选)"
 }}
 
 不需要工具时:
@@ -443,34 +385,23 @@ def build_chat_system_prompt(web_enabled: Optional[bool] = None) -> str:
 【规则】
 - 只输出 JSON,不要有其他文字
 - 工具名必须从上面列表中选
-- args 里只放工具需要的参数
 - 工具调用不要嵌套,一次只调一个
-- 用户说"打开XX"/"启动XX" → 用 launch_shortcut
-- 用户说"执行XX工作流"/"跑XX流程" → 用 run_workflow
-- 用户说"找XX文件"/"本地搜XX" → 用 search_local_files (仅本地 Everything)
-- 用户说"联网搜XX"/"百度一下"/"访问 XX 网站"/需联网才能获取信息的问题 → 如果联网开关已开启，用 web_search；如果未开启，再提示需要开启
-- 用户说"列出工作流"/"看看工作流" → 用 list_workflows
-- 用户说"列出应用"/"桌面有啥" → 用 list_shortcuts
-- 用户说"打开XX文件夹"/"打开XX文件" → 找到路径后必须用 open_system_file 工具打开，不要只在回复里描述打开
-- 当前联网开关是：{web_state}。不要和这个状态相矛盾。
-
-【search_local_files 多结果时如何选择】
-搜索结果可能返回多条，AI 必须主动选择，不要让用户去选：
-1. 优先选择【不在 backups 文件夹里】的路径（项目主目录的文件更可能是最新版本）
-2. 如果多条都不在 backups，优先选 date_modified 最近的那条
-3. 如果所有结果都在 backups 里，选最新的那个（快照文件名里带日期时间的更近）
-4. **绝对不要**列出所有结果让用户选——这是 AI 的职责
-5. 只在明显不同用途的结果之间（比如同名但不同目录）才需要提及犹豫原因
+- **用户说"打开XX文件夹" / "打开XX文件" / "查看XX" 时：**
+  如果你不知道绝对路径，请先调用 `search_local_files`。获取绝对路径后，**必须立即在下一步调用 `open_system_file` 来打开它**。绝不可仅仅在回复里描述“我找到了该文件”而拒绝打开操作。
+- search_local_files 多结果选择规则：
+  1. 优先选择不在 backups 文件夹里的路径。
+  2. 如果都有/都没有 backups，优先选 date_modified 最近的那条。
+  3. 绝对不要列出所有结果让用户选，你必须自主做决定。
 """
 
 
 # ---------------------------------------------------------------------------
-# 后台 Worker
+# 后台 Worker (多轮 Agent Loop 核心升级)
 # ---------------------------------------------------------------------------
 class ChatWorker(QThread):
-    """在独立线程跑:用户消息 → LLM → 解析 → 调工具 → LLM 总结"""
+    """在独立线程跑: 用户消息 → LLM → 解析 → 调工具 → (若需要再调) → 总结"""
 
-    thinking = Signal(str)                # "正在思考..."
+    thinking = Signal(str)                # "正在思考..." / "正在处理结果..."
     tool_call = Signal(str, dict)          # 调用的工具名 + 参数
     tool_result = Signal(str, dict)        # 工具结果
     assistant_message = Signal(str)        # 最终回复
@@ -488,72 +419,68 @@ class ChatWorker(QThread):
     def run(self):
         try:
             self.thinking.emit("正在思考...")
-            # Worker 线程里不要靠全局状态猜测，把 UI 当前联网状态显式传入系统提示
             sys_prompt = build_chat_system_prompt(web_enabled=self._web_enabled)
             messages = [{"role": "system", "content": sys_prompt}] + self._history + [
                 {"role": "user", "content": self._user_msg}
             ]
 
-            # 第一轮:让 LLM 决定是否调工具
-            raw1 = self._chat(messages)
-            if not raw1:
-                self.error.emit("后端无响应")
-                return
+            max_turns = 3  # 最多允许 AI 连续调用 3 次工具
+            for turn in range(max_turns):
+                raw = self._chat(messages)
+                if not raw:
+                    self.error.emit("后端无响应")
+                    return
 
-            data1 = parse_intent_response(raw1) or {}
-            action = data1.get("action")
-            reply = data1.get("reply", "").strip()
+                data = parse_intent_response(raw) or {}
+                action = data.get("action")
+                reply = data.get("reply", "").strip()
 
-            # 如果不调工具,直接显示
-            if not action or action not in TOOL_DISPATCH:
+                # 如果 AI 决定不调用工具（action 为 null）或动作非法
+                if not action or action not in TOOL_DISPATCH:
+                    if reply:
+                        self.assistant_message.emit(reply)
+                    else:
+                        self.assistant_message.emit(raw[:500] if raw else "(无回复)")
+                    return
+
+                # --- 调用工具阶段 ---
+                args = data.get("args") or {}
                 if reply:
-                    self.assistant_message.emit(reply)
+                    self.thinking.emit(reply)  # 如果 AI 顺带说了句话，更新到状态
+                self.tool_call.emit(action, args if isinstance(args, dict) else {})
+                
+                result = TOOL_DISPATCH[action](args if isinstance(args, dict) else {})
+
+                # 发射工具结果信号
+                result_limit = 6000 if action == "web_search" else 2000
+                result_str = json.dumps(result, ensure_ascii=False, indent=2)[:result_limit]
+                self.tool_result.emit(action, result)
+
+                # --- 准备下一轮交互上下文 ---
+                messages.append({"role": "assistant", "content": raw})
+                
+                if turn < max_turns - 1:
+                    # 还有额度，让 AI 决定是继续调工具还是回复
+                    self.thinking.emit(f"正在处理 {action} 的结果...")
+                    instruction = "请决定下一步操作：如果已找到目标路径并且需要打开，请立即调用 open_system_file ；如果需要其他工具请继续输出 JSON ；如果任务已全部完成，请将 action 设为 null 并回复纯文本给用户。"
+                    messages.append({
+                        "role": "user",
+                        "content": f"工具 {action} 执行完毕。结果:\n```json\n{result_str}\n```\n{instruction}"
+                    })
                 else:
-                    self.assistant_message.emit(raw1[:500] if raw1 else "(无回复)")
-                return
-
-            # 调工具
-            args = data1.get("args") or {}
-            self.tool_call.emit(action, args if isinstance(args, dict) else {})
-            result = TOOL_DISPATCH[action](args if isinstance(args, dict) else {})
-
-            # 把工具结果展示出来；web_search 需要保留足够的来源和摘要给二次总结
-            result_limit = 6000 if action == "web_search" else 2000
-            result_str = json.dumps(result, ensure_ascii=False, indent=2)[:result_limit]
-            self.tool_result.emit(action, result)
-
-            # 第二轮:让 LLM 总结
-            messages.append({"role": "assistant", "content": raw1})
-            if action == "web_search":
-                instruction = (
-                    "请只基于工具结果回答，不要编造。\n"
-                    "要求：\n"
-                    "1. 先指出 Tavily Key 是否有授权问题（如果结果里有 tavily_auth_error/note）。\n"
-                    "2. 严格按 results 数组顺序提炼，不要打乱来源顺序。\n"
-                    "3. 合并重复信息，不要重复同一句建议。\n"
-                    "4. 如果是角色培养/攻略问题，按固定顺序输出：定位 → 技能优先级 → 装备/词条 → 觉醒 → 配队 → 手法。\n"
-                    "5. 最后列出 2-3 个来源标题，不要列百科/字典。\n"
-                    "6. 直接说人话，不要 JSON，不要把工具日志原样贴出来。"
-                )
-            else:
-                instruction = "请基于这个结果给用户一个简洁友好的回答(100字内)。直接说人话,不要 JSON。"
-            messages.append({
-                "role": "user",
-                "content": f"工具 {action} 的结果:\n```json\n{result_str}\n```\n{instruction}"
-            })
-
-            self.thinking.emit("正在生成回复...")
-            raw2 = self._chat(messages)
-            if raw2:
-                # 剥掉可能的 markdown 包装
-                text = raw2.strip()
-                m = re.search(r"```(?:json|JSON)?\s*\n?([\s\S]+?)\n?```", text)
-                if m:
-                    text = m.group(1).strip()
-                self.assistant_message.emit(text)
-            else:
-                # 后端失败也要给用户看个结果
-                self.assistant_message.emit(f"(已执行 {action})\n结果: {result_str[:300]}")
+                    # 最后一轮，强制要求其给出总结，不再允许调用工具
+                    self.thinking.emit("正在做最后总结...")
+                    if action == "web_search":
+                        instruction = (
+                            "执行完毕。这是最后一轮交互。请基于工具结果给用户最终回复（必须用纯文本，action 设为 null，不再调用工具）。\n"
+                            "严格按 results 顺序提炼，合并重复信息，并在结尾附上2-3个来源。"
+                        )
+                    else:
+                        instruction = "执行完毕。这是最后一轮交互。请基于工具结果给用户一个简洁友好的最终回复（必须用纯文本，action 设为 null）。"
+                    messages.append({
+                        "role": "user",
+                        "content": f"工具 {action} 执行完毕。结果:\n```json\n{result_str}\n```\n{instruction}"
+                    })
 
         except Exception as e:
             import traceback
@@ -614,7 +541,6 @@ class ContextChatTab(QWidget):
         self._inline_status_phase = ""
         self._max_history = 20               # 保留最近 20 轮
         self._build_ui()
-        # 限制最大宽度,防止对话气泡过宽
         self.setMaximumWidth(900)
 
     def _build_ui(self):
@@ -628,7 +554,7 @@ class ContextChatTab(QWidget):
         title.setFont(QFont("", 12, QFont.Bold))
         top.addWidget(title)
         top.addStretch()
-        hint = QLabel("支持:列出工作流 / 启动应用 / 跑工作流 / 搜文件")
+        hint = QLabel("支持:列出/执行工作流 / 启动应用 / 搜文件 / 读文件 / 打开文件")
         hint.setStyleSheet("color: #666; font-size: 11px;")
         top.addWidget(hint)
         root.addLayout(top)
@@ -640,17 +566,16 @@ class ContextChatTab(QWidget):
         self.chat_view.setStyleSheet(
             "QTextEdit { background:#fafafa; border:1px solid #e5e7eb; border-radius:4px; padding:8px; }"
         )
-        # 限制最大高度 + Preferred 垂直策略（不强制扩展），让 layout 保留足够空间给输入区
         self.chat_view.setMaximumHeight(450)
         self.chat_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         root.addWidget(self.chat_view, stretch=1)
 
-        # 输入区（无 QGroupBox 标题栏，节省垂直空间）
+        # 输入区
         input_hud = QWidget()
         iv = QVBoxLayout(input_hud)
         input_row = QHBoxLayout()
         self.input_edit = QLineEdit()
-        self.input_edit.setPlaceholderText("例: 帮我打开微信 / 跑一下 zzz日常 工作流 / 搜索4月明细")
+        self.input_edit.setPlaceholderText("例: 帮我打开微信 / 跑一下 zzz日常 工作流 / 搜索并打开酒馆文件夹")
         self.input_edit.returnPressed.connect(self._on_send)
         input_row.addWidget(self.input_edit, stretch=1)
         self.btn_send = QPushButton("📤 发送")
@@ -679,10 +604,10 @@ class ContextChatTab(QWidget):
 
         self.chk_log_toast_actions = QCheckBox("记录气泡点击动作")
         self.chk_log_toast_actions.setChecked(False)
-        self.chk_log_toast_actions.setToolTip("关闭后，点击气泡不会在 AI 对话里追加“点击了气泡/已接受推荐”等动作说明")
+        self.chk_log_toast_actions.setToolTip("关闭后，点击气泡不会在 AI 对话里追加动作说明")
         ctrl_row.addWidget(self.chk_log_toast_actions)
 
-        # 联网开关 (默认关闭,避免无意访问网络)
+        # 联网开关
         self.chk_web = QCheckBox("🌐 联网")
         self.chk_web.setToolTip("开启后,AI 可以调用 web_search 工具 (Bing) 进行联网搜索")
         self.chk_web.toggled.connect(self._on_web_toggle)
@@ -706,32 +631,27 @@ class ContextChatTab(QWidget):
         self._append_system(
             "👋 你好!我是你的桌面自动化助手。\n"
             "你可以让我:\n"
-            "  • 打开应用(例: '帮我打开微信')\n"
-            "  • 执行工作流(例: '跑一下 zzz日常')\n"
-            "  • 搜索文件(例: '搜一下 4月明细')\n"
-            "  • 列出工作流 / 桌面应用\n\n"
-            "💡 提示:先在「⚙️ 后端」标签页配好 LLM(默认 OpenAI 兼容协议)。"
+            "  • 搜索并打开文件夹/文件 (例: '帮我打开酒馆文件夹')\n"
+            "  • 读取日志内容排错 (例: '帮我读取桌面auto的log日志看看')\n"
+            "  • 执行工作流(例: '跑一下 zzz日常')\n\n"
+            "💡 提示: 先在「⚙️ 后端」标签页配好 LLM。"
         )
 
     # ---- 后端接入 ----
     def set_backend(self, backend: LLMBackend):
-        """父级 ContextTab 在切后端时调用"""
         self._backend = backend
 
     # ---- 用户发送 ----
     def add_next_context(self, content: str, visible_hint: str = ""):
-        """为下一次用户发送注入气泡上下文，可选在聊天记录显示摘要。"""
         content = (content or "").strip()
         if not content:
             return
         self._next_context.append({"role": "system", "content": content[:2000]})
-        # 防止堆积过多
         self._next_context = self._next_context[-5:]
         if visible_hint:
             self._append_system(visible_hint)
 
     def send_text(self, text: str):
-        """外部小聊天窗调用：复用主 AI 对话页的同一套发送/历史链路。"""
         if text:
             self.input_edit.setText(text)
             self._on_send()
@@ -743,17 +663,15 @@ class ContextChatTab(QWidget):
         if not text:
             return
         if not isinstance(self._backend, OpenAICompatibleBackend) and not hasattr(self._backend, "base_url"):
-            self._append_system("⚠️ 当前后端不支持对话，请在「⚙️ 后端」选择 OpenAI 兼容协议并点击应用设置。")
+            self._append_system("⚠️ 当前后端不支持对话，请在「⚙️ 后端」选择 OpenAI 兼容协议。")
             self.status_label.setText("⚠️ 后端未就绪")
             return
 
-        # 发送前强制同步一次联网开关，避免 UI 勾选状态和模块全局状态不一致
         try:
             set_web_enabled(self.chk_web.isChecked())
         except Exception:
             pass
 
-        # 显示用户消息
         self._pending_user_msg = text
         self._append_user(text)
         self.input_edit.clear()
@@ -762,13 +680,13 @@ class ContextChatTab(QWidget):
         self._inline_status_active = False
         self._inline_status_phase = ""
 
-        # 启动 worker。气泡上下文只注入下一轮，即使不保留历史也要带上。
         history_for_worker = []
         if self.chk_keep_history.isChecked():
             history_for_worker.extend(list(self._history))
         if self._next_context:
             history_for_worker.extend(self._next_context)
             self._next_context = []
+            
         self._worker = ChatWorker(
             backend=self._backend,
             history=history_for_worker,
@@ -795,9 +713,9 @@ class ContextChatTab(QWidget):
                     self._inline_status_active = True
                     self._inline_status_phase = "replying"
             else:
-                self.status_label.setText("💭 思考中…")
-                if not self._inline_status_active:
-                    self._append_assistant_status("💭 思考中…")
+                self.status_label.setText(f"💭 {msg}")
+                if not self._inline_status_active or self._inline_status_phase != "thinking":
+                    self._append_assistant_status(f"💭 {msg}")
                     self._inline_status_active = True
                     self._inline_status_phase = "thinking"
 
@@ -811,7 +729,6 @@ class ContextChatTab(QWidget):
     @Slot(str, dict)
     def _on_tool_result(self, action: str, result: dict):
         self.log_signal.emit(f"[AI对话] {action} 结果: {json.dumps(result, ensure_ascii=False)[:200]}")
-        # 推送气泡（让 context_tab 同步显示）
         ok = result.get("ok", False)
         icon = "✅" if ok else "❌"
         intent = ToastIntent(
@@ -841,11 +758,9 @@ class ContextChatTab(QWidget):
         self._inline_status_active = False
         self._inline_status_phase = ""
         self._append_assistant(msg)
-        # 加入历史
         if self.chk_keep_history.isChecked():
             self._history.append({"role": "user", "content": self._pending_user_msg or "(上轮)"})
             self._history.append({"role": "assistant", "content": msg})
-            # 限长
             while len(self._history) > self._max_history * 2:
                 self._history.pop(0)
 
@@ -865,26 +780,18 @@ class ContextChatTab(QWidget):
             self._worker.deleteLater()
             self._worker = None
 
-    # ---- 清空 ----
     def _on_clear(self):
         self.chat_view.clear()
         self._history.clear()
         self._append_system("🧹 已清空对话历史")
 
-    # ---- 联网开关 ----
     def _on_web_toggle(self, checked: bool):
-        """同步到模块全局,LLM 拿到提示后可用 web_search 工具"""
         from context_chat import set_web_enabled
         set_web_enabled(checked)
         state = "✅ 已开启 - AI 可调用 web_search 联网搜索" if checked else "❌ 已关闭 - 不可调用联网工具"
         self._append_system(f"🌐 联网开关: {state}")
 
-    # ---- 与气泡同步 ----
     def on_intent(self, intent):
-        """AI 推送了一条气泡 → 在聊天记录里同步显示
-
-        intent 是 context_toast.ToastIntent,有 intent/message/suggested_action/action_param
-        """
         try:
             if not getattr(self, "chk_show_proactive_push", None) or not self.chk_show_proactive_push.isChecked():
                 return
@@ -895,13 +802,11 @@ class ContextChatTab(QWidget):
             text = msg
             if sug:
                 text += f"\n\n[操作: {sug}" + (f" / {param}" if param else "") + "]"
-            # 用 assistant 气泡样式显示
             self._append_assistant(f"💡 [主动推送 / {tag}]\n{text}")
         except Exception as e:
             self._append_system(f"❌ on_intent 出错: {e}")
 
     def on_toast_clicked(self, intent):
-        """用户点击了某个气泡 → 可选记录用户的交互到聊天历史"""
         try:
             if not getattr(self, "chk_log_toast_actions", None) or not self.chk_log_toast_actions.isChecked():
                 return
@@ -913,7 +818,6 @@ class ContextChatTab(QWidget):
             self._append_system(f"❌ on_toast_clicked 出错: {e}")
 
     def on_action_executed(self, intent):
-        """context_tab 用户点击气泡后可选同步显示在聊天记录里"""
         try:
             if not getattr(self, "chk_log_toast_actions", None) or not self.chk_log_toast_actions.isChecked():
                 return
@@ -928,7 +832,6 @@ class ContextChatTab(QWidget):
         except Exception as e:
             self._append_system(f"❌ on_action_executed 出错: {e}")
 
-    # ---- 显示辅助 ----
     def _append_user(self, text: str):
         ts = datetime.now().strftime("%H:%M:%S")
         html = (
@@ -940,7 +843,6 @@ class ContextChatTab(QWidget):
         self._append_html(html)
 
     def _append_assistant_status(self, text: str):
-        """在对话区显示 AI 工作状态（思考中/回复中），小对话窗也会同步看到"""
         ts = datetime.now().strftime("%H:%M:%S")
         html = (
             f'<div style="margin:6px 0; padding:8px; background:#ecfdf5; border:1px dashed #86efac; border-radius:6px;">'
@@ -952,7 +854,6 @@ class ContextChatTab(QWidget):
 
     def _append_assistant(self, text: str):
         ts = datetime.now().strftime("%H:%M:%S")
-        # 多行文本保留换行
         text_html = text.replace("\n", "<br>")
         html = (
             f'<div style="margin:6px 0; padding:8px; background:#dcfce7; border-radius:6px;">'
@@ -974,26 +875,15 @@ class ContextChatTab(QWidget):
     def _append_html(self, html: str):
         self.chat_view.append(html)
         self.html_appended.emit(html)
-        # 滚到底
         sb = self.chat_view.verticalScrollBar()
         sb.setValue(sb.maximum())
 
     @staticmethod
     def _esc(text: str) -> str:
-        return (
-            text.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-        )
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 class MiniChatDialog(QDialog):
-    """点击气泡打开的小聊天窗。
-
-    它不复制 AI worker；所有发送都转交给主 ContextChatTab，
-    主标签页追加的 HTML 再通过 html_appended 同步回来。
-    """
-
     def __init__(self, chat_tab: ContextChatTab, parent: QWidget = None):
         super().__init__(parent)
         self._chat_tab = chat_tab
@@ -1008,14 +898,10 @@ class MiniChatDialog(QDialog):
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
-
         self.chat_view = QTextEdit()
         self.chat_view.setReadOnly(True)
-        self.chat_view.setStyleSheet(
-            "QTextEdit { background:#fafafa; border:1px solid #e5e7eb; border-radius:6px; padding:8px; }"
-        )
+        self.chat_view.setStyleSheet("QTextEdit { background:#fafafa; border:1px solid #e5e7eb; border-radius:6px; padding:8px; }")
         root.addWidget(self.chat_view, stretch=1)
-
         row = QHBoxLayout()
         self.input_edit = QLineEdit()
         self.input_edit.setPlaceholderText("直接问我，例如：这个进程是什么？要不要打开相关资料？")
