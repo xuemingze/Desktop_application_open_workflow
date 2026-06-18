@@ -430,6 +430,7 @@ class ContextTab(QWidget):
 
         # 每日次数
         count_gb = QGroupBox(t("ctx_daily_count"))
+        count_gb.setFont(QFont("", 10, QFont.Bold))
         cv = QFormLayout(count_gb)
         self.daily_count_spin = QSpinBox()
         self.daily_count_spin.setRange(0, 20)
@@ -445,29 +446,35 @@ class ContextTab(QWidget):
 
         # 用户档案
         profile_gb = QGroupBox(t("ctx_profile_gb"))
+        profile_gb.setFont(QFont("", 10, QFont.Bold))
         pv = QFormLayout(profile_gb)
         self.profile_hobbies = QLineEdit()
         self.profile_hobbies.setPlaceholderText(t("ctx_placeholder_hobbies"))
+        self.profile_hobbies.setMinimumWidth(250)
         self.profile_hobbies.textChanged.connect(self._on_profile_change)
         pv.addRow(t("ctx_profile_hobbies"), self.profile_hobbies)
 
         self.profile_interests = QLineEdit()
         self.profile_interests.setPlaceholderText(t("ctx_placeholder_interests"))
+        self.profile_interests.setMinimumWidth(250)
         self.profile_interests.textChanged.connect(self._on_profile_change)
         pv.addRow(t("ctx_profile_interests"), self.profile_interests)
 
         self.profile_learning = QLineEdit()
         self.profile_learning.setPlaceholderText(t("ctx_placeholder_learning"))
+        self.profile_learning.setMinimumWidth(250)
         self.profile_learning.textChanged.connect(self._on_profile_change)
         pv.addRow(t("ctx_profile_learning"), self.profile_learning)
 
         self.profile_work = QLineEdit()
         self.profile_work.setPlaceholderText(t("ctx_placeholder_work"))
+        self.profile_work.setMinimumWidth(250)
         self.profile_work.textChanged.connect(self._on_profile_change)
         pv.addRow(t("ctx_profile_work"), self.profile_work)
 
         self.profile_keywords = QLineEdit()
         self.profile_keywords.setPlaceholderText(t("ctx_placeholder_keywords"))
+        self.profile_keywords.setMinimumWidth(250)
         self.profile_keywords.textChanged.connect(self._on_profile_change)
         pv.addRow(t("ctx_profile_keywords"), self.profile_keywords)
 
@@ -479,6 +486,7 @@ class ContextTab(QWidget):
 
         # 历史问题
         history_gb = QGroupBox(t("ctx_history_gb"))
+        history_gb.setFont(QFont("", 10, QFont.Bold))
         hv = QVBoxLayout(history_gb)
         self.proactive_history_view = QListWidget()
         self.proactive_history_view.setMaximumHeight(150)
