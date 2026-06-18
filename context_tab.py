@@ -463,14 +463,13 @@ class ContextTab(QWidget):
             edit = QLineEdit()
             edit.setPlaceholderText(t(placeholder_key))
             edit.setMinimumWidth(400)
+            edit.setFixedHeight(30)
             edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            edit.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             edit.setStyleSheet(
                 "QLineEdit {\n"
-                "  min-height: 28px;\n"
-                "  max-height: 28px;\n"
-                "  padding: 0px 5px;\n"
-                "  margin: 0px;\n"
+                "  padding: 0px 6px;\n"
+                "  font-weight: normal;\n"
+                "  font-size: 12px;\n"
                 "}\n"
             )
             return edit
@@ -501,7 +500,7 @@ class ContextTab(QWidget):
         pv.addWidget(self.profile_keywords, 4, 1)
 
         kw_hint = QLabel(t("ctx_kw_hint"))
-        kw_hint.setStyleSheet("color: #888; font-size: 11px;")
+        kw_hint.setStyleSheet("color: #888; font-size: 11px; font-weight: normal;")
         pv.addWidget(kw_hint, 5, 0, 1, 2)
         #实体弹簧，吸收多余垂直空间
         pv.addItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding), 6, 0, 1, 2)
