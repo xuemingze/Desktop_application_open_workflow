@@ -455,15 +455,14 @@ class ContextTab(QWidget):
         pv = QFormLayout(profile_gb)
         pv.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
         pv.setVerticalSpacing(8)
+        pv.setFieldGrowthPolicy(QFormLayout.FieldsStayAtSizeHint)
 
         def _make_field(placeholder_key: str) -> QLineEdit:
             edit = QLineEdit()
             edit.setPlaceholderText(t(placeholder_key))
             edit.setMinimumWidth(400)
-            edit.setFixedHeight(28)
             edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             edit.setFont(QFont("", 10, QFont.Normal))
-            edit.setTextMargins(6, 0, 6, 0)
             return edit
 
         self.profile_hobbies = _make_field("ctx_placeholder_hobbies")
