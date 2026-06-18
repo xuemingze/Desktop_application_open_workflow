@@ -463,7 +463,7 @@ class ContextTab(QWidget):
             edit = QLineEdit()
             edit.setPlaceholderText(t(placeholder_key))
             edit.setMinimumWidth(400)
-            edit.setMinimumHeight(32)
+            edit.setFixedHeight(30)
             edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             return edit
 
@@ -495,6 +495,7 @@ class ContextTab(QWidget):
         kw_hint = QLabel(t("ctx_kw_hint"))
         kw_hint.setStyleSheet("color: #888; font-size: 11px;")
         pv.addWidget(kw_hint, 5, 0, 1, 2)
+        pv.setRowStretch(6, 1)  # row 6 absorbs extra vertical space
 
         layout.addWidget(profile_gb)
 
