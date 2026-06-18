@@ -24,6 +24,10 @@ import image_match  # noqa: F401
 import workflow_panel  # noqa: F401
 import search_panel  # noqa: F401
 import tools_tab  # noqa: F401
+import activity_log  # noqa: F401
+import app_categorizer  # noqa: F401
+import memory_engine  # noqa: F401
+import daily_diary  # noqa: F401
 from i18n import t  # noqa: F401
 
 import os
@@ -1672,6 +1676,11 @@ class MainWindow(QMainWindow):
         # 加载窗口状态(位置/大小/是否默认后台)
         self._load_window_state()
 
+        # ---- 记忆引擎 (Phase A) ----
+        self.memory_engine_mgr: Optional[memory_engine.MemoryEngineManager] = None
+        self._diary_scheduler: Optional[daily_diary.DiaryScheduler] = None
+        self._init_memory_engine()
+
     # ---- 7.1 日志桥接 ----
     def _append_log(self, msg: str) -> None:
         self.log_view.append(msg)
@@ -1758,12 +1767,131 @@ class MainWindow(QMainWindow):
                 self.context_tab.shutdown()
         except Exception:
             pass
+        # 关闭记忆引擎（Phase A）
+        try:
+            if hasattr(self, "memory_engine_mgr") and self.memory_engine_mgr:
+                self.memory_engine_mgr.stop()
+        except Exception:
+            pass
         if self._tray_icon:
             try:
                 self._tray_icon.hide()
             except Exception:
                 pass
         super().closeEvent(event)
+
+    # ---- 8. 记忆引擎 (Phase A) ----
+    def _init_memory_engine(self) -> None:
+        """启动活动记录 + 每日复盘调度器
+        - DB 位置: ~/桌面自动化助手/activity_log.db
+        - 分类器: ~/桌面自动化助手/app_categories.json
+        - 全部静默失败：不影响主程序启动
+        """
+        try:
+            from pathlib import Path
+            from app_categorizer import init_categorizer
+            from memory_engine import MemoryEngineManager
+            from daily_diary import DiaryScheduler
+
+            # 1. 初始化分类器 (生成/加载 JSON)
+            try:
+                init_categorizer(USER_DATA_DIR)
+            except Exception as e:
+                self._append_log(f"[Memory] 分类器初始化失败: {e}")
+                return
+
+            # 2. 创建 Manager (还不 start, 等用户启用)
+            self.memory_engine_mgr = MemoryEngineManager(USER_DATA_DIR)
+            self.memory_engine_mgr.paused_changed.connect(self._on_memory_pause_changed)
+            self._append_log("[Memory] 记忆引擎已加载 (未启动)")
+
+            # 3. 启动每日复盘调度器 (不依檁采样是否运行)
+            first_hour = self._get_config_int("diary_first_hour", 22)
+            max_prompts = self._get_config_int("diary_max_prompts", 2)
+            self._diary_scheduler = DiaryScheduler(
+                parent=self,
+                first_hour=first_hour,
+                max_prompts=max_prompts,
+            )
+            self._diary_scheduler.trigger_diary_prompt.connect(self._on_diary_prompt)
+            self._append_log(f"[Memory] 复盘调度器已启动 (首次提醒={first_hour}:30)")
+
+        except Exception as e:
+            import traceback
+            self._append_log(f"[Memory] 初始化失败: {e}")
+            traceback.print_exc()
+
+    def _get_config_int(self, key: str, default: int) -> int:
+        """从 config.json 读 int 配置，不存在则默认"""
+        try:
+            cfg_path = USER_DATA_DIR / "config.json"
+            if cfg_path.exists():
+                import json
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                return int(cfg.get(key, default))
+        except Exception:
+            pass
+        return default
+
+    def _on_memory_pause_changed(self, paused: bool, info: str) -> None:
+        """托盘提示"""
+        if self._tray_icon and paused:
+            try:
+                self._tray_icon.showMessage(
+                    "记忆引擎已暂停",
+                    info,
+                    QSystemTrayIcon.Information,
+                    3000,
+                )
+            except Exception:
+                pass
+
+    def _on_diary_prompt(self, date_str: str) -> None:
+        """复盘提醒气泡 - 推送到 context_tab 走统一 toast 体系"""
+        if not hasattr(self, "context_tab") or not self.context_tab:
+            return
+        try:
+            from context_toast import ToastIntent
+            intent = ToastIntent(
+                intent="📝 今日复盘",
+                message=f"{date_str} 活动已统计，点此生成 Markdown 日记",
+                suggested_action="generate_diary",
+                action_param=date_str,
+            )
+            self.context_tab._toast_manager.show_toast(intent)
+            self.context_tab.toast_broadcast.emit(intent)
+        except Exception as e:
+            self._append_log(f"[Memory] 推送复盘提醒失败: {e}")
+
+    def memory_pause(self, seconds: int) -> None:
+        """公开 API: 暂停 N 秒"""
+        if self.memory_engine_mgr:
+            self.memory_engine_mgr.pause(seconds)
+
+    def memory_pause_until(self, hour: int) -> None:
+        """公开 API: 暂停到指定小时"""
+        if self.memory_engine_mgr:
+            self.memory_engine_mgr.pause_until(hour)
+
+    def memory_start(self) -> bool:
+        """公开 API: 启动采样"""
+        if not self.memory_engine_mgr:
+            return False
+        self.memory_engine_mgr.start()
+        return True
+
+    def memory_status(self) -> dict:
+        """公开 API: 供 GUI 显示状态"""
+        if not self.memory_engine_mgr:
+            return {"running": False, "error": "not_initialized"}
+        mp = self.memory_engine_mgr.main_poll
+        return {
+            "running": mp._is_running,
+            "suspended": mp.is_suspended,
+            "manual_pause_until": mp._pause_until,
+            "interval": mp.interval,
+        }
 
     # ---- 系统托盘 ----
     def _setup_system_tray(self) -> None:
@@ -1805,6 +1933,25 @@ class MainWindow(QMainWindow):
         act_chat = QAction("💬  打开【AI对话】页", self)
         act_chat.triggered.connect(self._tray_open_chat)
         self._tray_menu.addAction(act_chat)
+
+        self._tray_menu.addSeparator()
+
+        # --- 记忆引擎 (Phase A) ---
+        act_mem_start = QAction("🧠  启动记忆引擎", self)
+        act_mem_start.triggered.connect(lambda: self._tray_memory_start())
+        self._tray_menu.addAction(act_mem_start)
+
+        act_mem_pause_1h = QAction("🧠  暂停记录 1 小时", self)
+        act_mem_pause_1h.triggered.connect(lambda: self.memory_pause(3600))
+        self._tray_menu.addAction(act_mem_pause_1h)
+
+        act_mem_pause_9 = QAction("🧠  暂停到明天 9:00", self)
+        act_mem_pause_9.triggered.connect(lambda: self.memory_pause_until(9))
+        self._tray_menu.addAction(act_mem_pause_9)
+
+        act_mem_diary_now = QAction("📝  立即生成今日复盘", self)
+        act_mem_diary_now.triggered.connect(self._tray_generate_diary)
+        self._tray_menu.addAction(act_mem_diary_now)
 
         self._tray_menu.addSeparator()
 
@@ -1883,6 +2030,95 @@ class MainWindow(QMainWindow):
                     if "AI 对话" in sub.tabText(j):
                         sub.setCurrentIndex(j)
                         return
+
+    def _tray_memory_start(self) -> None:
+        """托盘：启动记忆引擎"""
+        if self.memory_start():
+            self._append_log("[Memory] 已启动")
+            if self._tray_icon:
+                self._tray_icon.showMessage("记忆引擎", "已启动", QSystemTrayIcon.Information, 2000)
+        else:
+            self._append_log("[Memory] 启动失败：未初始化")
+
+    def _tray_generate_diary(self) -> None:
+        """托盘：立即生成今日复盘"""
+        from datetime import datetime
+        from daily_diary import build_diary_prompt
+        if not self.memory_engine_mgr:
+            return
+        self._show_from_tray()
+        try:
+            db = self.memory_engine_mgr.db
+            target = datetime.now()
+            sys_p, user_p = build_diary_prompt(db, target)
+            # 写一个占位文件 + 调 LLM (使用现有的 LLM 后端)
+            self._generate_diary_async(target, sys_p, user_p)
+        except Exception as e:
+            self._append_log(f"[Memory] 复盘生成失败: {e}")
+
+    def _generate_diary_async(self, target, sys_p, user_p) -> None:
+        """调 LLM 生成日记 (交给 context_agent._agent 处理)"""
+        from PySide6.QtCore import QThread, Signal
+        from datetime import datetime
+
+        class _DiaryWorker(QThread):
+            done = Signal(str)
+
+            def __init__(self, agent_backend, sys_p, user_p, date_str, out_dir):
+                super().__init__()
+                self.agent_backend = agent_backend
+                self.sys_p = sys_p
+                self.user_p = user_p
+                self.date_str = date_str
+                self.out_dir = out_dir
+
+            def run(self):
+                try:
+                    txt = self.agent_backend.chat(
+                        messages=[
+                            {"role": "system", "content": self.sys_p},
+                            {"role": "user", "content": self.user_p},
+                        ],
+                        timeout=60,
+                    )
+                    # 写入文件
+                    out_path = self.out_dir / f"{self.date_str}.md"
+                    out_path.write_text(txt or "（LLM 未返回内容）", encoding="utf-8")
+                    self.done.emit(str(out_path))
+                except Exception as e:
+                    self.done.emit(f"ERROR: {e}")
+
+        try:
+            out_dir = USER_DATA_DIR / "diary"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            date_str = target.strftime("%Y-%m-%d")
+            backend = self.context_tab._agent._backend if hasattr(self, "context_tab") else None
+            if not backend:
+                self._append_log("[Memory] LLM 后端未就绪")
+                return
+            self._diary_worker = _DiaryWorker(backend, sys_p, user_p, date_str, out_dir)
+            self._diary_worker.done.connect(self._on_diary_done)
+            self._diary_worker.start()
+            self._append_log(f"[Memory] 复盘生成中... ({date_str})")
+        except Exception as e:
+            self._append_log(f"[Memory] 启动复盘 worker 失败: {e}")
+
+    def _on_diary_done(self, result: str) -> None:
+        """复盘生成完成"""
+        if result.startswith("ERROR:"):
+            self._append_log(f"[Memory] 复盘失败: {result}")
+            return
+        self._append_log(f"[Memory] ✅ 复盘已生成: {result}")
+        # 推气泡
+        if hasattr(self, "context_tab") and self.context_tab:
+            from context_toast import ToastIntent
+            intent = ToastIntent(
+                intent="📝 复盘完成",
+                message=f"已写入 {Path(result).name}",
+                suggested_action="open_diary",
+                action_param=result,
+            )
+            self.context_tab._toast_manager.show_toast(intent)
 
     # ---- 窗口状态持久化 ----
     def _window_state_path(self) -> Path:
