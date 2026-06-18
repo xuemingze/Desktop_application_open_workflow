@@ -21,7 +21,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QCheckBox, QPushButton,
     QLabel, QListWidget, QListWidgetItem, QLineEdit, QTextEdit, QSpinBox,
-    QFormLayout, QTabWidget, QFileDialog, QMessageBox, QComboBox,
+    QFormLayout, QTabWidget, QFileDialog, QMessageBox, QComboBox, QSizePolicy,
 )
 
 from context_sensor import ContextSensorManager, ContextCapsule
@@ -418,6 +418,8 @@ class ContextTab(QWidget):
         """主动嗅探面板——用户档案 + 每日次数 + 调度状态"""
         w = QWidget()
         layout = QVBoxLayout(w)
+        layout.setContentsMargins(5, 5, 5, 5)
+        w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
         # 顶部：开关
         top = QHBoxLayout()
@@ -431,6 +433,7 @@ class ContextTab(QWidget):
         # 每日次数
         count_gb = QGroupBox(t("ctx_daily_count"))
         count_gb.setFont(QFont("", 10, QFont.Bold))
+        count_gb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         cv = QFormLayout(count_gb)
         cv.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.daily_count_spin = QSpinBox()
@@ -448,6 +451,7 @@ class ContextTab(QWidget):
         # 用户档案
         profile_gb = QGroupBox(t("ctx_profile_gb"))
         profile_gb.setFont(QFont("", 10, QFont.Bold))
+        profile_gb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         pv = QFormLayout(profile_gb)
         pv.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.profile_hobbies = QLineEdit()
@@ -489,6 +493,7 @@ class ContextTab(QWidget):
         # 历史问题
         history_gb = QGroupBox(t("ctx_history_gb"))
         history_gb.setFont(QFont("", 10, QFont.Bold))
+        history_gb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         hv = QVBoxLayout(history_gb)
         self.proactive_history_view = QListWidget()
         self.proactive_history_view.setMaximumHeight(150)
