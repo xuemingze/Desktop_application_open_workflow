@@ -21,13 +21,17 @@
 - 🔗 **Per-shortcut launch binding**: Each shortcut can bind a dedicated launch mode + coordinates, persisted to `shortcut_meta.json`
 - 📍 **Coordinate-capture click**: Win+D to show clean desktop → multi-scale image match → simulate mouse double-click → restore foreground window
 - 🔄 **Workflow system**: Multi-step task orchestration, supports image template match, key press, coord click, wait, text input
-- 🧠 **AI Awareness**: Local Ollama model integration; selection translation, academic explanation, proactive interaction; no MCP or token required
+- 🧠 **AI Awareness**: Local Ollama/minimax model integration; selection translation, academic explanation, proactive interaction; no MCP or token required
 - 🤖 **MCP integration**: Standard Model Context Protocol Server, callable from any AI client
 - 🗂️ **Data directory**: Workflows, configs, and templates centralized under `~/桌面自动化助手/`
 - ⚙️ **Tools → System Settings**: Auto-start, shortcut management, log toggle, MCP switch
 - 🧩 **System tray**: Can minimize to background tray
 - 🔒 **Privacy & security**: Process blacklist (password managers / SSH keys etc.) physically blocks at sensor layer
 - 🌐 **i18n**: Switch between Chinese and English in Tools tab
+- 🕐 **Temporal Memory Engine (Phase A)**: Background samples foreground window every 30s → SQLite WAL persistence → monthly tables → auto-segment [IDLE] after 3min inactivity → deep suspend after 30min for power saving → daily diary reminder bubble → AI generates Markdown diary
+  - App categorization: Development / SysAdmin / Communication / Browser / Office / Design / Entertainment / Other (user-editable JSON)
+  - Dual-thread architecture: MainPoll (30s sampling + state merge) + IdleWatcher (5s ultra-low-cost keyboard/mouse sniff, wakes main thread)
+  - Tray menu: Start / Pause 1hr / Pause until tomorrow 9am / Generate diary now
 
 ---
 
