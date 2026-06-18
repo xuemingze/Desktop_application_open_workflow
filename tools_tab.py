@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QGroupBox, QTextEdit, QFrame, QScrollArea, QCheckBox, QMessageBox, QComboBox
 )
+from i18n import t
 
 # 复用父项目的运行时目录解析
 try:
