@@ -452,6 +452,14 @@ def build_chat_system_prompt(web_enabled: Optional[bool] = None) -> str:
 - 用户说"列出工作流"/"看看工作流" → 用 list_workflows
 - 用户说"列出应用"/"桌面有啥" → 用 list_shortcuts
 - 当前联网开关是：{web_state}。不要和这个状态相矛盾。
+
+【search_local_files 多结果时如何选择】
+搜索结果可能返回多条，AI 必须主动选择，不要让用户去选：
+1. 优先选择【不在 backups 文件夹里】的路径（项目主目录的文件更可能是最新版本）
+2. 如果多条都不在 backups，优先选 date_modified 最近的那条
+3. 如果所有结果都在 backups 里，选最新的那个（快照文件名里带日期时间的更近）
+4. **绝对不要**列出所有结果让用户选——这是 AI 的职责
+5. 只在明显不同用途的结果之间（比如同名但不同目录）才需要提及犹豫原因
 """
 
 
