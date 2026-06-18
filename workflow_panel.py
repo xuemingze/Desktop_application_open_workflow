@@ -181,12 +181,12 @@ class StepExecutor:
             screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_RGB2GRAY)
             tpl_bgr = cv2.imdecode(np.fromfile(template, dtype=np.uint8), cv2.IMREAD_COLOR)
             if tpl_bgr is None:
-                raise RuntimeError(f"无法读取模板")
+                raise RuntimeError(t("wf_err_template_read"))
             tpl_gray = cv2.cvtColor(tpl_bgr, cv2.COLOR_BGR2GRAY)
             th, tw = tpl_gray.shape
             sh, sw = screen_gray.shape
             if tw > sw or th > sh:
-                raise RuntimeError("模板大于屏幕")
+                raise RuntimeError(t("wf_err_template_too_large"))
             best_overall = 0.0
             best_pos = None
             best_scale = 1.0
@@ -1161,7 +1161,7 @@ class WorkflowEditor(QWidget):
         # 1. 检查模板路径
         template_path = self.image_path_edit.text().strip()
         if not template_path:
-            self.capture_status.setText("⚠️ 请先输入或选择模板图片")
+            self.capture_status.setText(t("wf_capture_hint"))
             return
         template_abs = str(Path(template_path).resolve())
         if not Path(template_abs).exists():
@@ -1172,9 +1172,9 @@ class WorkflowEditor(QWidget):
         if self.show_desktop_chk.isChecked():
             pyautogui.hotkey('win', 'd')
             time.sleep(0.5)
-            self.capture_status.setText("已按 Win+D,正在匹配...")
+            self.capture_status.setText(t("wf_win_d_waiting"))
         else:
-            self.capture_status.setText("正在截图匹配...")
+            self.capture_status.setText(t("wf_matching"))
 
         # 3. 截全屏
         screen = pyautogui.screenshot()
@@ -1191,12 +1191,12 @@ class WorkflowEditor(QWidget):
             # cv2.imdecode 支持非 ASCII 路径
             tpl_bgr = cv2.imdecode(np.fromfile(template_abs, dtype=np.uint8), cv2.IMREAD_COLOR)
             if tpl_bgr is None:
-                raise RuntimeError(f"无法读取模板: {template_abs}")
+                raise RuntimeError(t("wf_err_template_not_found", template_abs=template_abs))
             tpl_gray = cv2.cvtColor(tpl_bgr, cv2.COLOR_BGR2GRAY)
             th, tw = tpl_gray.shape
             sh, sw = screen_gray.shape
             if tw > sw or th > sh:
-                raise RuntimeError("模板大于屏幕")
+                raise RuntimeError(t("wf_err_template_too_large"))
 
             # 多尺度匹配
             best_overall = 0.0
@@ -1220,7 +1220,7 @@ class WorkflowEditor(QWidget):
                 self.capture_status.setText(t("wf_match_found", cx=cx, cy=cy, conf=best_overall))
                 matched = True
             else:
-                self.capture_status.setText(f"⚠️ 未匹配,置信度={best_overall:.2f}<{confidence_thresh}")
+                self.capture_status.setText(t("wf_match_failed", best_overall=best_overall, confidence_thresh=confidence_thresh))
                 return
         except ImportError:
             # OpenCV 不可用,走 PIL 兜底
@@ -1231,7 +1231,7 @@ class WorkflowEditor(QWidget):
                 self.capture_status.setText(t("wf_pil_found", cx=cx, cy=cy))
                 matched = True
             else:
-                self.capture_status.setText("⚠️ PIL 也未匹配")
+                self.capture_status.setText(t("wf_match_failed_pil"))
                 return
         except Exception as e:
             self.capture_status.setText(t("wf_match_error", e=e))
@@ -1268,7 +1268,7 @@ class WorkflowEditor(QWidget):
         main_win = self.window()
         # 隐藏主窗口,让用户看清目标位置
         main_win.hide()
-        self.capture_status.setText("3 秒后捕捉坐标,请将鼠标移到目标位置...")
+        self.capture_status.setText(t("wf_countdown_msg", n=3))
         from PySide6.QtCore import QTimer
         QTimer.singleShot(300, lambda: self._capture_countdown(3))
 
@@ -1284,7 +1284,7 @@ class WorkflowEditor(QWidget):
             main_win = self.window()
             main_win.show()
             main_win.raise_()
-            self._append_log(f"捕捉到坐标: ({x}, {y})")
+            self._append_log(t("wf_coord_captured", x=x, y=y))
             return
         self.capture_status.setText(t("wf_capture_countdown", n=n))
         from PySide6.QtCore import QTimer
@@ -1314,7 +1314,7 @@ class WorkflowEditor(QWidget):
         self._append_log(t("wf_screenshot_saved", out=out))
 
     def _browse_template(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择模板图片", "samples", "PNG (*.png)")
+        path, _ = QFileDialog.getOpenFileName(self, t("wf_dlg_title"), "samples", "PNG (*.png)")
         if path:
             self.image_path_edit.setText(path)
             self._update_image_preview()
@@ -1341,7 +1341,7 @@ class WorkflowEditor(QWidget):
             self.image_preview.setText("(无预览)")
 
     def _new_workflow(self):
-        name, ok = QInputDialog.getText(self, "新建工作流", "工作流名称:")
+        name, ok = QInputDialog.getText(self, t("wf_dlg_new_workflow_title"), t("wf_dlg_new_workflow_label"))
         if ok and name.strip():
             name = name.strip()
             if name in self.workflows:
@@ -1473,7 +1473,7 @@ class WorkflowEditor(QWidget):
             self._append_log(t("wf_save_failed_no_wf"))
             return
         if wf_name not in self.workflows:
-            self._append_log(f"⚠️ 保存失败: 工作流 '{wf_name}' 不在 self.workflows")
+            self._append_log(t("wf_log_save_failed", wf_name=wf_name))
             return
         self.workflows[wf_name]["steps"] = list(self._current_steps)
         self._save_to_file()
@@ -1501,7 +1501,7 @@ class WorkflowEditor(QWidget):
         if self.worker and self.worker.isRunning():
             self.worker.cancel()
             self.worker.wait(2000)
-            self._on_worker_log("已请求停止")
+            self._on_worker_log(t("wf_log_stop_requested"))
         self.btn_run_wf.setEnabled(True)
         self.btn_stop_wf.setEnabled(False)
 
@@ -1520,9 +1520,9 @@ class WorkflowEditor(QWidget):
         # 完成信息走 toast
         wf_name = getattr(self.worker, 'workflow', {}).get('name', '工作流') if self.worker else '工作流'
         if ok:
-            self._fire_toast(f"✅ {wf_name} 执行完成 ({msg})", intent_name=f"工作流完成: {wf_name}")
+            self._fire_toast(t("wf_toast_done", wf_name=wf_name, msg=msg), intent_name=t("wf_toast_intent_done"))
         else:
-            self._fire_toast(f"❌ {wf_name} 执行失败 ({msg})", intent_name=f"工作流失败: {wf_name}")
+            self._fire_toast(t("wf_toast_failed", wf_name=wf_name, msg=msg), intent_name=t("wf_toast_intent_failed"))
 
     def _push_workflow_toast(self, msg: str):
         """过滤并推送重要的执行日志到气泡。"""
@@ -1552,7 +1552,7 @@ class WorkflowEditor(QWidget):
         )
         if not is_important:
             return
-        self._fire_toast(text, intent_name='工作流进度')
+        self._fire_toast(text, intent_name=t("wf_toast_intent_running"))
 
     def _fire_toast(self, message: str, intent_name: str = '工作流'):
         """推送消息到 ContextTab 的 ToastManager。主窗口可见时也会显示，

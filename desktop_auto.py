@@ -2074,11 +2074,9 @@ class MainWindow(QMainWindow):
 
             def run(self):
                 try:
-                    txt = self.agent_backend.chat(
-                        messages=[
-                            {"role": "system", "content": self.sys_p},
-                            {"role": "user", "content": self.user_p},
-                        ],
+                    txt = self.agent_backend.infer(
+                        system_prompt=self.sys_p,
+                        user_text=self.user_p,
                         timeout=60,
                     )
                     # 写入文件
