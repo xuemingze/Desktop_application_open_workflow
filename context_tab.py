@@ -19,7 +19,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal, QTimer, QThread
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QCheckBox, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QCheckBox, QPushButton,
     QLabel, QListWidget, QListWidgetItem, QLineEdit, QTextEdit, QSpinBox,
     QFormLayout, QTabWidget, QFileDialog, QMessageBox, QComboBox, QSizePolicy,
 )
@@ -452,41 +452,48 @@ class ContextTab(QWidget):
         profile_gb = QGroupBox(t("ctx_profile_gb"))
         profile_gb.setFont(QFont("", 10, QFont.Bold))
         profile_gb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        pv = QFormLayout(profile_gb)
-        pv.setFieldGrowthPolicy(QFormLayout.FieldsStayAtSizeHint)
-        self.profile_hobbies = QLineEdit()
-        self.profile_hobbies.setPlaceholderText(t("ctx_placeholder_hobbies"))
-        self.profile_hobbies.setMinimumWidth(400)
+        pv = QGridLayout(profile_gb)
+        pv.setHorizontalSpacing(10)
+        pv.setVerticalSpacing(6)
+        pv.setColumnStretch(0, 0)  # label column: don't stretch
+        pv.setColumnStretch(1, 1)  # input column: stretch to fill
+        label_align = Qt.AlignRight | Qt.AlignVCenter
+
+        def _make_field(placeholder_key: str) -> QLineEdit:
+            edit = QLineEdit()
+            edit.setPlaceholderText(t(placeholder_key))
+            edit.setMinimumWidth(400)
+            edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            return edit
+
+        self.profile_hobbies = _make_field("ctx_placeholder_hobbies")
         self.profile_hobbies.textChanged.connect(self._on_profile_change)
-        pv.addRow(t("ctx_profile_hobbies"), self.profile_hobbies)
+        pv.addWidget(QLabel(t("ctx_profile_hobbies")), 0, 0, label_align)
+        pv.addWidget(self.profile_hobbies, 0, 1)
 
-        self.profile_interests = QLineEdit()
-        self.profile_interests.setPlaceholderText(t("ctx_placeholder_interests"))
-        self.profile_interests.setMinimumWidth(400)
+        self.profile_interests = _make_field("ctx_placeholder_interests")
         self.profile_interests.textChanged.connect(self._on_profile_change)
-        pv.addRow(t("ctx_profile_interests"), self.profile_interests)
+        pv.addWidget(QLabel(t("ctx_profile_interests")), 1, 0, label_align)
+        pv.addWidget(self.profile_interests, 1, 1)
 
-        self.profile_learning = QLineEdit()
-        self.profile_learning.setPlaceholderText(t("ctx_placeholder_learning"))
-        self.profile_learning.setMinimumWidth(400)
+        self.profile_learning = _make_field("ctx_placeholder_learning")
         self.profile_learning.textChanged.connect(self._on_profile_change)
-        pv.addRow(t("ctx_profile_learning"), self.profile_learning)
+        pv.addWidget(QLabel(t("ctx_profile_learning")), 2, 0, label_align)
+        pv.addWidget(self.profile_learning, 2, 1)
 
-        self.profile_work = QLineEdit()
-        self.profile_work.setPlaceholderText(t("ctx_placeholder_work"))
-        self.profile_work.setMinimumWidth(400)
+        self.profile_work = _make_field("ctx_placeholder_work")
         self.profile_work.textChanged.connect(self._on_profile_change)
-        pv.addRow(t("ctx_profile_work"), self.profile_work)
+        pv.addWidget(QLabel(t("ctx_profile_work")), 3, 0, label_align)
+        pv.addWidget(self.profile_work, 3, 1)
 
-        self.profile_keywords = QLineEdit()
-        self.profile_keywords.setPlaceholderText(t("ctx_placeholder_keywords"))
-        self.profile_keywords.setMinimumWidth(400)
+        self.profile_keywords = _make_field("ctx_placeholder_keywords")
         self.profile_keywords.textChanged.connect(self._on_profile_change)
-        pv.addRow(t("ctx_profile_keywords"), self.profile_keywords)
+        pv.addWidget(QLabel(t("ctx_profile_keywords")), 4, 0, label_align)
+        pv.addWidget(self.profile_keywords, 4, 1)
 
         kw_hint = QLabel(t("ctx_kw_hint"))
         kw_hint.setStyleSheet("color: #888; font-size: 11px;")
-        pv.addRow("", kw_hint)
+        pv.addWidget(kw_hint, 5, 0, 1, 2)
 
         layout.addWidget(profile_gb)
 
