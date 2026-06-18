@@ -1446,7 +1446,7 @@ class MainWindow(QMainWindow):
         bv = QVBoxLayout(bind_box)
         bv.setContentsMargins(8, 4, 8, 6)
         bv.setSpacing(4)
-        self.lbl_launch_mode_hint = QLabel("未选择快捷方式")
+        self.lbl_launch_mode_hint = QLabel(t("ql_info_selected"))
         self.lbl_launch_mode_hint.setStyleSheet("color: #2563eb; font-size: 11px; padding: 2px 4px;")
         self.lbl_launch_mode_hint.setWordWrap(True)
         bv.addWidget(self.lbl_launch_mode_hint)
