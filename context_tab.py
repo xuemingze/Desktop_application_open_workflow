@@ -481,6 +481,7 @@ class ContextTab(QWidget):
         kw_hint.setStyleSheet("color: #888; font-size: 11px;")
         pv.addRow("", kw_hint)
 
+        profile_gb.setFixedHeight(profile_gb.sizeHint().height() * 2)
         layout.addWidget(profile_gb)
 
         # 历史问题
