@@ -194,8 +194,8 @@ class ContextTab(QWidget):
         # === Tab 5: 主动嗅探 ===
         sub.addTab(self._build_proactive_panel(), t("ctx_tab_proactive"))
 
-        # === Tab 6: 活动日志 ===
-        sub.addTab(self._build_log_panel(), t("ctx_tab_log"))
+        # === Tab 6: 记忆引擎 ===
+        sub.addTab(self._build_memory_engine_panel(), t("ctx_tab_memory"))
 
         root.addWidget(sub, stretch=1)
 
@@ -516,25 +516,143 @@ class ContextTab(QWidget):
         layout.addStretch()
         return w
 
-    def _build_log_panel(self) -> QWidget:
-        """实时活动日志面板"""
+    def _build_memory_engine_panel(self) -> QWidget:
+        """记忆引擎面板 — Module A(基础收集) / B(每日复盘) / C(任务提醒) / D(专属日志)"""
         w = QWidget()
         layout = QVBoxLayout(w)
+        layout.setContentsMargins(5, 5, 5, 5)
 
-        row = QHBoxLayout()
-        btn_clear = QPushButton("🧹 清空")
-        btn_clear.clicked.connect(lambda: self.log_view.clear())
-        row.addWidget(btn_clear)
-        row.addStretch()
+        # ============================================================
+        # Module A: 基础记忆收集
+        # ============================================================
+        mem_gb = QGroupBox(t("ctx_mem_master"))
+        mem_gb.setFont(QFont("", 10, QFont.Bold))
+        mag = QGridLayout(mem_gb)
 
-        self.log_count_label = QLabel("0 条记录")
-        row.addWidget(self.log_count_label)
-        layout.addLayout(row)
+        # 主开关
+        self.mem_master_switch = QCheckBox(t("ctx_mem_master_switch"))
+        self.mem_master_switch.setFont(QFont("", 10, QFont.Bold))
+        self.mem_master_switch.stateChanged.connect(self._on_mem_master_toggle)
+        mag.addWidget(self.mem_master_switch, 0, 0, 1, 2)
 
-        self.log_view = QTextEdit()
-        self.log_view.setReadOnly(True)
-        self.log_view.setMaximumHeight(400)
-        layout.addWidget(self.log_view)
+        # 状态指示
+        self.mem_status_label = QLabel(t("ctx_mem_status_off"))
+        self.mem_status_label.setStyleSheet("color: #c00;")
+        mag.addWidget(self.mem_status_label, 1, 0, 1, 1)
+
+        # 暂停/恢复按钮
+        btn_pause_1h = QPushButton(t("ctx_mem_pause_1h"))
+        btn_pause_1h.clicked.connect(lambda: self._on_mem_pause(3600))
+        mag.addWidget(btn_pause_1h, 1, 1)
+
+        btn_resume = QPushButton(t("ctx_mem_resume"))
+        btn_resume.clicked.connect(self._on_mem_resume)
+        mag.addWidget(btn_resume, 1, 2)
+
+        # 采样间隔
+        mag.addWidget(QLabel(t("ctx_mem_interval")), 2, 0)
+        self.mem_interval_spin = QSpinBox()
+        self.mem_interval_spin.setRange(1, 60)
+        self.mem_interval_spin.setValue(5)
+        self.mem_interval_spin.setSuffix(" " + t("ctx_mem_interval_unit"))
+        self.mem_interval_spin.valueChanged.connect(self._on_mem_interval_change)
+        mag.addWidget(self.mem_interval_spin, 2, 1, 1, 2)
+
+        layout.addWidget(mem_gb)
+
+        # ============================================================
+        # Module B: AI 每日复盘
+        # ============================================================
+        diary_gb = QGroupBox(t("ctx_diary_gb"))
+        diary_gb.setFont(QFont("", 10, QFont.Bold))
+        dag = QGridLayout(diary_gb)
+
+        # 开关
+        self.diary_enable_chk = QCheckBox(t("ctx_diary_enable"))
+        cfg = self._get_config()
+        self.diary_enable_chk.setChecked(cfg.get("diary_enabled", True))
+        self.diary_enable_chk.stateChanged.connect(self._on_diary_enable_toggle)
+        dag.addWidget(self.diary_enable_chk, 0, 0, 1, 3)
+
+        # 提醒时间
+        dag.addWidget(QLabel(t("ctx_diary_time")), 1, 0)
+        self.diary_hour_spin = QSpinBox()
+        self.diary_hour_spin.setRange(0, 23)
+        self.diary_hour_spin.setValue(int(cfg.get("diary_first_hour", 22)))
+        self.diary_hour_spin.setSuffix(":00")
+        self.diary_hour_spin.valueChanged.connect(self._on_diary_hour_change)
+        dag.addWidget(self.diary_hour_spin, 1, 1)
+
+        # 每日最多次数
+        dag.addWidget(QLabel(t("ctx_diary_max")), 1, 2)
+        self.diary_max_spin = QSpinBox()
+        self.diary_max_spin.setRange(1, 10)
+        self.diary_max_spin.setValue(int(cfg.get("diary_max_prompts", 2)))
+        self.diary_max_spin.setSuffix(" " + t("ctx_diary_times"))
+        self.diary_max_spin.valueChanged.connect(self._on_diary_max_change)
+        dag.addWidget(self.diary_max_spin, 1, 3)
+
+        # 按钮行
+        btn_row_d = QHBoxLayout()
+        btn_diary_now = QPushButton(t("ctx_diary_now"))
+        btn_diary_now.clicked.connect(self._on_diary_generate_now)
+        btn_row_d.addWidget(btn_diary_now)
+
+        btn_diary_dir = QPushButton(t("ctx_diary_open_dir"))
+        btn_diary_dir.clicked.connect(self._on_diary_open_dir)
+        btn_row_d.addWidget(btn_diary_dir)
+        btn_row_d.addStretch()
+        dag.addLayout(btn_row_d, 2, 0, 1, 4)
+
+        layout.addWidget(diary_gb)
+
+        # ============================================================
+        # Module C: AI 任务与主动提醒 (Phase D 占位)
+        # ============================================================
+        remind_gb = QGroupBox(t("ctx_remind_gb"))
+        remind_gb.setFont(QFont("", 10, QFont.Bold))
+        rag = QVBoxLayout(remind_gb)
+
+        self.remind_auto_chk = QCheckBox(t("ctx_remind_auto_switch"))
+        self.remind_auto_chk.setChecked(cfg.get("ai_reminder_auto", False))
+        self.remind_auto_chk.stateChanged.connect(self._on_remind_auto_toggle)
+        rag.addWidget(self.remind_auto_chk)
+
+        btn_pending = QPushButton(t("ctx_remind_view_pending"))
+        btn_pending.clicked.connect(self._on_remind_view_pending)
+        rag.addWidget(btn_pending)
+
+        layout.addWidget(remind_gb)
+
+        # ============================================================
+        # Module D: 记忆引擎专属日志
+        # ============================================================
+        log_gb = QGroupBox(t("ctx_mem_log_gb"))
+        log_gb.setFont(QFont("", 10, QFont.Bold))
+        log_layout = QVBoxLayout(log_gb)
+
+        log_row = QHBoxLayout()
+        btn_log_clear = QPushButton(t("ctx_mem_log_clear"))
+        btn_log_clear.clicked.connect(self._on_mem_log_clear)
+        log_row.addWidget(btn_log_clear)
+        log_row.addStretch()
+        self.mem_log_count_label = QLabel(t("ctx_mem_log_count").format(n=0))
+        log_row.addWidget(self.mem_log_count_label)
+        log_layout.addLayout(log_row)
+
+        self.mem_log_view = QTextEdit()
+        self.mem_log_view.setReadOnly(True)
+        self.mem_log_view.setMaximumHeight(200)
+        log_layout.addWidget(self.mem_log_view)
+
+        layout.addWidget(log_gb)
+
+        # 连接 log_bus，Module D 只显示 [MEM] 标签的记录
+        try:
+            from log_bus import log_bus
+            self._mem_log_conn = log_bus.connect(self._on_mem_log_bus)
+        except Exception:
+            pass
 
         layout.addStretch()
         return w
@@ -558,6 +676,124 @@ class ContextTab(QWidget):
             self.status_label.setText(t("ctx_status_stopped"))
             self.status_label.setStyleSheet("color: #888;")
             self._append_log("[系统] 上下文感知已停止")
+
+    # ---- 记忆引擎事件 (Module A) ----
+    def _on_mem_master_toggle(self, checked: bool) -> None:
+        if not hasattr(self._agent, 'memory_engine_mgr'):
+            return
+        if checked:
+            self._agent.memory_start()
+            self.mem_status_label.setText(t("ctx_mem_status_on"))
+            self.mem_status_label.setStyleSheet("color: #0a0;")
+            self._append_log("[MEM] 记忆引擎已启动")
+        else:
+            if self._agent.memory_engine_mgr:
+                self._agent.memory_engine_mgr.stop()
+            self.mem_status_label.setText(t("ctx_mem_status_off"))
+            self.mem_status_label.setStyleSheet("color: #c00;")
+            self._append_log("[MEM] 记忆引擎已停止")
+
+    def _on_mem_pause(self, seconds: int) -> None:
+        if hasattr(self._agent, 'memory_pause'):
+            self._agent.memory_pause(seconds)
+            self._append_log(f"[MEM] 已暂停 {seconds // 3600} 小时")
+
+    def _on_mem_resume(self) -> None:
+        if hasattr(self._agent, 'memory_start'):
+            self._agent.memory_start()
+            self._append_log("[MEM] 记忆引擎已恢复")
+
+    def _on_mem_interval_change(self) -> None:
+        interval = self.mem_interval_spin.value()
+        cfg = self._get_config()
+        cfg['memory_interval_sec'] = interval
+        self._save_config(cfg)
+        if hasattr(self._agent, 'memory_engine_mgr') and self._agent.memory_engine_mgr:
+            self._agent.memory_engine_mgr.set_interval(interval)
+        self._append_log(f"[MEM] 采样间隔已更新为 {interval} 秒")
+
+    def _on_mem_log_bus(self, msg: str) -> None:
+        """Module D 日志: 只显示 [MEM] 标签的记录"""
+        if not hasattr(self, 'mem_log_view'):
+            return
+        tag = "[MEM]"
+        if tag not in msg:
+            return
+        from datetime import datetime
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.mem_log_view.append(f"[{ts}] {msg}")
+        # 更新计数
+        count = self.mem_log_view.document().blockCount()
+        if hasattr(self, 'mem_log_count_label'):
+            self.mem_log_count_label.setText(t("ctx_mem_log_count").format(n=count - 1))
+        # 限制行数
+        if count > 300:
+            cursor = self.mem_log_view.textCursor()
+            cursor.movePosition(cursor.Start)
+            cursor.movePosition(cursor.Down, cursor.KeepAnchor, 100)
+            cursor.removeSelectedText()
+            cursor.deleteChar()
+
+    def _on_mem_log_clear(self) -> None:
+        self.mem_log_view.clear()
+        if hasattr(self, 'mem_log_count_label'):
+            self.mem_log_count_label.setText(t("ctx_mem_log_count").format(n=0))
+
+    # ---- 每日复盘事件 (Module B) ----
+    def _on_diary_enable_toggle(self, checked: bool) -> None:
+        cfg = self._get_config()
+        cfg['diary_enabled'] = bool(checked)
+        self._save_config(cfg)
+        self._append_log(f"[MEM] 每日复盘 {'已启用' if checked else '已禁用'}")
+
+    def _on_diary_hour_change(self) -> None:
+        hour = self.diary_hour_spin.value()
+        cfg = self._get_config()
+        cfg['diary_first_hour'] = hour
+        self._save_config(cfg)
+        self._append_log(f"[MEM] 复盘提醒时间已更新为 {hour}:00")
+
+    def _on_diary_max_change(self) -> None:
+        mx = self.diary_max_spin.value()
+        cfg = self._get_config()
+        cfg['diary_max_prompts'] = mx
+        self._save_config(cfg)
+        self._append_log(f"[MEM] 每日复盘次数已更新为 {mx} 次")
+
+    def _on_diary_generate_now(self) -> None:
+        from daily_diary import build_diary_prompt
+        if hasattr(self._agent, 'memory_engine_mgr') and self._agent.memory_engine_mgr:
+            db = self._agent.memory_engine_mgr.db
+            sys_p, user_p = build_diary_prompt(db)
+            self._append_log(f"[MEM] 复盘生成请求已提交 ({len(sys_p)} char prompt)")
+            # 触发 toast 通知 AI 生成复盘
+            intent = ToastIntent(
+                intent="📝 立即复盘",
+                message="已触发立即复盘，请稍候...",
+                suggested_action="generate_diary",
+                action_param=None,
+            )
+            self._toast_manager.show_toast(intent)
+            self.toast_broadcast.emit(intent)
+
+    def _on_diary_open_dir(self) -> None:
+        from pathlib import Path
+        mem_dir = Path('memory')
+        if not mem_dir.exists():
+            mem_dir.mkdir(parents=True, exist_ok=True)
+        import subprocess
+        subprocess.Popen(['explorer', str(mem_dir.resolve())])
+        self._append_log(f"[MEM] 已打开日记目录: {mem_dir.resolve()}")
+
+    # ---- 任务提醒事件 (Module C) ----
+    def _on_remind_auto_toggle(self, checked: bool) -> None:
+        cfg = self._get_config()
+        cfg['ai_reminder_auto'] = bool(checked)
+        self._save_config(cfg)
+        self._append_log(f"[MEM] AI 自动创建提醒 {'已启用' if checked else '已禁用'}")
+
+    def _on_remind_view_pending(self) -> None:
+        self._append_log("[MEM] Phase D 挂起提醒查看器：功能开发中...")
 
     # ---- 胶囊事件 ----
     def _on_capsule(self, capsule: ContextCapsule):
