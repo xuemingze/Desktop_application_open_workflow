@@ -449,35 +449,35 @@ class ContextTab(QWidget):
         layout.addWidget(count_gb)
 
         # 用户档案
-        profile_gb = QGroupBox("用户档案（驱动话题主题）")
+        profile_gb = QGroupBox(t("ctx_profile_gb"))
         pv = QFormLayout(profile_gb)
 
         self.profile_hobbies = QLineEdit()
-        self.profile_hobbies.setPlaceholderText("例如：爬山、摄影、围棋")
+        self.profile_hobbies.setPlaceholderText(t("ctx_placeholder_hobbies"))
         self.profile_hobbies.textChanged.connect(self._on_profile_change)
-        pv.addRow("爱好:", self.profile_hobbies)
+        pv.addRow(t("ctx_profile_hobbies"), self.profile_hobbies)
 
         self.profile_interests = QLineEdit()
-        self.profile_interests.setPlaceholderText("例如：AI、加密货币、独立游戏")
+        self.profile_interests.setPlaceholderText(t("ctx_placeholder_interests"))
         self.profile_interests.textChanged.connect(self._on_profile_change)
-        pv.addRow("兴趣:", self.profile_interests)
+        pv.addRow(t("ctx_profile_interests"), self.profile_interests)
 
         self.profile_learning = QLineEdit()
-        self.profile_learning.setPlaceholderText("例如：Rust 编程、系统设计")
+        self.profile_learning.setPlaceholderText(t("ctx_placeholder_learning"))
         self.profile_learning.textChanged.connect(self._on_profile_change)
-        pv.addRow("学习:", self.profile_learning)
+        pv.addRow(t("ctx_profile_learning"), self.profile_learning)
 
         self.profile_work = QLineEdit()
-        self.profile_work.setPlaceholderText("例如：桌面自动化、Python 后端")
+        self.profile_work.setPlaceholderText(t("ctx_placeholder_work"))
         self.profile_work.textChanged.connect(self._on_profile_change)
-        pv.addRow("工作:", self.profile_work)
+        pv.addRow(t("ctx_profile_work"), self.profile_work)
 
         self.profile_keywords = QLineEdit()
-        self.profile_keywords.setPlaceholderText("例如：鸣潮,原神,崩坏星穹铁道")
+        self.profile_keywords.setPlaceholderText(t("ctx_placeholder_keywords"))
         self.profile_keywords.textChanged.connect(self._on_profile_change)
-        pv.addRow("行为关键词:", self.profile_keywords)
+        pv.addRow(t("ctx_profile_keywords"), self.profile_keywords)
 
-        kw_hint = QLabel("💡 当检测到窗口/进程名包含这些关键词时，立即推送相关话题（5分钟/次冷却）")
+        kw_hint = QLabel(t("ctx_kw_hint"))
         kw_hint.setStyleSheet("color: #888; font-size: 11px;")
         pv.addRow("", kw_hint)
 
