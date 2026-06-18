@@ -463,6 +463,7 @@ class ContextTab(QWidget):
             edit = QLineEdit()
             edit.setPlaceholderText(t(placeholder_key))
             edit.setMinimumWidth(400)
+            edit.setMinimumHeight(32)
             edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             return edit
 
