@@ -552,6 +552,8 @@ class ToolsTab(QWidget):
         batch_path = Path(tmp_dir) / ("uninstall_desktop_auto_" + str(os.getpid()) + ".bat")
         exe_name = Path(exe_path).name
 
+        # 不要删除快捷栏自添加连接：这些是用户资产，不是程序缓存。
+        # 卸载时先临时保存 custom_apps.json / shortcut_meta.json，清理数据目录后再恢复。
         _t = {
             "exe_name": exe_name,
             "exe_path": exe_path,
@@ -560,6 +562,19 @@ class ToolsTab(QWidget):
         _batch = (
             "@echo off\n"
             "chcp 65001 >nul\n"
+            "set \"PRESERVE_DIR=%%TEMP%%\\desktop_auto_preserve_%%RANDOM%%%%RANDOM%%\"\n"
+            "set \"PRESERVED=0\"\n"
+            "echo \u6b63\u5728\u4fdd\u7559\u5feb\u6377\u680f\u81ea\u6dfb\u52a0\u8fde\u63a5\u914d\u7f6e...\n"
+            'if exist "%(data_dir)s\\custom_apps.json" (\n'
+            "    mkdir \"%%PRESERVE_DIR%%\" 2>nul\n"
+            '    copy /y "%(data_dir)s\\custom_apps.json" "%%PRESERVE_DIR%%\\" >nul\n'
+            "    set \"PRESERVED=1\"\n"
+            ")\n"
+            'if exist "%(data_dir)s\\shortcut_meta.json" (\n'
+            "    mkdir \"%%PRESERVE_DIR%%\" 2>nul\n"
+            '    copy /y "%(data_dir)s\\shortcut_meta.json" "%%PRESERVE_DIR%%\\" >nul\n'
+            "    set \"PRESERVED=1\"\n"
+            ")\n"
             "echo \u6b63\u5728\u7b49\u5f85\u7a0b\u5e8f\u9000\u51fa...\n"
             ":wait_loop\n"
             'tasklist /FI "IMAGENAME eq %(exe_name)s" 2>nul | find /I "%(exe_name)s" >nul\n'
@@ -569,8 +584,14 @@ class ToolsTab(QWidget):
             ")\n"
             "echo \u6b63\u5728\u5220\u9664 exe...\n"
             'del /f /q "%(exe_path)s" 2>nul\n'
-            "echo \u6b63\u5728\u5220\u9664\u7528\u6237\u6570\u636e\u76ee\u5f55...\n"
+            "echo \u6b63\u5728\u5220\u9664\u7a0b\u5e8f\u6570\u636e\u76ee\u5f55...\n"
             'rmdir /s /q "%(data_dir)s" 2>nul\n'
+            "if \"%%PRESERVED%%\"==\"1\" (\n"
+            '    mkdir "%(data_dir)s" 2>nul\n'
+            '    copy /y "%%PRESERVE_DIR%%\\*" "%(data_dir)s\\" >nul\n'
+            "    echo \u5df2\u6062\u590d\u5feb\u6377\u680f\u81ea\u6dfb\u52a0\u8fde\u63a5\u914d\u7f6e custom_apps.json / shortcut_meta.json\n"
+            ")\n"
+            "rmdir /s /q \"%%PRESERVE_DIR%%\" 2>nul\n"
             "echo \u5378\u8f7d\u5b8c\u6210.\n"
             'del "%%~f0"\n'
         ) % _t
