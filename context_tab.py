@@ -569,8 +569,7 @@ class ContextTab(QWidget):
 
         # 开关
         self.diary_enable_chk = QCheckBox(t("ctx_diary_enable"))
-        cfg = self._get_config()
-        self.diary_enable_chk.setChecked(cfg.get("diary_enabled", True))
+        self.diary_enable_chk.setChecked(self._config.get("diary_enabled", True))
         self.diary_enable_chk.stateChanged.connect(self._on_diary_enable_toggle)
         dag.addWidget(self.diary_enable_chk, 0, 0, 1, 3)
 
@@ -578,7 +577,7 @@ class ContextTab(QWidget):
         dag.addWidget(QLabel(t("ctx_diary_time")), 1, 0)
         self.diary_hour_spin = QSpinBox()
         self.diary_hour_spin.setRange(0, 23)
-        self.diary_hour_spin.setValue(int(cfg.get("diary_first_hour", 22)))
+        self.diary_hour_spin.setValue(int(self._config.get("diary_first_hour", 22)))
         self.diary_hour_spin.setSuffix(":00")
         self.diary_hour_spin.valueChanged.connect(self._on_diary_hour_change)
         dag.addWidget(self.diary_hour_spin, 1, 1)
@@ -587,7 +586,7 @@ class ContextTab(QWidget):
         dag.addWidget(QLabel(t("ctx_diary_max")), 1, 2)
         self.diary_max_spin = QSpinBox()
         self.diary_max_spin.setRange(1, 10)
-        self.diary_max_spin.setValue(int(cfg.get("diary_max_prompts", 2)))
+        self.diary_max_spin.setValue(int(self._config.get("diary_max_prompts", 2)))
         self.diary_max_spin.setSuffix(" " + t("ctx_diary_times"))
         self.diary_max_spin.valueChanged.connect(self._on_diary_max_change)
         dag.addWidget(self.diary_max_spin, 1, 3)
@@ -614,7 +613,7 @@ class ContextTab(QWidget):
         rag = QVBoxLayout(remind_gb)
 
         self.remind_auto_chk = QCheckBox(t("ctx_remind_auto_switch"))
-        self.remind_auto_chk.setChecked(cfg.get("ai_reminder_auto", False))
+        self.remind_auto_chk.setChecked(self._config.get("ai_reminder_auto", False))
         self.remind_auto_chk.stateChanged.connect(self._on_remind_auto_toggle)
         rag.addWidget(self.remind_auto_chk)
 
@@ -704,10 +703,8 @@ class ContextTab(QWidget):
             self._append_log("[MEM] 记忆引擎已恢复")
 
     def _on_mem_interval_change(self) -> None:
-        interval = self.mem_interval_spin.value()
-        cfg = self._get_config()
-        cfg['memory_interval_sec'] = interval
-        self._save_config(cfg)
+        self._config['memory_interval_sec'] = self.mem_interval_spin.value()
+        self._save_config()
         if hasattr(self._agent, 'memory_engine_mgr') and self._agent.memory_engine_mgr:
             self._agent.memory_engine_mgr.set_interval(interval)
         self._append_log(f"[MEM] 采样间隔已更新为 {interval} 秒")
@@ -741,23 +738,18 @@ class ContextTab(QWidget):
 
     # ---- 每日复盘事件 (Module B) ----
     def _on_diary_enable_toggle(self, checked: bool) -> None:
-        cfg = self._get_config()
-        cfg['diary_enabled'] = bool(checked)
-        self._save_config(cfg)
+        self._config['diary_enabled'] = bool(checked)
+        self._save_config()
         self._append_log(f"[MEM] 每日复盘 {'已启用' if checked else '已禁用'}")
 
     def _on_diary_hour_change(self) -> None:
-        hour = self.diary_hour_spin.value()
-        cfg = self._get_config()
-        cfg['diary_first_hour'] = hour
-        self._save_config(cfg)
+        self._config['diary_first_hour'] = self.diary_hour_spin.value()
+        self._save_config()
         self._append_log(f"[MEM] 复盘提醒时间已更新为 {hour}:00")
 
     def _on_diary_max_change(self) -> None:
-        mx = self.diary_max_spin.value()
-        cfg = self._get_config()
-        cfg['diary_max_prompts'] = mx
-        self._save_config(cfg)
+        self._config['diary_max_prompts'] = self.diary_max_spin.value()
+        self._save_config()
         self._append_log(f"[MEM] 每日复盘次数已更新为 {mx} 次")
 
     def _on_diary_generate_now(self) -> None:
@@ -787,9 +779,8 @@ class ContextTab(QWidget):
 
     # ---- 任务提醒事件 (Module C) ----
     def _on_remind_auto_toggle(self, checked: bool) -> None:
-        cfg = self._get_config()
-        cfg['ai_reminder_auto'] = bool(checked)
-        self._save_config(cfg)
+        self._config['ai_reminder_auto'] = bool(checked)
+        self._save_config()
         self._append_log(f"[MEM] AI 自动创建提醒 {'已启用' if checked else '已禁用'}")
 
     def _on_remind_view_pending(self) -> None:
