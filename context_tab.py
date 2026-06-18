@@ -451,59 +451,42 @@ class ContextTab(QWidget):
         # 用户档案
         profile_gb = QGroupBox(t("ctx_profile_gb"))
         profile_gb.setFont(QFont("", 10, QFont.Bold))
-        profile_gb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        pv = QGridLayout(profile_gb)
-        pv.setHorizontalSpacing(10)
-        pv.setVerticalSpacing(6)
-        pv.setColumnStretch(0, 0)  # label column: don't stretch
-        pv.setColumnStretch(1, 1)  # input column: stretch to fill
-        label_align = Qt.AlignRight | Qt.AlignVCenter
+        profile_gb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        pv = QFormLayout(profile_gb)
+        pv.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        pv.setVerticalSpacing(8)
 
         def _make_field(placeholder_key: str) -> QLineEdit:
             edit = QLineEdit()
             edit.setPlaceholderText(t(placeholder_key))
             edit.setMinimumWidth(400)
-            edit.setFixedHeight(30)
             edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            edit.setStyleSheet(
-                "QLineEdit {\n"
-                "  padding: 0px 6px;\n"
-                "  font-weight: normal;\n"
-                "  font-size: 12px;\n"
-                "}\n"
-            )
+            edit.setFont(QFont("", 10, QFont.Normal))
             return edit
 
         self.profile_hobbies = _make_field("ctx_placeholder_hobbies")
         self.profile_hobbies.textChanged.connect(self._on_profile_change)
-        pv.addWidget(QLabel(t("ctx_profile_hobbies")), 0, 0, label_align)
-        pv.addWidget(self.profile_hobbies, 0, 1)
+        pv.addRow(t("ctx_profile_hobbies"), self.profile_hobbies)
 
         self.profile_interests = _make_field("ctx_placeholder_interests")
         self.profile_interests.textChanged.connect(self._on_profile_change)
-        pv.addWidget(QLabel(t("ctx_profile_interests")), 1, 0, label_align)
-        pv.addWidget(self.profile_interests, 1, 1)
+        pv.addRow(t("ctx_profile_interests"), self.profile_interests)
 
         self.profile_learning = _make_field("ctx_placeholder_learning")
         self.profile_learning.textChanged.connect(self._on_profile_change)
-        pv.addWidget(QLabel(t("ctx_profile_learning")), 2, 0, label_align)
-        pv.addWidget(self.profile_learning, 2, 1)
+        pv.addRow(t("ctx_profile_learning"), self.profile_learning)
 
         self.profile_work = _make_field("ctx_placeholder_work")
         self.profile_work.textChanged.connect(self._on_profile_change)
-        pv.addWidget(QLabel(t("ctx_profile_work")), 3, 0, label_align)
-        pv.addWidget(self.profile_work, 3, 1)
+        pv.addRow(t("ctx_profile_work"), self.profile_work)
 
         self.profile_keywords = _make_field("ctx_placeholder_keywords")
         self.profile_keywords.textChanged.connect(self._on_profile_change)
-        pv.addWidget(QLabel(t("ctx_profile_keywords")), 4, 0, label_align)
-        pv.addWidget(self.profile_keywords, 4, 1)
+        pv.addRow(t("ctx_profile_keywords"), self.profile_keywords)
 
         kw_hint = QLabel(t("ctx_kw_hint"))
         kw_hint.setStyleSheet("color: #888; font-size: 11px; font-weight: normal;")
-        pv.addWidget(kw_hint, 5, 0, 1, 2)
-        #实体弹簧，吸收多余垂直空间
-        pv.addItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding), 6, 0, 1, 2)
+        pv.addRow("", kw_hint)
 
         layout.addWidget(profile_gb)
 
