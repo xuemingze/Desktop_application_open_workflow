@@ -463,9 +463,16 @@ class ContextTab(QWidget):
             edit = QLineEdit()
             edit.setPlaceholderText(t(placeholder_key))
             edit.setMinimumWidth(400)
-            edit.setFixedHeight(28)
             edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            edit.setStyleSheet("padding: 0px 4px; margin: 0px;")
+            edit.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            edit.setStyleSheet(
+                "QLineEdit {\n"
+                "  min-height: 28px;\n"
+                "  max-height: 28px;\n"
+                "  padding: 0px 5px;\n"
+                "  margin: 0px;\n"
+                "}\n"
+            )
             return edit
 
         self.profile_hobbies = _make_field("ctx_placeholder_hobbies")
@@ -496,7 +503,8 @@ class ContextTab(QWidget):
         kw_hint = QLabel(t("ctx_kw_hint"))
         kw_hint.setStyleSheet("color: #888; font-size: 11px;")
         pv.addWidget(kw_hint, 5, 0, 1, 2)
-        pv.setRowStretch(6, 1)  # row 6 absorbs extra vertical space
+        #实体弹簧，吸收多余垂直空间
+        pv.addItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding), 6, 0, 1, 2)
 
         layout.addWidget(profile_gb)
 
