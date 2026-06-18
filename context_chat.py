@@ -451,6 +451,7 @@ def build_chat_system_prompt(web_enabled: Optional[bool] = None) -> str:
 - 用户说"联网搜XX"/"百度一下"/"访问 XX 网站"/需联网才能获取信息的问题 → 如果联网开关已开启，用 web_search；如果未开启，再提示需要开启
 - 用户说"列出工作流"/"看看工作流" → 用 list_workflows
 - 用户说"列出应用"/"桌面有啥" → 用 list_shortcuts
+- 用户说"打开XX文件夹"/"打开XX文件" → 找到路径后必须用 open_system_file 工具打开，不要只在回复里描述打开
 - 当前联网开关是：{web_state}。不要和这个状态相矛盾。
 
 【search_local_files 多结果时如何选择】
