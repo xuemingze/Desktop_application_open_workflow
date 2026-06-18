@@ -21,6 +21,7 @@ from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from context_agent import LLMBackend, EchoBackend, parse_intent_response
 from context_toast import ToastManager, ToastIntent
+from i18n import get_lang
 
 
 PROACTIVE_SYSTEM_PROMPT = """你是一个关心用户的朋友式桌宠。基于用户的个人档案，主动想一个有趣的话题或问题。
@@ -46,6 +47,30 @@ PROACTIVE_SYSTEM_PROMPT = """你是一个关心用户的朋友式桌宠。基于
 "category" 可选: work / study / hobby / chat
 """
 
+PROACTIVE_SYSTEM_PROMPT_EN = """You are a friendly desktop companion who cares about the user. Based on the user's profile, proactively suggest one interesting topic or question.
+
+[User Profile]
+{user_profile}
+
+[Recent questions to avoid repeating]
+{history}
+
+[Current time] {now}
+[Optional topic types]
+- Work-related updates / industry news
+- Learning progress / useful resources
+- Trivia related to hobbies or interests
+- Casual chat questions such as weather or mood
+
+Requirements:
+1. Output one short sentence (10-20 English words)
+2. Friendly, casual tone; emoji is allowed
+3. IMPORTANT: output English only
+4. Must output JSON:
+{{"question": "Have you taken a short break today? 🌙", "category": "work"}}
+"category" must be one of: work / study / hobby / chat
+"""
+
 BEHAVIOR_SYSTEM_PROMPT = """你是一个关心用户的朋友式桌宠。用户刚刚发生了一个与兴趣相关的桌面行为：【{detected_topic}】。
 
 【用户档案】
@@ -65,6 +90,28 @@ BEHAVIOR_SYSTEM_PROMPT = """你是一个关心用户的朋友式桌宠。用户�
 3. 必须输出 JSON 格式：
 {{"question": "哇你在玩鸣潮啊，最近抽到啥好角色了吗 🎮", "category": "hobby"}}
 "category" 可选: work / study / hobby / chat
+"""
+
+BEHAVIOR_SYSTEM_PROMPT_EN = """You are a friendly desktop companion who cares about the user. The user just had a desktop behavior related to an interest: [{detected_topic}].
+
+[User Profile]
+{user_profile}
+
+[Detected behavior]
+Matched keyword: {detected_topic}
+
+[Recent questions to avoid repeating]
+{history}
+
+[Current time] {now}
+
+Requirements:
+1. Based on the user's interest and current behavior, write one friendly question or comment (10-20 English words)
+2. Friendly, casual tone; emoji is allowed
+3. IMPORTANT: output English only
+4. Must output JSON:
+{{"question": "Playing Wuthering Waves again? Any lucky pulls recently? 🎮", "category": "hobby"}}
+"category" must be one of: work / study / hobby / chat
 """
 
 
@@ -143,17 +190,18 @@ class UserProfile:
 
     def to_prompt(self) -> str:
         """转成给 AI 的档案字符串"""
+        lang = get_lang()
         if self.is_empty():
-            return "（用户未填写档案，请自由发挥，问一些通用的、轻松的话题）"
+            return "No profile provided; ask a general, light, friendly question." if lang == "en" else "（用户未填写档案，请自由发挥，问一些通用的、轻松的话题）"
         parts = []
         if self.hobbies.strip():
-            parts.append(f"爱好：{self.hobbies.strip()}")
+            parts.append(("Hobbies: " if lang == "en" else "爱好：") + self.hobbies.strip())
         if self.interests.strip():
-            parts.append(f"兴趣：{self.interests.strip()}")
+            parts.append(("Interests: " if lang == "en" else "兴趣：") + self.interests.strip())
         if self.learning.strip():
-            parts.append(f"学习：{self.learning.strip()}")
+            parts.append(("Learning: " if lang == "en" else "学习：") + self.learning.strip())
         if self.work.strip():
-            parts.append(f"工作：{self.work.strip()}")
+            parts.append(("Work: " if lang == "en" else "工作：") + self.work.strip())
         return "\n".join(parts)
 
 
@@ -173,15 +221,18 @@ class QuestionGenerator:
 
     def generate(self, profile: UserProfile, history: list[ProactiveQuestion]) -> Optional[ProactiveQuestion]:
         """生成一条新问题（失败返回 None）"""
-        history_str = "\n".join(f"- {q.text}" for q in history[-10:]) or "（无）"
-        sys_prompt = PROACTIVE_SYSTEM_PROMPT.format(
+        lang = get_lang()
+        history_str = "\n".join(f"- {q.text}" for q in history[-10:]) or ("(none)" if lang == "en" else "（无）")
+        prompt_template = PROACTIVE_SYSTEM_PROMPT_EN if lang == "en" else PROACTIVE_SYSTEM_PROMPT
+        sys_prompt = prompt_template.format(
             user_profile=profile.to_prompt(),
             history=history_str,
             now=datetime.now().strftime("%Y-%m-%d %H:%M"),
         )
 
         # 简短 user 消息触发即可。主动嗅探也使用较长超时，避免云端模型 5s 内未返回被误判无响应。
-        raw = self._backend.infer(sys_prompt, "请生成一个问题", timeout=self._timeout)
+        user_text = "Please generate one question in English." if lang == "en" else "请生成一个问题"
+        raw = self._backend.infer(sys_prompt, user_text, timeout=self._timeout)
         if not raw:
             return None
 
@@ -201,15 +252,18 @@ class QuestionGenerator:
 
     def generate_behavior_question(self, detected_topic: str, profile: UserProfile, history: list[ProactiveQuestion]) -> Optional[ProactiveQuestion]:
         """基于检测到的行为生成一条即时问题（失败返回 None）"""
-        history_str = "\n".join(f"- {q.text}" for q in history[-10:]) or "（无）"
-        sys_prompt = BEHAVIOR_SYSTEM_PROMPT.format(
+        lang = get_lang()
+        history_str = "\n".join(f"- {q.text}" for q in history[-10:]) or ("(none)" if lang == "en" else "（无）")
+        prompt_template = BEHAVIOR_SYSTEM_PROMPT_EN if lang == "en" else BEHAVIOR_SYSTEM_PROMPT
+        sys_prompt = prompt_template.format(
             detected_topic=detected_topic,
             user_profile=profile.to_prompt(),
             history=history_str,
             now=datetime.now().strftime("%Y-%m-%d %H:%M"),
         )
 
-        raw = self._backend.infer(sys_prompt, f"用户行为：【{detected_topic}】，基于此生成一个问题", timeout=self._timeout)
+        user_text = f"User behavior: [{detected_topic}]. Generate one question in English." if lang == "en" else f"用户行为：【{detected_topic}】，基于此生成一个问题"
+        raw = self._backend.infer(sys_prompt, user_text, timeout=self._timeout)
         if not raw:
             return None
 
@@ -571,11 +625,17 @@ class BehaviorInterestMatcher(QObject):
         if now - last < 20 * 60:
             return True
         self._cooldown[key] = now
-        title = window_title or file_path or process_name or "文档"
+        lang = get_lang()
+        title = window_title or file_path or process_name or ("document" if lang == "en" else "文档")
         short = title.strip()
         if len(short) > 36:
             short = short[:36].rstrip() + "…"
         templates = [
+            f"Looks like you're working on {short}. Want me to help outline the next steps?",
+            f"Work mode: {short}. Want a quick summary, outline, or checklist?",
+            f"Looks like document work. Want me to summarize or polish it?",
+            f"If this material feels messy, I can help pull out the key points.",
+        ] if lang == "en" else [
             f"看起来你在处理「{short}」。要不要我帮你理一下思路，或者拆成几个小步骤？",
             f"进入工作模式啦：{short}。需要我陪你梳理重点、写个提纲，还是做个检查清单？",
             f"你像是在看文档/做材料。要不要我帮你总结、润色，或者把下一步列出来？",
@@ -609,11 +669,14 @@ class BehaviorInterestMatcher(QObject):
     def _duration_text(self, seconds: float) -> str:
         seconds = max(0, int(seconds))
         minutes = seconds // 60
+        lang = get_lang()
         if minutes < 1:
-            return "刚刚一会儿"
+            return "just a moment" if lang == "en" else "刚刚一会儿"
         if minutes < 60:
-            return f"{minutes} 分钟"
+            return f"{minutes} minute{'s' if minutes != 1 else ''}" if lang == "en" else f"{minutes} 分钟"
         h, m = divmod(minutes, 60)
+        if lang == "en":
+            return f"{h} hour{'s' if h != 1 else ''} {m} minute{'s' if m != 1 else ''}" if m else f"{h} hour{'s' if h != 1 else ''}"
         return f"{h} 小时 {m} 分钟" if m else f"{h} 小时"
 
     def _append_companion_question(self, text: str, category: str = "hobby"):
@@ -629,6 +692,10 @@ class BehaviorInterestMatcher(QObject):
         duration = self._duration_text(time.time() - session["start"]) if session else "刚刚一会儿"
         display = (session or {}).get("name") or matched_text
         templates = [
+            f"{display} closed after about {duration}. Want to rest your eyes for a bit?",
+            f"Done with {display} for now. Want to do something else or chat about it?",
+            f"You just exited {display}. Maybe stretch your shoulders and look away for a moment?",
+        ] if get_lang() == "en" else [
             f"{display} 关掉啦，刚才玩了 {duration}。要不要休息一下眼睛，聊点别的？",
             f"收工～{display} 这轮大概用了 {duration}。想再干点什么，还是和我聊聊玩的？",
             f"你刚退出 {display}，可以活动一下肩颈、看看远处。想聊聊刚才玩的内容吗？",
@@ -650,7 +717,7 @@ class BehaviorInterestMatcher(QObject):
                 continue
             session["last_reminder"] = now
             name = session.get("name") or key
-            text = f"{name} 已经开了 {self._duration_text(elapsed)}，该休息一下啦。眺望远处 20 秒，保护眼睛哦。"
+            text = f"{name} has been open for {self._duration_text(elapsed)}. Time for a short break—look far away for 20 seconds." if get_lang() == "en" else f"{name} 已经开了 {self._duration_text(elapsed)}，该休息一下啦。眺望远处 20 秒，保护眼睛哦。"
             self.log_signal.emit(f"[行为触发] 使用时长提醒: {name} / {self._duration_text(elapsed)}")
             self._append_companion_question(text, category="hobby")
 
@@ -665,14 +732,18 @@ class BehaviorInterestMatcher(QObject):
                 self.log_signal.emit(f"[行为触发] {keyword} 20 分钟内已问过，跳过")
                 return
 
+        lang = get_lang()
         event_desc = ""
         if source == "process":
-            event_desc = "启动了" if event_type == "started" else "退出了" if event_type == "exited" else "进程事件"
+            if lang == "en":
+                event_desc = "started process " if event_type == "started" else "exited process " if event_type == "exited" else "process event "
+            else:
+                event_desc = "启动了" if event_type == "started" else "退出了" if event_type == "exited" else "进程事件"
         elif source == "window":
-            event_desc = "切换到窗口"
+            event_desc = "switched to window " if lang == "en" else "切换到窗口"
         elif source == "file":
-            event_desc = "文件变化"
-        detected_topic = f"{event_desc}{matched_text}（命中关键词：{keyword}）" if event_desc else f"{matched_text}（命中关键词：{keyword}）"
+            event_desc = "file changed " if lang == "en" else "文件变化"
+        detected_topic = f"{event_desc}{matched_text} (matched keyword: {keyword})" if lang == "en" else (f"{event_desc}{matched_text}（命中关键词：{keyword}）" if event_desc else f"{matched_text}（命中关键词：{keyword}）")
 
         self.log_signal.emit(f"[行为触发] 开始生成问题（超时 {getattr(self._generator, '_timeout', 15)}s）: {detected_topic}")
         q = self._generator.generate_behavior_question(
