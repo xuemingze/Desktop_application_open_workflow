@@ -1,5 +1,6 @@
 # Temp debug scripts (i18n work)
 _*.py
+_commit_msg.txt
 _ctx_*.txt
 _ql_*.txt
 _rem*.txt
