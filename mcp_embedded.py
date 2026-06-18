@@ -21,6 +21,7 @@ HAS_MCP = True
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
 from workflow_panel import StepExecutor
+from mcp_file_tools import FILE_TOOL_NAMES, FILE_TOOL_SCHEMAS, handle_file_tool
 
 # 工作流文件路径: 优先用用户主目录下的《桌面自动化助手》(与 GUI 保存位置一致)，
 # 后端、老路径(项目目录) 作为冷备。
@@ -204,7 +205,7 @@ class MCPEmbeddedServer(QThread):
 
         @server.list_tools()
         async def list_tools() -> list[Tool]:
-            return [
+            tools = [
                 Tool(
                     name="list_workflows",
                     description="列出所有可用的工作流",
@@ -270,10 +271,21 @@ class MCPEmbeddedServer(QThread):
                     },
                 ),
             ]
+            for schema in FILE_TOOL_SCHEMAS:
+                tools.append(Tool(
+                    name=schema["name"],
+                    description=schema["description"],
+                    inputSchema=schema["inputSchema"],
+                ))
+            return tools
 
         @server.call_tool()
         async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             try:
+                if name in FILE_TOOL_NAMES:
+                    result = handle_file_tool(name, arguments, log_cb=self.log_signal.emit)
+                    return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+
                 if name == "list_workflows":
                     wfs = load_workflows()
                     target = arguments.get("name", "")

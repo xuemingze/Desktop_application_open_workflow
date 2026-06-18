@@ -2972,6 +2972,7 @@ def _run_mcp_only() -> int:
 
     from mcp_embedded import scan_desktop_shortcuts, load_workflows, run_workflow_sync, launch_shortcut_sync
     from search_panel import search_everything
+    from mcp_file_tools import FILE_TOOL_NAMES, FILE_TOOL_SCHEMAS, handle_file_tool
 
     try:
         from mcp.server import Server
@@ -2986,7 +2987,7 @@ def _run_mcp_only() -> int:
         server = Server("desktop-auto")
         @server.list_tools()
         async def list_tools():
-            return [
+            tools = [
                 Tool(name="list_workflows", description="列出所有工作流", inputSchema={"type": "object", "properties": {"name": {"type": "string"}}}),
                 Tool(name="list_shortcuts", description="列出桌面快捷方式", inputSchema={"type": "object", "properties": {}}),
                 Tool(name="run_workflow", description="执行工作流", inputSchema={"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}),
@@ -2998,9 +2999,19 @@ def _run_mcp_only() -> int:
                     "sort": {"type": "string", "description": "排序: name/date/size,默认 date"},
                 }, "required": ["query"]}),
             ]
+            for schema in FILE_TOOL_SCHEMAS:
+                tools.append(Tool(name=schema["name"], description=schema["description"], inputSchema=schema["inputSchema"]))
+            return tools
         @server.call_tool()
         async def call_tool(name, arguments):
             try:
+                if name in FILE_TOOL_NAMES:
+                    def stdio_logger(msg):
+                        print(f"[MCP-FileTool] {msg}", file=sys.stderr)
+
+                    result = handle_file_tool(name, arguments, log_cb=stdio_logger)
+                    return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+
                 if name == "list_workflows":
                     wfs = load_workflows()
                     target = arguments.get("name", "")
