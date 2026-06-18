@@ -460,8 +460,10 @@ class ContextTab(QWidget):
             edit = QLineEdit()
             edit.setPlaceholderText(t(placeholder_key))
             edit.setMinimumWidth(400)
+            edit.setFixedHeight(28)
             edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             edit.setFont(QFont("", 10, QFont.Normal))
+            edit.setTextMargins(6, 0, 6, 0)
             return edit
 
         self.profile_hobbies = _make_field("ctx_placeholder_hobbies")
