@@ -368,6 +368,8 @@ class ToolsTab(QWidget):
         default_json = default_dir / "data_dir.json"
         default_marker = default_dir / ".moved_to"
         source_marker = current / ".moved_to"
+        source_json = current / "data_dir.json"
+        target_marker = target / ".moved_to"
 
         script_code = f'''@echo off
 setlocal EnableExtensions
@@ -387,19 +389,27 @@ taskkill /PID {pid} /F >nul 2>nul
 if not exist "%DST%" mkdir "%DST%"
 if not exist "%DEFAULT_DIR%" mkdir "%DEFAULT_DIR%"
 echo [migrate] moving directory contents from "%SRC%" to "%DST%" > "%LOG%"
-robocopy "%SRC%" "%DST%" /E /MOVE /R:2 /W:1 /XF migrate_tool.bat .moved_to migrate_error.log /LOG+:"%LOG%"
+robocopy "%SRC%" "%DST%" /E /MOVE /R:2 /W:1 /XF migrate_tool.bat data_dir.json .moved_to migrate_error.log /LOG+:"%LOG%"
 set "RC=%ERRORLEVEL%"
-if %RC% GEQ 8 (
+if errorlevel 8 (
   echo [migrate] robocopy failed with code %RC%. >> "%LOG%"
   {restart_cmd}
   exit /b %RC%
 )
 if exist "%SRC%" rd /s /q "%SRC%" >nul 2>nul
 if not exist "%SRC%" mkdir "%SRC%"
+if exist "{target_json}" del /f /q "{target_json}" >nul 2>nul
+if exist "{default_json}" del /f /q "{default_json}" >nul 2>nul
+if exist "{source_json}" del /f /q "{source_json}" >nul 2>nul
 <nul set /p="%DST%">"{source_marker}"
+<nul set /p="%DST%">"{target_marker}"
 <nul set /p="%DST%">"{default_marker}"
->"{target_json}" echo {{"path":"%DST%"}}
->"{default_json}" echo {{"path":"%DST%"}}
+> "{source_json}" echo {{"path":"%DST%"}}
+> "{target_json}" echo {{"path":"%DST%"}}
+> "{default_json}" echo {{"path":"%DST%"}}
+echo [migrate] pointer source: {source_json} >> "%LOG%"
+echo [migrate] pointer target: {target_json} >> "%LOG%"
+echo [migrate] pointer default: {default_json} >> "%LOG%"
 echo [migrate] done. restarting app... >> "%LOG%"
 {restart_cmd}
 exit /b 0
