@@ -58,8 +58,9 @@ fusion-experiment-1/
 fusion-experiment-ontology/
 .cowork-temp/
 
-# 备份目录 (本地保留,用户说"整理"才删)
+# 备份/归档目录 (本地保留,用户说"整理"才处理)
 backups/
+_archive/
 
 # 运行数据 (本机产生，带用户本地路径/隐私, 默认不入仓)
 workflows.json
