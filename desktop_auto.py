@@ -409,11 +409,9 @@ def _migrate_old_file(old_path: Path) -> None:
 
 def migrate_legacy_runtime_files_once() -> None:
     if USER_DATA_DIR.exists():
+        # 只兼容非常早期写在用户主目录的配置；不再从 exe/源码同级目录导入运行时文件，
+        # 避免迁移后又把旧 workflows/config/log 当成默认数据源。
         _migrate_old_file(Path.home() / "context_aware_config.json")
-        _migrate_old_file(RUNTIME_DIR / "workflows.json")
-        _migrate_old_file(RUNTIME_DIR / "custom_apps.json")
-        _migrate_old_file(RUNTIME_DIR / "window_state.json")
-        _migrate_old_file(RUNTIME_DIR / "desktop_auto.log")
 
 
 # 自定义应用管理

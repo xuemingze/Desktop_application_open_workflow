@@ -30,12 +30,7 @@ def _resolve_workflows_file() -> Path:
         user_path = USER_DATA_DIR / "workflows.json"
     except Exception:
         user_path = Path.home() / "桌面自动化助手" / "workflows.json"
-    if user_path.exists():
-        return user_path
-    legacy = Path(__file__).parent / "workflows.json"
-    if legacy.exists():
-        return legacy
-    # 都不存在时也返回新路径(后续写入位置统一)
+    # MCP 必须与 GUI 使用同一个数据目录；不要再回退到 exe/源码同级 workflows.json。
     return user_path
 
 WORKFLOWS_FILE = _resolve_workflows_file()
