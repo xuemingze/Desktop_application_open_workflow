@@ -15,6 +15,50 @@
 
 from __future__ import annotations
 
+import os
+import sys
+import json
+from pathlib import Path
+
+# 数据目录必须在任何自定义模块 import 前解析，否则子模块会先读到旧默认路径。
+if getattr(sys, 'frozen', False):
+    RUNTIME_DIR = Path(sys.executable).parent
+else:
+    RUNTIME_DIR = Path(__file__).parent
+
+_DEFAULT_USER_DATA_DIR = Path.home() / "桌面自动化助手"
+
+def _resolve_user_data_dir() -> Path:
+    """读取迁移后的数据目录；不存在配置时回到默认目录。"""
+    candidates = [
+        _DEFAULT_USER_DATA_DIR / "data_dir.json",
+        RUNTIME_DIR / "data_dir.json",  # 兼容旧测试/打包位置
+    ]
+    for cfg_path in candidates:
+        try:
+            if cfg_path.exists():
+                data = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+                raw = (data.get("path") or "").strip()
+                if raw:
+                    return Path(raw).expanduser().resolve()
+        except Exception:
+            pass
+    try:
+        marker = _DEFAULT_USER_DATA_DIR / ".moved_to"
+        if marker.exists():
+            raw = marker.read_text(encoding="utf-8-sig").strip()
+            if raw:
+                return Path(raw).expanduser().resolve()
+    except Exception:
+        pass
+    return _DEFAULT_USER_DATA_DIR
+
+USER_DATA_DIR = _resolve_user_data_dir()
+try:
+    USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
+
 # 提前 import GUI 必需辅助模块,让 PyInstaller 能扫描到它们的依赖。
 # 注意: 不要在 GUI 普通启动时提前 import mcp_embedded。
 # mcp_embedded 会导入 mcp/jsonschema,在全新虚拟机/单 EXE 环境里一旦数据文件缺失会导致 GUI 启动直接崩溃。
@@ -385,50 +429,6 @@ def scan_desktop_shortcuts() -> list[ShortcutInfo]:
         sc._click_type = item.get("click_type", "left_double")
     return out
 
-
-# 运行时目录(支持 EXE 打包:用 EXE 所在目录而不是临时解压目录)
-import sys as _sys
-if getattr(_sys, 'frozen', False):
-    RUNTIME_DIR = Path(_sys.executable).parent
-else:
-    RUNTIME_DIR = Path(__file__).parent
-
-# 用户数据根目录: 所有运行时文件统一放这里,避免误删和散落各处
-# 路径: C:\Users\<user>\桌面自动化助手\，支持迁移后的持久化重定向。
-_DEFAULT_USER_DATA_DIR = Path.home() / "桌面自动化助手"
-
-def _resolve_user_data_dir() -> Path:
-    """读取迁移后的数据目录；不存在配置时回到默认目录。"""
-    candidates = [
-        _DEFAULT_USER_DATA_DIR / "data_dir.json",
-        RUNTIME_DIR / "data_dir.json",  # 兼容旧测试/打包位置
-    ]
-    for cfg_path in candidates:
-        try:
-            if cfg_path.exists():
-                data = json.loads(cfg_path.read_text(encoding="utf-8"))
-                p = Path(data.get("path", "")).expanduser()
-                if p:
-                    return p
-        except Exception:
-            pass
-    try:
-        marker = _DEFAULT_USER_DATA_DIR / ".moved_to"
-        if marker.exists():
-            p = Path(marker.read_text(encoding="utf-8").strip()).expanduser()
-            if p:
-                return p
-    except Exception:
-        pass
-    return _DEFAULT_USER_DATA_DIR
-
-USER_DATA_DIR = _resolve_user_data_dir()
-# 启动时自动创建目录(如果不存在)
-if not USER_DATA_DIR.exists():
-    try:
-        USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass  # 权限不足时降级到 exe 同目录
 
 # 迁移旧文件到新目录(只迁移一次,新目录已有文件时忽略)
 def _migrate_old_file(old_path: Path) -> None:

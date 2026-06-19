@@ -31,7 +31,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QGroupBox, QTextEdit, QFrame, QScrollArea, QCheckBox, QMessageBox, QComboBox,
-    QLineEdit, QFileDialog
+    QLineEdit, QFileDialog, QApplication
 )
 from i18n import t
 
@@ -312,12 +312,8 @@ class ToolsTab(QWidget):
             self._data_dir_edit.setText(path)
 
     def _do_migrate_data_dir(self) -> None:
-        """迁移数据目录：复制到新位置，验证后删除源目录，并写入重定向标记。"""
+        """生成脱机迁移脚本：主程序退出后用 robocopy /MOVE 移动目录内容。"""
         from i18n import t
-        try:
-            import desktop_auto
-        except Exception:
-            desktop_auto = None
 
         current = self._get_current_data_dir()
         target_text = self._data_dir_edit.text().strip() if hasattr(self, "_data_dir_edit") else ""
@@ -334,63 +330,96 @@ class ToolsTab(QWidget):
             return
 
         try:
-            if target.is_relative_to(current):
-                QMessageBox.warning(self, t("tools_data_migrate"), t("tools_data_migrate_child_err", path=str(target)))
-                return
+            nested = target.is_relative_to(current) or current.is_relative_to(target)
         except AttributeError:
-            if str(target).startswith(str(current) + os.sep):
-                QMessageBox.warning(self, t("tools_data_migrate"), t("tools_data_migrate_child_err", path=str(target)))
-                return
+            cur = str(current).rstrip("\\/") + os.sep
+            dst = str(target).rstrip("\\/") + os.sep
+            nested = dst.startswith(cur) or cur.startswith(dst)
+        if nested:
+            QMessageBox.warning(self, t("tools_data_migrate"), t("tools_data_migrate_nest_err"))
+            return
+
+        reply = QMessageBox.question(
+            self,
+            t("tools_data_migrate"),
+            t("tools_data_migrate_confirm", src=str(current), dst=str(target)),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        exe_path = Path(sys.executable).resolve()
+        restart_cmd = f'start "" "{exe_path}"'
+        if not getattr(sys, "frozen", False):
+            restart_cmd = f'start "" "{exe_path}" "{Path(sys.argv[0]).resolve()}"'
+
+        pid = os.getpid()
+        default_dir = Path.home() / "桌面自动化助手"
+        bat_script_path = current / "migrate_tool.bat"
+        log_path = target / "migrate_error.log"
+        target_json = target / "data_dir.json"
+        default_json = default_dir / "data_dir.json"
+        default_marker = default_dir / ".moved_to"
+        source_marker = current / ".moved_to"
+
+        script_code = f'''@echo off
+chcp 65001 >nul
+setlocal EnableExtensions
+title Desktop Auto Data Migration
+set "SRC={current}"
+set "DST={target}"
+set "DEFAULT_DIR={default_dir}"
+set "LOG={log_path}"
+echo [migrate] waiting for Desktop Auto process {pid} to exit...
+for /l %%i in (1,1,20) do (
+  tasklist /FI "PID eq {pid}" | find "{pid}" >nul
+  if errorlevel 1 goto after_wait
+  timeout /t 1 /nobreak >nul
+)
+taskkill /PID {pid} /F >nul 2>nul
+:after_wait
+if not exist "%DST%" mkdir "%DST%"
+if not exist "%DEFAULT_DIR%" mkdir "%DEFAULT_DIR%"
+echo [migrate] moving directory contents from "%SRC%" to "%DST%" > "%LOG%"
+robocopy "%SRC%" "%DST%" /E /MOVE /R:2 /W:1 /XF migrate_tool.bat .moved_to migrate_error.log /LOG+:"%LOG%"
+set "RC=%ERRORLEVEL%"
+if %RC% GEQ 8 (
+  echo [migrate] robocopy failed with code %RC%. >> "%LOG%"
+  {restart_cmd}
+  exit /b %RC%
+)
+if exist "%SRC%" rd /s /q "%SRC%" >nul 2>nul
+if not exist "%SRC%" mkdir "%SRC%"
+<nul set /p="%DST%">"{source_marker}"
+<nul set /p="%DST%">"{default_marker}"
+>"{target_json}" echo {{"path":"%DST%"}}
+>"{default_json}" echo {{"path":"%DST%"}}
+echo [migrate] done. restarting app... >> "%LOG%"
+{restart_cmd}
+exit /b 0
+'''
 
         try:
-            if current.is_relative_to(target):
-                QMessageBox.warning(self, t("tools_data_migrate"), t("tools_data_migrate_parent_err", path=str(target)))
-                return
-        except AttributeError:
-            if str(current).startswith(str(target) + os.sep):
-                QMessageBox.warning(self, t("tools_data_migrate"), t("tools_data_migrate_parent_err", path=str(target)))
-                return
-
-        if target.exists() and any(target.iterdir()):
-            reply = QMessageBox.question(
-                self,
-                t("tools_data_migrate"),
-                t("tools_data_migrate_exists", path=str(target)),
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
-                return
-
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(current, target, dirs_exist_ok=True)
-
-            # 兼容旧版散落在数据目录父级的 memory / samples。
-            for extra in ("memory", "samples"):
-                src_extra = current.parent / extra
-                tgt_extra = target.parent / extra
-                if src_extra.exists() and src_extra.is_dir() and src_extra.resolve() != (current / extra).resolve():
-                    shutil.copytree(src_extra, tgt_extra, dirs_exist_ok=True)
-                    shutil.rmtree(src_extra)
-
-            shutil.rmtree(current)
-
-            # 重启后从默认目录读取重定向标记，避免下次又回 C 盘。
-            default_dir = Path.home() / "桌面自动化助手"
-            default_dir.mkdir(parents=True, exist_ok=True)
-            (default_dir / ".moved_to").write_text(str(target), encoding="utf-8")
-            (target / "data_dir.json").write_text(
-                json.dumps({"path": str(target)}, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-
-            if desktop_auto is not None and hasattr(desktop_auto, "USER_DATA_DIR"):
-                desktop_auto.USER_DATA_DIR = target
-            self._data_dir_edit.setText(str(target))
-            QMessageBox.information(self, t("tools_data_migrate"), t("tools_data_migrate_success", path=str(target)))
+            current.mkdir(parents=True, exist_ok=True)
+            bat_script_path.write_text(script_code, encoding="utf-8")
         except Exception as e:
-            QMessageBox.critical(self, t("tools_data_migrate"), t("tools_data_migrate_err", error=str(e)))
+            QMessageBox.critical(self, t("tools_data_migrate"), t("tools_data_migrate_script_err", error=str(e)))
+            return
+
+        try:
+            subprocess.Popen(
+                ["cmd.exe", "/c", "start", "", "/min", str(bat_script_path)],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except Exception as e:
+            QMessageBox.critical(self, t("tools_data_migrate"), t("tools_data_migrate_launch_err", error=str(e)))
+            return
+
+        app = QApplication.instance()
+        if app:
+            app.quit()
+        os._exit(0)
 
     def _build_language_box(self) -> QGroupBox:
         """语言切换区"""

@@ -81,7 +81,10 @@ class _ModelFetchWorker(QThread):
         self.success.emit(sorted(set(ids)))
 
 
-USER_DATA_DIR = Path.home() / "桌面自动化助手"
+try:
+    from desktop_auto import USER_DATA_DIR
+except Exception:
+    USER_DATA_DIR = Path.home() / "桌面自动化助手"
 if not USER_DATA_DIR.exists():
     try:
         USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
