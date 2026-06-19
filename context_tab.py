@@ -82,7 +82,7 @@ class _ModelFetchWorker(QThread):
 
 
 try:
-    from desktop_auto import USER_DATA_DIR
+    from data_paths import USER_DATA_DIR
 except Exception:
     USER_DATA_DIR = Path.home() / "桌面自动化助手"
 if not USER_DATA_DIR.exists():

@@ -6,7 +6,12 @@ import json
 from pathlib import Path
 from typing import Literal
 
-_USER_CONFIG = Path.home() / "桌面自动化助手" / "config.json"
+try:
+    from data_paths import USER_DATA_DIR
+except Exception:
+    USER_DATA_DIR = Path.home() / "桌面自动化助手"
+
+_USER_CONFIG = USER_DATA_DIR / "config.json"
 
 def get_lang() -> Literal["zh", "en"]:
     try:

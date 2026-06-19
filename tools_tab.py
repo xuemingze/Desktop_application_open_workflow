@@ -35,11 +35,16 @@ from PySide6.QtWidgets import (
 )
 from i18n import t
 
-# 复用父项目的运行时目录解析
+# 复用统一数据目录解析
 try:
-    from desktop_auto import RUNTIME_DIR
+    from data_paths import RUNTIME_DIR, USER_DATA_DIR, DEFAULT_USER_DATA_DIR, normalize_data_dir_target
 except Exception:
     RUNTIME_DIR = Path(__file__).parent
+    USER_DATA_DIR = Path.home() / "桌面自动化助手"
+    DEFAULT_USER_DATA_DIR = USER_DATA_DIR
+    def normalize_data_dir_target(selected):
+        p = Path(selected).expanduser().resolve()
+        return p if p.name == "桌面自动化助手" else (p / "桌面自动化助手").resolve()
 
 # 开机启动管理
 try:
@@ -52,7 +57,7 @@ except Exception:
     _AUTOSTART_OK = False
 
 
-CONFIG_FILE = RUNTIME_DIR / "config.json"
+CONFIG_FILE = USER_DATA_DIR / "config.json"
 
 
 # 5 个 MCP 工具的简介
@@ -298,10 +303,10 @@ class ToolsTab(QWidget):
     def _get_current_data_dir(self) -> Path:
         """获取当前数据目录，desktop_auto 局部导入避免循环依赖。"""
         try:
-            import desktop_auto
-            return Path(desktop_auto.USER_DATA_DIR).expanduser().resolve()
+            from data_paths import USER_DATA_DIR as _data_dir
+            return Path(_data_dir).expanduser().resolve()
         except Exception:
-            return (Path.home() / "桌面自动化助手").resolve()
+            return Path(USER_DATA_DIR).expanduser().resolve()
 
     def _on_browse_data_dir(self) -> None:
         """选择迁移目标目录。"""
@@ -321,7 +326,8 @@ class ToolsTab(QWidget):
             QMessageBox.warning(self, t("tools_data_migrate"), t("tools_data_migrate_empty", path=str(current)))
             return
 
-        target = Path(target_text).expanduser().resolve()
+        # 用户选择的是父目录；实际数据目录固定为 <父目录>\桌面自动化助手。
+        target = normalize_data_dir_target(target_text)
         if current == target:
             QMessageBox.information(self, t("tools_data_migrate"), t("tools_data_migrate_same"))
             return
@@ -355,7 +361,7 @@ class ToolsTab(QWidget):
             restart_cmd = f'start "" "{exe_path}" "{Path(sys.argv[0]).resolve()}"'
 
         pid = os.getpid()
-        default_dir = Path.home() / "桌面自动化助手"
+        default_dir = DEFAULT_USER_DATA_DIR
         bat_script_path = current / "migrate_tool.bat"
         log_path = target / "migrate_error.log"
         target_json = target / "data_dir.json"
@@ -714,7 +720,7 @@ exit /b 0
             return
         import sys as _sys
         exe_path = _sys.executable
-        data_dir = str(Path.home() / "\u684c\u9762\u81ea\u52a8\u5316\u52a9\u624b")
+        data_dir = str(self._get_current_data_dir())
         tmp_dir = os.environ.get("TEMP", "C:\\Windows\\Temp")
         batch_path = Path(tmp_dir) / ("uninstall_desktop_auto_" + str(os.getpid()) + ".bat")
         exe_name = Path(exe_path).name

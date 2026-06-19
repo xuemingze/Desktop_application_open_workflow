@@ -595,8 +595,11 @@ class WorkflowEditor(QWidget):
         super().__init__(parent)
         self.parent_window = parent
         self.workflows: dict[str, dict] = {}
-        from pathlib import Path as _Path
-        _user_dir = _Path.home() / "桌面自动化助手"
+        try:
+            from data_paths import USER_DATA_DIR as _user_dir
+        except Exception:
+            from pathlib import Path as _Path
+            _user_dir = _Path.home() / "桌面自动化助手"
         if not _user_dir.exists():
             try:
                 _user_dir.mkdir(parents=True, exist_ok=True)

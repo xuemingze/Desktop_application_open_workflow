@@ -23,10 +23,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 from workflow_panel import StepExecutor
 from mcp_file_tools import FILE_TOOL_NAMES, FILE_TOOL_SCHEMAS, handle_file_tool
 
-# 工作流文件路径: 优先用用户主目录下的《桌面自动化助手》(与 GUI 保存位置一致)，
-# 后端、老路径(项目目录) 作为冷备。
+# 工作流文件路径: 优先使用主程序解析后的 USER_DATA_DIR；项目目录作为冷备。
 def _resolve_workflows_file() -> Path:
-    user_path = Path.home() / "桌面自动化助手" / "workflows.json"
+    try:
+        from data_paths import USER_DATA_DIR
+        user_path = USER_DATA_DIR / "workflows.json"
+    except Exception:
+        user_path = Path.home() / "桌面自动化助手" / "workflows.json"
     if user_path.exists():
         return user_path
     legacy = Path(__file__).parent / "workflows.json"

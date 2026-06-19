@@ -21,43 +21,7 @@ import json
 from pathlib import Path
 
 # 数据目录必须在任何自定义模块 import 前解析，否则子模块会先读到旧默认路径。
-if getattr(sys, 'frozen', False):
-    RUNTIME_DIR = Path(sys.executable).parent
-else:
-    RUNTIME_DIR = Path(__file__).parent
-
-_DEFAULT_USER_DATA_DIR = Path.home() / "桌面自动化助手"
-
-def _resolve_user_data_dir() -> Path:
-    """读取迁移后的数据目录；不存在配置时回到默认目录。"""
-    candidates = [
-        _DEFAULT_USER_DATA_DIR / "data_dir.json",
-        RUNTIME_DIR / "data_dir.json",  # 兼容旧测试/打包位置
-    ]
-    for cfg_path in candidates:
-        try:
-            if cfg_path.exists():
-                data = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
-                raw = (data.get("path") or "").strip()
-                if raw:
-                    return Path(raw).expanduser().resolve()
-        except Exception:
-            pass
-    try:
-        marker = _DEFAULT_USER_DATA_DIR / ".moved_to"
-        if marker.exists():
-            raw = marker.read_text(encoding="utf-8-sig").strip()
-            if raw:
-                return Path(raw).expanduser().resolve()
-    except Exception:
-        pass
-    return _DEFAULT_USER_DATA_DIR
-
-USER_DATA_DIR = _resolve_user_data_dir()
-try:
-    USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
-except Exception:
-    pass
+from data_paths import RUNTIME_DIR, USER_DATA_DIR, DEFAULT_USER_DATA_DIR
 
 # 提前 import GUI 必需辅助模块,让 PyInstaller 能扫描到它们的依赖。
 # 注意: 不要在 GUI 普通启动时提前 import mcp_embedded。
@@ -430,7 +394,7 @@ def scan_desktop_shortcuts() -> list[ShortcutInfo]:
     return out
 
 
-# 迁移旧文件到新目录(只迁移一次,新目录已有文件时忽略)
+# 迁移旧文件到新目录：只在显式调用时执行，禁止模块 import 时自动搬文件。
 def _migrate_old_file(old_path: Path) -> None:
     if old_path.exists():
         new_path = USER_DATA_DIR / old_path.name
@@ -442,12 +406,14 @@ def _migrate_old_file(old_path: Path) -> None:
             except Exception:
                 pass
 
-if USER_DATA_DIR.exists():
-    _migrate_old_file(Path.home() / "context_aware_config.json")
-    _migrate_old_file(RUNTIME_DIR / "workflows.json")
-    _migrate_old_file(RUNTIME_DIR / "custom_apps.json")
-    _migrate_old_file(RUNTIME_DIR / "window_state.json")
-    _migrate_old_file(RUNTIME_DIR / "desktop_auto.log")
+
+def migrate_legacy_runtime_files_once() -> None:
+    if USER_DATA_DIR.exists():
+        _migrate_old_file(Path.home() / "context_aware_config.json")
+        _migrate_old_file(RUNTIME_DIR / "workflows.json")
+        _migrate_old_file(RUNTIME_DIR / "custom_apps.json")
+        _migrate_old_file(RUNTIME_DIR / "window_state.json")
+        _migrate_old_file(RUNTIME_DIR / "desktop_auto.log")
 
 
 # 自定义应用管理
