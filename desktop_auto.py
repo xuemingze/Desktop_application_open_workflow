@@ -416,9 +416,25 @@ def migrate_legacy_runtime_files_once() -> None:
 
 # 自定义应用管理
 CUSTOM_APPS_FILE = USER_DATA_DIR / "custom_apps.json"
+SAMPLES_DIR = USER_DATA_DIR / "samples"
 
 # 快捷方式绑定元数据: 存 launch_mode 等
 SHORTCUT_META_FILE = USER_DATA_DIR / "shortcut_meta.json"
+
+
+def _resolve_sample_path(raw: str | Path) -> Path:
+    """兼容旧的相对 samples/ 路径，统一解析到 USER_DATA_DIR。"""
+    p = Path(raw)
+    if p.exists():
+        return p
+    if not p.is_absolute():
+        q = USER_DATA_DIR / p
+        if q.exists():
+            return q
+        q2 = SAMPLES_DIR / p.name
+        if q2.exists():
+            return q2
+    return p
 
 
 def _shortcut_key(sc) -> str:
@@ -684,7 +700,7 @@ class LaunchWorker(QThread):
         x = self.coord.get("x", 0)
         y = self.coord.get("y", 0)
         click_type = self.coord.get("click_type", "left_double")
-        samples = [s for s in info.icon_samples if Path(s).exists()]
+        samples = [str(_resolve_sample_path(s)) for s in info.icon_samples if _resolve_sample_path(s).exists()]
 
         # 如果有坐标,优先按坐标点击
         if x > 0 or y > 0:
@@ -923,7 +939,7 @@ class LaunchWorker(QThread):
     def _launch_desktop_click_by_image(self, info) -> None:
         """B 段: 从 samples/ 找 info.name 开头的 PNG 作为模板,locateOnScreen 后双击"""
         self.log_signal.emit(f"   📸 找桌面截图模板...")
-        sample_dir = Path("samples")
+        sample_dir = SAMPLES_DIR
         candidates = list(sample_dir.glob(f"{info.name}_*.png")) if sample_dir.exists() else []
         if not candidates:
             raise FileNotFoundError(
@@ -943,7 +959,7 @@ class LaunchWorker(QThread):
                 self.log_signal.emit(f"   🔍 匹配模板: {c.name}")
                 # 先截全屏保存调试
                 screen = pyautogui.screenshot()
-                debug_path = Path("samples") / "_debug_screen.png"
+                debug_path = SAMPLES_DIR / "_debug_screen.png"
                 screen.save(str(debug_path))
                 self.log_signal.emit(f"   📸 全屏截图已保存: {debug_path}")
 
@@ -2279,7 +2295,7 @@ class MainWindow(QMainWindow):
             f"绑定启动方式: <b style='color:#2563eb;'>{self._mode_name(sc.launch_mode)}</b>"
         )
         # 加载该条目之前保存过的模板(从文件 meta.json 简化版,这里每次只读文件名约定)
-        sample_dir = Path("samples")
+        sample_dir = SAMPLES_DIR
         if sample_dir.exists():
             sc.icon_samples = [str(p) for p in sample_dir.glob(f"{sc.name}_*.png")]
         self._refresh_samples_label()
@@ -2431,8 +2447,8 @@ class MainWindow(QMainWindow):
         if rect.width() < 4 or rect.height() < 4:
             self._append_log("⚠️ 选区太小,已取消")
             return
-        sample_dir = Path("samples")
-        sample_dir.mkdir(exist_ok=True)
+        sample_dir = SAMPLES_DIR
+        sample_dir.mkdir(parents=True, exist_ok=True)
         # 多模板命名: name_idx_timestamp.png
         idx = len(sc.icon_samples)
         out = sample_dir / f"{sc.name}_{idx}_{int(time.time())}.png"
@@ -2448,7 +2464,7 @@ class MainWindow(QMainWindow):
         if not sc:
             return
         # 确保 samples 目录存在,避免 Win32 对话框在空目录上挂起
-        sample_dir = Path("samples").resolve()
+        sample_dir = SAMPLES_DIR.resolve()
         sample_dir.mkdir(parents=True, exist_ok=True)
         initial = str(sample_dir)
         self._append_log(f"📂 打开文件对话框: {initial}")

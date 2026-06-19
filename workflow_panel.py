@@ -10,6 +10,10 @@ from typing import Optional
 from PySide6.QtCore import Qt, QThread, Signal, QRect, QPoint
 
 from i18n import t
+try:
+    from data_paths import USER_DATA_DIR
+except Exception:
+    USER_DATA_DIR = Path.home() / "桌面自动化助手"
 from PySide6.QtGui import QPainter, QPen, QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QListWidgetItem,
@@ -234,8 +238,8 @@ class StepExecutor:
                 log_func(f"  📛 使用之前保存的坐标兜底: ({cx},{cy})")
                 matched = True
             else:
-                debug = Path("samples") / "_debug_workflow.png"
-                debug.parent.mkdir(exist_ok=True)
+                debug = USER_DATA_DIR / "samples" / "_debug_workflow.png"
+                debug.parent.mkdir(parents=True, exist_ok=True)
                 screen.save(str(debug))
                 log_func(f"  调试截图: {debug}")
                 return False
@@ -1309,15 +1313,17 @@ class WorkflowEditor(QWidget):
         img = ImageGrab.grab(bbox=phys_rect)
         # 不用中文文件名 (OpenCV 不认中文路径,会导致后续 pyautogui 报错)
         name = f"wf_{int(time.time())}.png"
-        out = Path("samples") / name
-        out.parent.mkdir(exist_ok=True)
+        out = USER_DATA_DIR / "samples" / name
+        out.parent.mkdir(parents=True, exist_ok=True)
         img.save(str(out))
         self.image_path_edit.setText(str(out))
         self._update_image_preview()
         self._append_log(t("wf_screenshot_saved", out=out))
 
     def _browse_template(self):
-        path, _ = QFileDialog.getOpenFileName(self, t("wf_dlg_title"), "samples", "PNG (*.png)")
+        sample_dir = USER_DATA_DIR / "samples"
+        sample_dir.mkdir(parents=True, exist_ok=True)
+        path, _ = QFileDialog.getOpenFileName(self, t("wf_dlg_title"), str(sample_dir), "PNG (*.png)")
         if path:
             self.image_path_edit.setText(path)
             self._update_image_preview()

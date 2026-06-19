@@ -772,13 +772,12 @@ class ContextTab(QWidget):
             self.toast_broadcast.emit(intent)
 
     def _on_diary_open_dir(self) -> None:
-        from pathlib import Path
-        mem_dir = Path('memory')
-        if not mem_dir.exists():
-            mem_dir.mkdir(parents=True, exist_ok=True)
+        diary_dir = USER_DATA_DIR / 'diary'
+        if not diary_dir.exists():
+            diary_dir.mkdir(parents=True, exist_ok=True)
         import subprocess
-        subprocess.Popen(['explorer', str(mem_dir.resolve())])
-        self._append_log(f"[MEM] 已打开日记目录: {mem_dir.resolve()}")
+        subprocess.Popen(['explorer', str(diary_dir.resolve())])
+        self._append_log(f"[MEM] 已打开日记目录: {diary_dir.resolve()}")
 
     # ---- 任务提醒事件 (Module C) ----
     def _on_remind_auto_toggle(self, checked: bool) -> None:
