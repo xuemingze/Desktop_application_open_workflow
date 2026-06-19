@@ -364,7 +364,6 @@ class ToolsTab(QWidget):
         source_marker = current / ".moved_to"
 
         script_code = f'''@echo off
-chcp 65001 >nul
 setlocal EnableExtensions
 title Desktop Auto Data Migration
 set "SRC={current}"
@@ -402,7 +401,8 @@ exit /b 0
 
         try:
             current.mkdir(parents=True, exist_ok=True)
-            bat_script_path.write_text(script_code, encoding="utf-8")
+            # cmd.exe 按系统 ANSI/OEM 编码解析 .bat；UTF-8 会把中文路径读乱码。
+            bat_script_path.write_text(script_code, encoding="mbcs")
         except Exception as e:
             QMessageBox.critical(self, t("tools_data_migrate"), t("tools_data_migrate_script_err", error=str(e)))
             return
