@@ -394,8 +394,35 @@ else:
     RUNTIME_DIR = Path(__file__).parent
 
 # 用户数据根目录: 所有运行时文件统一放这里,避免误删和散落各处
-# 路径: C:\Users\<user>\桌面自动化助手\
-USER_DATA_DIR = Path.home() / "桌面自动化助手"
+# 路径: C:\Users\<user>\桌面自动化助手\，支持迁移后的持久化重定向。
+_DEFAULT_USER_DATA_DIR = Path.home() / "桌面自动化助手"
+
+def _resolve_user_data_dir() -> Path:
+    """读取迁移后的数据目录；不存在配置时回到默认目录。"""
+    candidates = [
+        _DEFAULT_USER_DATA_DIR / "data_dir.json",
+        RUNTIME_DIR / "data_dir.json",  # 兼容旧测试/打包位置
+    ]
+    for cfg_path in candidates:
+        try:
+            if cfg_path.exists():
+                data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                p = Path(data.get("path", "")).expanduser()
+                if p:
+                    return p
+        except Exception:
+            pass
+    try:
+        marker = _DEFAULT_USER_DATA_DIR / ".moved_to"
+        if marker.exists():
+            p = Path(marker.read_text(encoding="utf-8").strip()).expanduser()
+            if p:
+                return p
+    except Exception:
+        pass
+    return _DEFAULT_USER_DATA_DIR
+
+USER_DATA_DIR = _resolve_user_data_dir()
 # 启动时自动创建目录(如果不存在)
 if not USER_DATA_DIR.exists():
     try:

@@ -22,6 +22,7 @@ if sys.platform == "win32":
 import os
 import json
 import subprocess
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -29,7 +30,8 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QGroupBox, QTextEdit, QFrame, QScrollArea, QCheckBox, QMessageBox, QComboBox
+    QGroupBox, QTextEdit, QFrame, QScrollArea, QCheckBox, QMessageBox, QComboBox,
+    QLineEdit, QFileDialog
 )
 from i18n import t
 
@@ -250,9 +252,145 @@ class ToolsTab(QWidget):
 
         v.addWidget(danger_box)
 
+        # ----- 数据目录迁移 -----
+        line4 = QFrame()
+        line4.setFrameShape(QFrame.HLine)
+        line4.setFrameShadow(QFrame.Sunken)
+        line4.setStyleSheet("color: #e5e7eb;")
+        v.addWidget(line4)
+
+        migrate_box = QGroupBox(t("tools_data_migrate"))
+        mv = QVBoxLayout(migrate_box)
+        mv.setContentsMargins(10, 6, 10, 10)
+        mv.setSpacing(6)
+
+        path_row = QHBoxLayout()
+        path_lbl = QLabel(t("tools_data_dir_label"))
+        self._data_dir_edit = QLineEdit(str(self._get_current_data_dir()))
+        self._data_dir_edit.setStyleSheet("background: #e8f0fe; padding: 4px 6px; border-radius: 3px;")
+        self._btn_browse_dir = QPushButton("…")
+        self._btn_browse_dir.setMaximumWidth(36)
+        self._btn_browse_dir.setToolTip(t("tools_data_migrate_title"))
+        self._btn_browse_dir.clicked.connect(self._on_browse_data_dir)
+        path_row.addWidget(path_lbl)
+        path_row.addWidget(self._data_dir_edit, 1)
+        path_row.addWidget(self._btn_browse_dir)
+        mv.addLayout(path_row)
+
+        migrate_hint = QLabel(t("tools_data_migrate_hint"))
+        migrate_hint.setWordWrap(True)
+        migrate_hint.setStyleSheet("color: #555; font-size: 11px;")
+        mv.addWidget(migrate_hint)
+
+        self.btn_migrate = QPushButton(t("tools_data_migrate_btn"))
+        self.btn_migrate.setStyleSheet(
+            "QPushButton { background:#f59e0b; color:white; font-weight:bold; padding:7px 14px; border-radius:4px; }"
+            "QPushButton:hover { background:#d97706; }"
+        )
+        self.btn_migrate.clicked.connect(self._do_migrate_data_dir)
+        mv.addWidget(self.btn_migrate)
+        v.addWidget(migrate_box)
+
         # 启动时同步加载状态 (不走延迟)
         self._refresh_system_status()
         return gb
+
+    def _get_current_data_dir(self) -> Path:
+        """获取当前数据目录，desktop_auto 局部导入避免循环依赖。"""
+        try:
+            import desktop_auto
+            return Path(desktop_auto.USER_DATA_DIR).expanduser().resolve()
+        except Exception:
+            return (Path.home() / "桌面自动化助手").resolve()
+
+    def _on_browse_data_dir(self) -> None:
+        """选择迁移目标目录。"""
+        from i18n import t
+        start_dir = self._data_dir_edit.text().strip() if hasattr(self, "_data_dir_edit") else str(self._get_current_data_dir())
+        path = QFileDialog.getExistingDirectory(self, t("tools_data_migrate_title"), start_dir)
+        if path:
+            self._data_dir_edit.setText(path)
+
+    def _do_migrate_data_dir(self) -> None:
+        """迁移数据目录：复制到新位置，验证后删除源目录，并写入重定向标记。"""
+        from i18n import t
+        try:
+            import desktop_auto
+        except Exception:
+            desktop_auto = None
+
+        current = self._get_current_data_dir()
+        target_text = self._data_dir_edit.text().strip() if hasattr(self, "_data_dir_edit") else ""
+        if not target_text:
+            QMessageBox.warning(self, t("tools_data_migrate"), t("tools_data_migrate_empty", path=str(current)))
+            return
+
+        target = Path(target_text).expanduser().resolve()
+        if current == target:
+            QMessageBox.information(self, t("tools_data_migrate"), t("tools_data_migrate_same"))
+            return
+        if not current.exists() or not current.is_dir():
+            QMessageBox.warning(self, t("tools_data_migrate"), t("tools_data_migrate_empty", path=str(current)))
+            return
+
+        try:
+            if target.is_relative_to(current):
+                QMessageBox.warning(self, t("tools_data_migrate"), t("tools_data_migrate_child_err", path=str(target)))
+                return
+        except AttributeError:
+            if str(target).startswith(str(current) + os.sep):
+                QMessageBox.warning(self, t("tools_data_migrate"), t("tools_data_migrate_child_err", path=str(target)))
+                return
+
+        try:
+            if current.is_relative_to(target):
+                QMessageBox.warning(self, t("tools_data_migrate"), t("tools_data_migrate_parent_err", path=str(target)))
+                return
+        except AttributeError:
+            if str(current).startswith(str(target) + os.sep):
+                QMessageBox.warning(self, t("tools_data_migrate"), t("tools_data_migrate_parent_err", path=str(target)))
+                return
+
+        if target.exists() and any(target.iterdir()):
+            reply = QMessageBox.question(
+                self,
+                t("tools_data_migrate"),
+                t("tools_data_migrate_exists", path=str(target)),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(current, target, dirs_exist_ok=True)
+
+            # 兼容旧版散落在数据目录父级的 memory / samples。
+            for extra in ("memory", "samples"):
+                src_extra = current.parent / extra
+                tgt_extra = target.parent / extra
+                if src_extra.exists() and src_extra.is_dir() and src_extra.resolve() != (current / extra).resolve():
+                    shutil.copytree(src_extra, tgt_extra, dirs_exist_ok=True)
+                    shutil.rmtree(src_extra)
+
+            shutil.rmtree(current)
+
+            # 重启后从默认目录读取重定向标记，避免下次又回 C 盘。
+            default_dir = Path.home() / "桌面自动化助手"
+            default_dir.mkdir(parents=True, exist_ok=True)
+            (default_dir / ".moved_to").write_text(str(target), encoding="utf-8")
+            (target / "data_dir.json").write_text(
+                json.dumps({"path": str(target)}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            if desktop_auto is not None and hasattr(desktop_auto, "USER_DATA_DIR"):
+                desktop_auto.USER_DATA_DIR = target
+            self._data_dir_edit.setText(str(target))
+            QMessageBox.information(self, t("tools_data_migrate"), t("tools_data_migrate_success", path=str(target)))
+        except Exception as e:
+            QMessageBox.critical(self, t("tools_data_migrate"), t("tools_data_migrate_err", error=str(e)))
 
     def _build_language_box(self) -> QGroupBox:
         """语言切换区"""
