@@ -495,17 +495,18 @@ if exist "%SRC%" (
   set "RC=%ERRORLEVEL%"
   if errorlevel 8 (
     echo [migrate] robocopy failed with code %RC%. >> "%LOG%" 2>nul
-    {restart_cmd}
+    echo [migrate] not restarting because migration failed. >> "%LOG%" 2>nul
     exit /b %RC%
   )
 ) else (
   echo [migrate] source directory missing, skip move: "%SRC%" >> "%LOG%" 2>nul
 )
-if exist "%SRC%" rd /s /q "%SRC%" >nul 2>nul
+rem Keep the source directory as a lightweight pointer shell. Do not delete it:
+rem older shortcuts/exes still read %SRC%\data_dir.json or %SRC%\.moved_to.
 {pointer_cmd} >> "%LOG%" 2>&1
 echo [migrate] pointer writer exit code: %ERRORLEVEL% >> "%LOG%" 2>nul
-echo [migrate] done. restarting app... >> "%LOG%" 2>nul
-{restart_cmd}
+echo [migrate] done. auto restart disabled to avoid PyInstaller onefile _MEI/Python DLL race. >> "%LOG%" 2>nul
+echo [migrate] please start Desktop Auto manually. >> "%LOG%" 2>nul
 exit /b 0
 '''
 
