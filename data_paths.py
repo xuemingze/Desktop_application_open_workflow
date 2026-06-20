@@ -19,12 +19,15 @@ else:
 
 
 def _is_pointer_only_dir(path: Path) -> bool:
-    """目标目录只有 data_dir.json 时，说明只是指针占位，不能视为迁移完成。"""
+    """目标目录只有指针/迁移日志时，说明只是占位，不能视为迁移完成。"""
     try:
         if not path.exists() or not path.is_dir():
             return False
-        entries = [p.name for p in path.iterdir()]
-        return entries == ["data_dir.json"]
+        entries = {p.name for p in path.iterdir()}
+        if "data_dir.json" not in entries:
+            return False
+        allowed_placeholder_files = {"data_dir.json", ".moved_to", "migrate_error.log", "migrate_tool.bat"}
+        return entries.issubset(allowed_placeholder_files)
     except Exception:
         return False
 

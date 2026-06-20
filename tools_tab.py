@@ -392,6 +392,19 @@ class ToolsTab(QWidget):
         source_json = current / "data_dir.json"
         target_marker = target / ".moved_to"
 
+        try:
+            # 点“是”后先落目标指针。若后续迁移未完成，data_paths 会把“只有 data_dir.json”的目标视为占位目录，不会误判为迁移完成。
+            target.mkdir(parents=True, exist_ok=True)
+            default_dir.mkdir(parents=True, exist_ok=True)
+            pointer_payload = json.dumps({"path": str(target)}, ensure_ascii=False, indent=2)
+            target_json.write_text(pointer_payload, encoding="utf-8")
+            default_json.write_text(pointer_payload, encoding="utf-8")
+        except Exception as e:
+            if hasattr(self, "_data_dir_edit"):
+                self._data_dir_edit.setText(str(current))
+            QMessageBox.critical(self, t("tools_data_migrate"), t("tools_data_migrate_script_err", error=str(e)))
+            return
+
         script_code = f'''@echo off
 setlocal EnableExtensions
 title Desktop Auto Data Migration
@@ -441,6 +454,11 @@ exit /b 0
             # cmd.exe 按系统 ANSI/OEM 编码解析 .bat；UTF-8 会把中文路径读乱码。
             bat_script_path.write_text(script_code, encoding="mbcs")
         except Exception as e:
+            try:
+                fallback_payload = json.dumps({"path": str(current)}, ensure_ascii=False, indent=2)
+                default_json.write_text(fallback_payload, encoding="utf-8")
+            except Exception:
+                pass
             QMessageBox.critical(self, t("tools_data_migrate"), t("tools_data_migrate_script_err", error=str(e)))
             return
 
@@ -450,6 +468,11 @@ exit /b 0
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
         except Exception as e:
+            try:
+                fallback_payload = json.dumps({"path": str(current)}, ensure_ascii=False, indent=2)
+                default_json.write_text(fallback_payload, encoding="utf-8")
+            except Exception:
+                pass
             QMessageBox.critical(self, t("tools_data_migrate"), t("tools_data_migrate_launch_err", error=str(e)))
             return
 
