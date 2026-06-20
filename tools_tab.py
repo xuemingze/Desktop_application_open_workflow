@@ -273,6 +273,7 @@ class ToolsTab(QWidget):
         path_lbl = QLabel(t("tools_data_dir_label"))
         self._data_dir_edit = QLineEdit(str(self._get_current_data_dir()))
         self._data_dir_edit.setStyleSheet("background: #e8f0fe; padding: 4px 6px; border-radius: 3px;")
+        self._data_dir_edit.editingFinished.connect(self._on_data_dir_edit_finished)
         self._btn_browse_dir = QPushButton("…")
         self._btn_browse_dir.setMaximumWidth(36)
         self._btn_browse_dir.setToolTip(t("tools_data_migrate_title"))
@@ -315,6 +316,24 @@ class ToolsTab(QWidget):
         path = QFileDialog.getExistingDirectory(self, t("tools_data_migrate_title"), start_dir)
         if path:
             self._data_dir_edit.setText(path)
+            self._on_data_dir_edit_finished()
+
+    def _on_data_dir_edit_finished(self) -> None:
+        """目录一改就弹迁移确认；取消则恢复当前目录。"""
+        current = self._get_current_data_dir()
+        target_text = self._data_dir_edit.text().strip() if hasattr(self, "_data_dir_edit") else ""
+        if not target_text:
+            self._data_dir_edit.setText(str(current))
+            return
+        try:
+            target = normalize_data_dir_target(target_text)
+        except Exception:
+            self._data_dir_edit.setText(str(current))
+            return
+        if target == current:
+            self._data_dir_edit.setText(str(current))
+            return
+        self._do_migrate_data_dir()
 
     def _do_migrate_data_dir(self) -> None:
         """生成脱机迁移脚本：主程序退出后用 robocopy /MOVE 移动目录内容。"""
@@ -353,6 +372,8 @@ class ToolsTab(QWidget):
             QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
+            if hasattr(self, "_data_dir_edit"):
+                self._data_dir_edit.setText(str(current))
             return
 
         exe_path = Path(sys.executable).resolve()

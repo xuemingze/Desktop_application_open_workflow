@@ -18,6 +18,17 @@ else:
     RUNTIME_DIR = Path(__file__).parent
 
 
+def _is_pointer_only_dir(path: Path) -> bool:
+    """目标目录只有 data_dir.json 时，说明只是指针占位，不能视为迁移完成。"""
+    try:
+        if not path.exists() or not path.is_dir():
+            return False
+        entries = [p.name for p in path.iterdir()]
+        return entries == ["data_dir.json"]
+    except Exception:
+        return False
+
+
 def resolve_user_data_dir() -> Path:
     """读取迁移后的数据目录；不存在配置时回到默认目录。"""
     candidates = [
@@ -30,7 +41,9 @@ def resolve_user_data_dir() -> Path:
                 data = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
                 raw = (data.get("path") or "").strip()
                 if raw:
-                    return Path(raw).expanduser().resolve()
+                    target = Path(raw).expanduser().resolve()
+                    if not _is_pointer_only_dir(target):
+                        return target
         except Exception:
             pass
 
@@ -39,7 +52,9 @@ def resolve_user_data_dir() -> Path:
         if marker.exists():
             raw = marker.read_text(encoding="utf-8-sig").strip()
             if raw:
-                return Path(raw).expanduser().resolve()
+                target = Path(raw).expanduser().resolve()
+                if not _is_pointer_only_dir(target):
+                    return target
     except Exception:
         pass
 
