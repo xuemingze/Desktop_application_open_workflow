@@ -379,15 +379,16 @@ class ToolsTab(QWidget):
 
         exe_path = Path(sys.executable).resolve()
         restart_cmd = f'start "" "{exe_path}"'
-        pointer_cmd = f'"{exe_path}" --write-data-dir-pointer "{target}" "{current}"'
         if not getattr(sys, "frozen", False):
             script_path = Path(sys.argv[0]).resolve()
             restart_cmd = f'start "" "{exe_path}" "{script_path}"'
-            pointer_cmd = f'"{exe_path}" "{script_path}" --write-data-dir-pointer "{target}" "{current}"'
 
         pid = os.getpid()
         default_dir = DEFAULT_USER_DATA_DIR
-        bat_script_path = Path(os.environ.get("TEMP", str(target))) / f"desktop_auto_migrate_{pid}.bat"
+        temp_dir = Path(os.environ.get("TEMP", str(target)))
+        bat_script_path = temp_dir / f"desktop_auto_migrate_{pid}.bat"
+        ps_script_path = temp_dir / f"desktop_auto_write_pointer_{pid}.ps1"
+        pointer_cmd = f'powershell -NoProfile -ExecutionPolicy Bypass -File "{ps_script_path}"'
         target_json = target / "data_dir.json"
         default_json = default_dir / "data_dir.json"
         default_marker = default_dir / ".moved_to"
@@ -423,6 +424,33 @@ class ToolsTab(QWidget):
                 self._data_dir_edit.setText(str(current))
             QMessageBox.critical(self, t("tools_data_migrate"), t("tools_data_migrate_script_err", error=str(e)))
             return
+
+        pointer_payload_final = json.dumps({"path": str(target)}, ensure_ascii=False, indent=2)
+        ps_code = f'''$ErrorActionPreference = "SilentlyContinue"
+$target = @'
+{target}
+'@
+$source = @'
+{current}
+'@
+$default = @'
+{default_dir}
+'@
+$pending = @'
+{pending_file}
+'@
+$payload = @'
+{pointer_payload_final}
+'@
+foreach ($d in @($default, $target, $source)) {{
+  if ([string]::IsNullOrWhiteSpace($d)) {{ continue }}
+  New-Item -ItemType Directory -Force -LiteralPath $d | Out-Null
+  Set-Content -LiteralPath (Join-Path $d 'data_dir.json') -Value $payload -Encoding UTF8
+  Set-Content -LiteralPath (Join-Path $d '.moved_to') -Value $target -Encoding UTF8
+}}
+if (Test-Path -LiteralPath $pending) {{ Remove-Item -LiteralPath $pending -Force }}
+Write-Output "[pointer] data dir => $target"
+'''
 
         script_code = f'''@echo off
 setlocal EnableExtensions
@@ -467,6 +495,7 @@ exit /b 0
 
         try:
             bat_script_path.parent.mkdir(parents=True, exist_ok=True)
+            ps_script_path.write_text(ps_code, encoding="utf-8-sig")
             # cmd.exe 按系统 ANSI/OEM 编码解析 .bat；UTF-8 会把中文路径读乱码。
             bat_script_path.write_text(script_code, encoding="mbcs")
         except Exception as e:
