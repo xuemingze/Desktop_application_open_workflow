@@ -74,7 +74,6 @@ datas = [
     ('mcp_embedded.py', '.'),
     ('mcp_patch.py', '.'),
     ('autostart.py', '.'),
-    ('workflows.json', '.'),
     ('samples', 'samples'),
     ('app_icon.ico', '.'),  # 应用图标
     ('app_icon_512_v2.png', '.'),  # README 用图标
