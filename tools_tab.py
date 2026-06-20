@@ -385,7 +385,6 @@ class ToolsTab(QWidget):
         pid = os.getpid()
         default_dir = DEFAULT_USER_DATA_DIR
         bat_script_path = current / "migrate_tool.bat"
-        log_path = target / "migrate_error.log"
         target_json = target / "data_dir.json"
         default_json = default_dir / "data_dir.json"
         default_marker = default_dir / ".moved_to"
@@ -428,8 +427,8 @@ title Desktop Auto Data Migration
 set "SRC={current}"
 set "DST={target}"
 set "DEFAULT_DIR={default_dir}"
-set "LOG={log_path}"
-set "LOG_DIR={log_path.parent}"
+set "LOG=%DST%\migrate_error.log"
+set "LOG_DIR=%DST%"
 cd /d "%TEMP%" >nul 2>nul
 echo [migrate] waiting for Desktop Auto process {pid} to exit...
 for /l %%i in (1,1,20) do (
