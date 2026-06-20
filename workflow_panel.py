@@ -11,9 +11,41 @@ from PySide6.QtCore import Qt, QThread, Signal, QRect, QPoint
 
 from i18n import t
 try:
-    from data_paths import USER_DATA_DIR
+    from data_paths import USER_DATA_DIR, resolve_user_data_dir
 except Exception:
     USER_DATA_DIR = Path.home() / "桌面自动化助手"
+    def resolve_user_data_dir():
+        return USER_DATA_DIR
+
+
+def _current_user_data_dir() -> Path:
+    return resolve_user_data_dir()
+
+
+def _samples_dir() -> Path:
+    return _current_user_data_dir() / "samples"
+
+
+def _resolve_sample_path(raw: str | Path) -> Path:
+    """绝对/相对截图路径按当前数据目录指针重映射到 samples。"""
+    p = Path(raw)
+    sample_dir = _samples_dir()
+    if p.name:
+        current_sample = sample_dir / p.name
+        if "samples" in p.parts:
+            return current_sample
+        if current_sample.exists():
+            return current_sample
+    if p.exists():
+        return p
+    if not p.is_absolute():
+        q = _current_user_data_dir() / p
+        if q.exists():
+            return q
+        q2 = sample_dir / p.name
+        if q2.exists():
+            return q2
+    return p
 from PySide6.QtGui import QPainter, QPen, QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QListWidgetItem,
@@ -160,7 +192,7 @@ class StepExecutor:
         fallback_y = params.get("y", 0)
         # 路径转换: 相对路径转绝对路径
         if template:
-            template = str(Path(template).resolve())
+            template = str(_resolve_sample_path(template).resolve())
         if not template or not Path(template).exists():
             log_func(f"  模板不存在: {template}")
             return False
@@ -238,7 +270,7 @@ class StepExecutor:
                 log_func(f"  📛 使用之前保存的坐标兜底: ({cx},{cy})")
                 matched = True
             else:
-                debug = USER_DATA_DIR / "samples" / "_debug_workflow.png"
+                debug = _samples_dir() / "_debug_workflow.png"
                 debug.parent.mkdir(parents=True, exist_ok=True)
                 screen.save(str(debug))
                 log_func(f"  调试截图: {debug}")
@@ -1170,7 +1202,7 @@ class WorkflowEditor(QWidget):
         if not template_path:
             self.capture_status.setText(t("wf_capture_hint"))
             return
-        template_abs = str(Path(template_path).resolve())
+        template_abs = str(_resolve_sample_path(template_path).resolve())
         if not Path(template_abs).exists():
             self.capture_status.setText(t("wf_template_missing", path=template_path))
             return
@@ -1313,7 +1345,7 @@ class WorkflowEditor(QWidget):
         img = ImageGrab.grab(bbox=phys_rect)
         # 不用中文文件名 (OpenCV 不认中文路径,会导致后续 pyautogui 报错)
         name = f"wf_{int(time.time())}.png"
-        out = USER_DATA_DIR / "samples" / name
+        out = _samples_dir() / name
         out.parent.mkdir(parents=True, exist_ok=True)
         img.save(str(out))
         self.image_path_edit.setText(str(out))
@@ -1321,7 +1353,7 @@ class WorkflowEditor(QWidget):
         self._append_log(t("wf_screenshot_saved", out=out))
 
     def _browse_template(self):
-        sample_dir = USER_DATA_DIR / "samples"
+        sample_dir = _samples_dir()
         sample_dir.mkdir(parents=True, exist_ok=True)
         path, _ = QFileDialog.getOpenFileName(self, t("wf_dlg_title"), str(sample_dir), "PNG (*.png)")
         if path:
