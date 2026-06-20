@@ -20,8 +20,13 @@ import sys
 import json
 from pathlib import Path
 
+# 确保脚本所在目录在 sys.path 首位 (便携 Python/无 GUI CLI 模式也需要)。
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+
 # 数据目录必须在任何自定义模块 import 前解析，否则子模块会先读到旧默认路径。
-from data_paths import RUNTIME_DIR, USER_DATA_DIR, DEFAULT_USER_DATA_DIR, resolve_user_data_dir
+from data_paths import RUNTIME_DIR, USER_DATA_DIR, DEFAULT_USER_DATA_DIR, MIGRATION_PENDING_FILE, normalize_data_dir_target, resolve_user_data_dir
 
 # 提前 import GUI 必需辅助模块,让 PyInstaller 能扫描到它们的依赖。
 # 注意: 不要在 GUI 普通启动时提前 import mcp_embedded。
@@ -51,11 +56,6 @@ from typing import Optional
 
 _SINGLE_INSTANCE_MEMORY = None
 _IPC_PIPE_NAME = r"\\.\pipe\desktop_auto_assistant_ipc"
-
-# 确保脚本所在目录在 sys.path 首位 (便携 Python 可能不加)
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPT_DIR)
 
 # 0. 环境自检: 缺包时用当前 python 自动装,避免 ModuleNotFoundError
 # 打包后 (PyInstaller) 不需要这个检查,直接跳过
@@ -109,6 +109,12 @@ def _cli_router() -> None:
         _do_remove_shortcut()
         sys.exit(0)
 
+    if args and args[0] == '--write-data-dir-pointer':
+        target = sys.argv[2] if len(sys.argv) >= 3 else ""
+        source = sys.argv[3] if len(sys.argv) >= 4 else ""
+        _do_write_data_dir_pointer(target, source)
+        sys.exit(0)
+
     if '--mcp' in args:
         return
 
@@ -139,6 +145,29 @@ def _do_install_shortcut() -> None:
         print(f"[CLI] 桌面快捷方式已创建: {shortcut_path}")
     except Exception as e:
         print(f"[CLI] 创建快捷方式失败: {e}")
+def _do_write_data_dir_pointer(target: str, source: str = "") -> None:
+    """无 GUI 写入迁移指针；由 BAT 调用，确保 UTF-8 JSON 不被 cmd 编码破坏。"""
+    if not target:
+        raise SystemExit(2)
+    target_path = normalize_data_dir_target(target)
+    source_path = Path(source).expanduser().resolve() if source else DEFAULT_USER_DATA_DIR
+    payload = json.dumps({"path": str(target_path)}, ensure_ascii=False, indent=2)
+    for d in [DEFAULT_USER_DATA_DIR, target_path, source_path]:
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "data_dir.json").write_text(payload, encoding="utf-8")
+            (d / ".moved_to").write_text(str(target_path), encoding="utf-8")
+        except Exception as e:
+            print(f"[CLI] 写指针失败 {d}: {e}", flush=True)
+    try:
+        pending = target_path / MIGRATION_PENDING_FILE
+        if pending.exists():
+            pending.unlink()
+    except Exception:
+        pass
+    print(f"[CLI] data dir pointer => {target_path}", flush=True)
+
+
 def _do_remove_shortcut() -> None:
     """删除桌面快捷方式"""
     desktop = Path.home() / "Desktop"

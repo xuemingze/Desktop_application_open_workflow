@@ -379,12 +379,15 @@ class ToolsTab(QWidget):
 
         exe_path = Path(sys.executable).resolve()
         restart_cmd = f'start "" "{exe_path}"'
+        pointer_cmd = f'"{exe_path}" --write-data-dir-pointer "{target}" "{current}"'
         if not getattr(sys, "frozen", False):
-            restart_cmd = f'start "" "{exe_path}" "{Path(sys.argv[0]).resolve()}"'
+            script_path = Path(sys.argv[0]).resolve()
+            restart_cmd = f'start "" "{exe_path}" "{script_path}"'
+            pointer_cmd = f'"{exe_path}" "{script_path}" --write-data-dir-pointer "{target}" "{current}"'
 
         pid = os.getpid()
         default_dir = DEFAULT_USER_DATA_DIR
-        bat_script_path = current / "migrate_tool.bat"
+        bat_script_path = Path(os.environ.get("TEMP", str(target))) / f"desktop_auto_migrate_{pid}.bat"
         target_json = target / "data_dir.json"
         default_json = default_dir / "data_dir.json"
         default_marker = default_dir / ".moved_to"
@@ -441,36 +444,29 @@ taskkill /PID {pid} /F >nul 2>nul
 if not exist "%DST%" mkdir "%DST%" >nul 2>nul
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>nul
 if not exist "%DEFAULT_DIR%" mkdir "%DEFAULT_DIR%" >nul 2>nul
-echo [migrate] moving directory contents from "%SRC%" to "%DST%" > "%LOG%" 2>nul
-robocopy "%SRC%" "%DST%" /E /MOVE /R:2 /W:1 /XF migrate_tool.bat data_dir.json .moved_to migrate_error.log /LOG+:"%LOG%"
-set "RC=%ERRORLEVEL%"
-if errorlevel 8 (
-  echo [migrate] robocopy failed with code %RC%. >> "%LOG%" 2>nul
-  {restart_cmd}
-  exit /b %RC%
+echo [migrate] destination directory: "%DST%" > "%LOG%" 2>nul
+if exist "%SRC%" (
+  echo [migrate] moving directory contents from "%SRC%" to "%DST%" >> "%LOG%" 2>nul
+  robocopy "%SRC%" "%DST%" /E /MOVE /R:2 /W:1 /XF migrate_tool.bat data_dir.json .moved_to migrate_error.log /LOG+:"%LOG%"
+  set "RC=%ERRORLEVEL%"
+  if errorlevel 8 (
+    echo [migrate] robocopy failed with code %RC%. >> "%LOG%" 2>nul
+    {restart_cmd}
+    exit /b %RC%
+  )
+) else (
+  echo [migrate] source directory missing, skip move: "%SRC%" >> "%LOG%" 2>nul
 )
 if exist "%SRC%" rd /s /q "%SRC%" >nul 2>nul
-if not exist "%SRC%" mkdir "%SRC%"
-if exist "{target_json}" del /f /q "{target_json}" >nul 2>nul
-if exist "{default_json}" del /f /q "{default_json}" >nul 2>nul
-if exist "{source_json}" del /f /q "{source_json}" >nul 2>nul
-if exist "{pending_file}" del /f /q "{pending_file}" >nul 2>nul
-<nul set /p="%DST%">"{source_marker}"
-<nul set /p="%DST%">"{target_marker}"
-<nul set /p="%DST%">"{default_marker}"
-> "{source_json}" echo {{"path":"%DST%"}}
-> "{target_json}" echo {{"path":"%DST%"}}
-> "{default_json}" echo {{"path":"%DST%"}}
-echo [migrate] pointer source: {source_json} >> "%LOG%" 2>nul
-echo [migrate] pointer target: {target_json} >> "%LOG%" 2>nul
-echo [migrate] pointer default: {default_json} >> "%LOG%" 2>nul
+{pointer_cmd} >> "%LOG%" 2>&1
+echo [migrate] pointer writer exit code: %ERRORLEVEL% >> "%LOG%" 2>nul
 echo [migrate] done. restarting app... >> "%LOG%" 2>nul
 {restart_cmd}
 exit /b 0
 '''
 
         try:
-            current.mkdir(parents=True, exist_ok=True)
+            bat_script_path.parent.mkdir(parents=True, exist_ok=True)
             # cmd.exe 按系统 ANSI/OEM 编码解析 .bat；UTF-8 会把中文路径读乱码。
             bat_script_path.write_text(script_code, encoding="mbcs")
         except Exception as e:

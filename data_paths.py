@@ -41,6 +41,16 @@ def _is_pointer_only_dir(path: Path) -> bool:
         return False
 
 
+def _read_text_compat(path: Path) -> str:
+    """兼容旧 BAT 写出的 ANSI/mbcs 指针文件。"""
+    for enc in ("utf-8-sig", "utf-8", "mbcs", "gbk", "cp936"):
+        try:
+            return path.read_text(encoding=enc)
+        except Exception:
+            pass
+    return path.read_text(errors="replace")
+
+
 def resolve_user_data_dir() -> Path:
     """读取迁移后的数据目录；不存在配置时回到默认目录。"""
     candidates = [
@@ -50,7 +60,7 @@ def resolve_user_data_dir() -> Path:
     for cfg_path in candidates:
         try:
             if cfg_path.exists():
-                data = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+                data = json.loads(_read_text_compat(cfg_path))
                 raw = (data.get("path") or "").strip()
                 if raw:
                     target = Path(raw).expanduser().resolve()
@@ -62,7 +72,7 @@ def resolve_user_data_dir() -> Path:
     try:
         marker = DEFAULT_USER_DATA_DIR / ".moved_to"
         if marker.exists():
-            raw = marker.read_text(encoding="utf-8-sig").strip()
+            raw = _read_text_compat(marker).strip()
             if raw:
                 target = Path(raw).expanduser().resolve()
                 if _has_pending_migration(target) or not _is_pointer_only_dir(target):
