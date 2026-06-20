@@ -429,6 +429,8 @@ set "SRC={current}"
 set "DST={target}"
 set "DEFAULT_DIR={default_dir}"
 set "LOG={log_path}"
+set "LOG_DIR={log_path.parent}"
+cd /d "%TEMP%" >nul 2>nul
 echo [migrate] waiting for Desktop Auto process {pid} to exit...
 for /l %%i in (1,1,20) do (
   tasklist /FI "PID eq {pid}" | find "{pid}" >nul
@@ -437,13 +439,14 @@ for /l %%i in (1,1,20) do (
 )
 taskkill /PID {pid} /F >nul 2>nul
 :after_wait
-if not exist "%DST%" mkdir "%DST%"
-if not exist "%DEFAULT_DIR%" mkdir "%DEFAULT_DIR%"
-echo [migrate] moving directory contents from "%SRC%" to "%DST%" > "%LOG%"
+if not exist "%DST%" mkdir "%DST%" >nul 2>nul
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>nul
+if not exist "%DEFAULT_DIR%" mkdir "%DEFAULT_DIR%" >nul 2>nul
+echo [migrate] moving directory contents from "%SRC%" to "%DST%" > "%LOG%" 2>nul
 robocopy "%SRC%" "%DST%" /E /MOVE /R:2 /W:1 /XF migrate_tool.bat data_dir.json .moved_to migrate_error.log /LOG+:"%LOG%"
 set "RC=%ERRORLEVEL%"
 if errorlevel 8 (
-  echo [migrate] robocopy failed with code %RC%. >> "%LOG%"
+  echo [migrate] robocopy failed with code %RC%. >> "%LOG%" 2>nul
   {restart_cmd}
   exit /b %RC%
 )
@@ -459,10 +462,10 @@ if exist "{pending_file}" del /f /q "{pending_file}" >nul 2>nul
 > "{source_json}" echo {{"path":"%DST%"}}
 > "{target_json}" echo {{"path":"%DST%"}}
 > "{default_json}" echo {{"path":"%DST%"}}
-echo [migrate] pointer source: {source_json} >> "%LOG%"
-echo [migrate] pointer target: {target_json} >> "%LOG%"
-echo [migrate] pointer default: {default_json} >> "%LOG%"
-echo [migrate] done. restarting app... >> "%LOG%"
+echo [migrate] pointer source: {source_json} >> "%LOG%" 2>nul
+echo [migrate] pointer target: {target_json} >> "%LOG%" 2>nul
+echo [migrate] pointer default: {default_json} >> "%LOG%" 2>nul
+echo [migrate] done. restarting app... >> "%LOG%" 2>nul
 {restart_cmd}
 exit /b 0
 '''
