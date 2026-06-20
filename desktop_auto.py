@@ -28,7 +28,6 @@ from data_paths import RUNTIME_DIR, USER_DATA_DIR, DEFAULT_USER_DATA_DIR, resolv
 # mcp_embedded 会导入 mcp/jsonschema,在全新虚拟机/单 EXE 环境里一旦数据文件缺失会导致 GUI 启动直接崩溃。
 # MCP 只在 --mcp 模式或工具页实际需要时懒加载。
 import backup  # noqa: F401
-import image_match  # noqa: F401
 import workflow_panel  # noqa: F401
 import search_panel  # noqa: F401
 import tools_tab  # noqa: F401
@@ -46,7 +45,6 @@ import logging
 import json
 import subprocess
 import threading
-import numpy as np
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
@@ -65,7 +63,7 @@ def _ensure_dependencies() -> None:
     # 打包后冻结环境跳过: 没有 pip / 不能安装依赖
     if getattr(sys, 'frozen', False):
         return
-    import importlib
+    import importlib.util
     missing = []
     for mod, pkg in [
         ("pyautogui", "pyautogui"),
@@ -75,9 +73,7 @@ def _ensure_dependencies() -> None:
         ("PySide6", "PySide6"),
         ("psutil", "psutil"),
     ]:
-        try:
-            importlib.import_module(mod)
-        except ImportError:
+        if importlib.util.find_spec(mod) is None:
             missing.append(pkg)
     if missing:
         print(f"[env] 缺依赖,自动安装: {missing}", flush=True)
@@ -265,7 +261,6 @@ def _try_acquire_single_instance() -> bool:
     except Exception:
         return True
 _cli_router()
-import pyautogui
 import pyperclip
 import win32com.client
 from PIL import Image
@@ -297,9 +292,12 @@ def _setup_dpi() -> None:
 
 _setup_dpi()
 
-# pyautogui 全局安全配置
-pyautogui.FAILSAFE = True
-pyautogui.PAUSE = 0.3
+def _get_pyautogui():
+    """懒加载 pyautogui，避免启动阶段间接导入 numpy。"""
+    import pyautogui
+    pyautogui.FAILSAFE = True
+    pyautogui.PAUSE = 0.3
+    return pyautogui
 
 # ---------------------------------------------------------------------------
 # 2. 日志
@@ -739,6 +737,7 @@ class LaunchWorker(QThread):
         if not samples:
             raise FileNotFoundError("请先设置坐标(X>0 或 Y>0)或加载图标模板")
         self.log_signal.emit(f"⚠️ 未设置坐标,使用模板匹配 (可能失败)")
+        pyautogui = _get_pyautogui()
         # 后面的逻辑保留作为兑底
         center = None
         for sample in samples:
@@ -984,6 +983,7 @@ class LaunchWorker(QThread):
                 matched = False
                 try:
                     import cv2
+                    import numpy as np
                     screen_np = np.array(screen)
                     screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_RGB2GRAY)
                     # cv2.imread 不支持非 ASCII 路径,改用 np.fromfile + cv2.imdecode
@@ -1154,6 +1154,7 @@ class LaunchWorker(QThread):
             self.log_signal.emit(f"   ✅ 后台双击完成")
         else:
             # 退化: 鼠标移动点击
+            pyautogui = _get_pyautogui()
             click_x = rect.left + pt_x
             click_y = rect.top + pt_y
             self.log_signal.emit(f"   🖱️ 鼠标双击坐标: ({click_x}, {click_y})")
@@ -1249,6 +1250,7 @@ class LaunchWorker(QThread):
 
     # ---- 5.4 记事本交互(中文走剪贴板) ----
     def _interact_notepad(self) -> None:
+        pyautogui = _get_pyautogui()
         self.log_signal.emit("📝 开始键鼠交互(记事本)")
         time.sleep(1)
         pyperclip.copy(

@@ -4,12 +4,14 @@
 - 用 numpy 向量化 NCC 计算
 - 不受 OpenCV DLL 缺失影响
 """
-import numpy as np
+from __future__ import annotations
+
 from PIL import Image
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 
 
-def _compute_ncc_map(screen: np.ndarray, template: np.ndarray, step: int = 4) -> Tuple[np.ndarray, np.ndarray]:
+def _compute_ncc_map(screen: Any, template: Any, step: int = 4) -> Tuple[Any, Any]:
+    import numpy as np
     """向量化 NCC 计算 - 一次算出所有位置的 NCC 分数
 
     Args:
@@ -67,6 +69,7 @@ def locate_on_screen(template_path: str, confidence: float = 0.7, screenshot: Op
     返回 (x, y, w, h) 或 None
     """
     import pyautogui
+    import numpy as np
 
     # 1. 加载模板
     template = Image.open(template_path).convert("RGB")

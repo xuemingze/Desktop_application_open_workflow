@@ -1177,11 +1177,16 @@ class WorkflowEditor(QWidget):
             self.launch_path_label.setText("路径: ")
 
     def _screenshot_template(self):
-        """截图框选生成模板: 隐藏 GUI 本身,全屏透明选区"""
-        # 隐藏本主窗口,只露出干净全屏
+        """截图框选生成模板: 隐藏 GUI 后强制 Win+D 显露桌面。"""
         main_win = self.window()  # 拿到顶层窗口
         main_win.hide()
         time.sleep(0.3)  # 等待动画完成
+        try:
+            import pyautogui
+            pyautogui.hotkey('win', 'd')
+            time.sleep(0.5)
+        except Exception as e:
+            self._append_log(f"显示桌面失败，继续截图: {e}")
         try:
             snip = SnipDialog(self)
             snip.captured.connect(lambda rect: self._on_screenshot_captured(rect))
