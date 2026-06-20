@@ -2481,9 +2481,16 @@ class MainWindow(QMainWindow):
         if not sc:
             QMessageBox.warning(self, "提示", "请先在左侧选一个快捷方式")
             return
-        # 隐藏主窗口,避免被截进图
+        # 隐藏主窗口并强制 Win+D 显露桌面，避免被截进图。
         self.hide()
-        time.sleep(0.3)
+        QApplication.processEvents()
+        time.sleep(0.2)
+        try:
+            pyautogui = _get_pyautogui()
+            pyautogui.hotkey('win', 'd')
+            time.sleep(0.5)
+        except Exception as e:
+            self._append_log(f"⚠️ Win+D 显示桌面失败，继续截图: {e}")
         self.snipping = SnippingWindow()
         self.snipping.captured.connect(lambda r: self._on_snipped(sc, r))
         self.snipping.show()
@@ -2492,6 +2499,8 @@ class MainWindow(QMainWindow):
 
     def _on_snipped(self, sc: ShortcutInfo, rect: QRect) -> None:
         self.show()
+        self.raise_()
+        self.activateWindow()
         if rect.width() < 4 or rect.height() < 4:
             self._append_log("⚠️ 选区太小,已取消")
             return
