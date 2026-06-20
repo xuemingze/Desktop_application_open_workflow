@@ -32,10 +32,6 @@ from data_paths import RUNTIME_DIR, USER_DATA_DIR, DEFAULT_USER_DATA_DIR, MIGRAT
 # PyInstaller 依赖收集由 build.spec hiddenimports 负责。
 # MCP 只在 --mcp 模式或工具页实际需要时懒加载。
 import backup  # noqa: F401
-import activity_log  # noqa: F401
-import app_categorizer  # noqa: F401
-import memory_engine  # noqa: F401
-import daily_diary  # noqa: F401
 from i18n import t  # noqa: F401
 
 import os
