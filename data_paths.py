@@ -10,12 +10,21 @@ import sys
 from pathlib import Path
 
 APP_DATA_DIR_NAME = "桌面自动化助手"
+MIGRATION_PENDING_FILE = ".migration_pending.json"
 DEFAULT_USER_DATA_DIR = Path.home() / APP_DATA_DIR_NAME
 
 if getattr(sys, "frozen", False):
     RUNTIME_DIR = Path(sys.executable).parent
 else:
     RUNTIME_DIR = Path(__file__).parent
+
+
+def _has_pending_migration(path: Path) -> bool:
+    """目标目录存在 pending 标记时，允许启动阶段先识别为迁移目标。"""
+    try:
+        return (path / MIGRATION_PENDING_FILE).exists()
+    except Exception:
+        return False
 
 
 def _is_pointer_only_dir(path: Path) -> bool:
@@ -26,7 +35,7 @@ def _is_pointer_only_dir(path: Path) -> bool:
         entries = {p.name for p in path.iterdir()}
         if "data_dir.json" not in entries:
             return False
-        allowed_placeholder_files = {"data_dir.json", ".moved_to", "migrate_error.log", "migrate_tool.bat"}
+        allowed_placeholder_files = {"data_dir.json", ".moved_to", "migrate_error.log", "migrate_tool.bat", MIGRATION_PENDING_FILE}
         return entries.issubset(allowed_placeholder_files)
     except Exception:
         return False
@@ -45,7 +54,7 @@ def resolve_user_data_dir() -> Path:
                 raw = (data.get("path") or "").strip()
                 if raw:
                     target = Path(raw).expanduser().resolve()
-                    if not _is_pointer_only_dir(target):
+                    if _has_pending_migration(target) or not _is_pointer_only_dir(target):
                         return target
         except Exception:
             pass
@@ -56,7 +65,7 @@ def resolve_user_data_dir() -> Path:
             raw = marker.read_text(encoding="utf-8-sig").strip()
             if raw:
                 target = Path(raw).expanduser().resolve()
-                if not _is_pointer_only_dir(target):
+                if _has_pending_migration(target) or not _is_pointer_only_dir(target):
                     return target
     except Exception:
         pass

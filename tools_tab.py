@@ -37,11 +37,12 @@ from i18n import t
 
 # 复用统一数据目录解析
 try:
-    from data_paths import RUNTIME_DIR, USER_DATA_DIR, DEFAULT_USER_DATA_DIR, normalize_data_dir_target
+    from data_paths import RUNTIME_DIR, USER_DATA_DIR, DEFAULT_USER_DATA_DIR, MIGRATION_PENDING_FILE, normalize_data_dir_target
 except Exception:
     RUNTIME_DIR = Path(__file__).parent
     USER_DATA_DIR = Path.home() / "桌面自动化助手"
     DEFAULT_USER_DATA_DIR = USER_DATA_DIR
+    MIGRATION_PENDING_FILE = ".migration_pending.json"
     def normalize_data_dir_target(selected):
         p = Path(selected).expanduser().resolve()
         return p if p.name == "桌面自动化助手" else (p / "桌面自动化助手").resolve()
@@ -391,15 +392,31 @@ class ToolsTab(QWidget):
         source_marker = current / ".moved_to"
         source_json = current / "data_dir.json"
         target_marker = target / ".moved_to"
+        pending_file = target / MIGRATION_PENDING_FILE
 
         try:
-            # 点“是”后先落目标指针。若后续迁移未完成，data_paths 会把“只有 data_dir.json”的目标视为占位目录，不会误判为迁移完成。
+            # 点“是”后先落目标指针与 pending 标记，随后立即重读刷新，确保 GUI 当前目录已变更。
             target.mkdir(parents=True, exist_ok=True)
             default_dir.mkdir(parents=True, exist_ok=True)
             pointer_payload = json.dumps({"path": str(target)}, ensure_ascii=False, indent=2)
+            pending_payload = json.dumps({"src": str(current), "dst": str(target), "status": "pending"}, ensure_ascii=False, indent=2)
             target_json.write_text(pointer_payload, encoding="utf-8")
             default_json.write_text(pointer_payload, encoding="utf-8")
+            pending_file.write_text(pending_payload, encoding="utf-8")
+            from data_paths import resolve_user_data_dir
+            refreshed = resolve_user_data_dir()
+            if refreshed != target:
+                raise RuntimeError(f"迁移指针刷新失败: {refreshed} != {target}")
+            if hasattr(self, "_data_dir_edit"):
+                self._data_dir_edit.setText(str(refreshed))
         except Exception as e:
+            try:
+                fallback_payload = json.dumps({"path": str(current)}, ensure_ascii=False, indent=2)
+                default_json.write_text(fallback_payload, encoding="utf-8")
+                if 'pending_file' in locals() and pending_file.exists():
+                    pending_file.unlink()
+            except Exception:
+                pass
             if hasattr(self, "_data_dir_edit"):
                 self._data_dir_edit.setText(str(current))
             QMessageBox.critical(self, t("tools_data_migrate"), t("tools_data_migrate_script_err", error=str(e)))
@@ -435,6 +452,7 @@ if not exist "%SRC%" mkdir "%SRC%"
 if exist "{target_json}" del /f /q "{target_json}" >nul 2>nul
 if exist "{default_json}" del /f /q "{default_json}" >nul 2>nul
 if exist "{source_json}" del /f /q "{source_json}" >nul 2>nul
+if exist "{pending_file}" del /f /q "{pending_file}" >nul 2>nul
 <nul set /p="%DST%">"{source_marker}"
 <nul set /p="%DST%">"{target_marker}"
 <nul set /p="%DST%">"{default_marker}"
@@ -457,6 +475,8 @@ exit /b 0
             try:
                 fallback_payload = json.dumps({"path": str(current)}, ensure_ascii=False, indent=2)
                 default_json.write_text(fallback_payload, encoding="utf-8")
+                if pending_file.exists():
+                    pending_file.unlink()
             except Exception:
                 pass
             QMessageBox.critical(self, t("tools_data_migrate"), t("tools_data_migrate_script_err", error=str(e)))
@@ -471,6 +491,8 @@ exit /b 0
             try:
                 fallback_payload = json.dumps({"path": str(current)}, ensure_ascii=False, indent=2)
                 default_json.write_text(fallback_payload, encoding="utf-8")
+                if pending_file.exists():
+                    pending_file.unlink()
             except Exception:
                 pass
             QMessageBox.critical(self, t("tools_data_migrate"), t("tools_data_migrate_launch_err", error=str(e)))
