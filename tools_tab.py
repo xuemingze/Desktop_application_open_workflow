@@ -365,10 +365,26 @@ class ToolsTab(QWidget):
             QMessageBox.warning(self, t("tools_data_migrate"), t("tools_data_migrate_nest_err"))
             return
 
+        if target == DEFAULT_USER_DATA_DIR and current != DEFAULT_USER_DATA_DIR:
+            guard = QMessageBox.question(
+                self,
+                t("tools_data_migrate"),
+                "你正在把数据目录迁回默认 C 盘目录：\n\n"
+                f"源目录：{current}\n"
+                f"目标目录：{target}\n\n"
+                "这通常是误操作。只有你明确要迁回 C 盘时才继续。是否继续？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if guard != QMessageBox.Yes:
+                if hasattr(self, "_data_dir_edit"):
+                    self._data_dir_edit.setText(str(current))
+                return
+
         reply = QMessageBox.question(
             self,
             t("tools_data_migrate"),
-            t("tools_data_migrate_confirm", src=str(current), dst=str(target)),
+            t("tools_data_migrate_confirm", src=str(current), dst=str(target)) + f"\n\n源目录：{current}\n目标目录：{target}",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
