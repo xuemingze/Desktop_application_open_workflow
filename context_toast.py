@@ -39,11 +39,11 @@ class ToastBubble(QWidget):
     clicked = Signal(ToastIntent)
     closed = Signal(object)  # emit self
 
-    TOAST_WIDTH = 360
-    TOAST_HEIGHT = 90
-    MARGIN_RIGHT = 24
-    MARGIN_BOTTOM = 24
-    SPACING = 12
+    TOAST_WIDTH = 240
+    TOAST_HEIGHT = 56
+    MARGIN_RIGHT = 10
+    MARGIN_BOTTOM = 10
+    SPACING = 6
     AUTO_DISMISS_MS = 5000
 
     def __init__(self, intent: ToastIntent, parent=None):
@@ -75,31 +75,31 @@ class ToastBubble(QWidget):
     def _build_ui(self):
         # 主体布局
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 12, 16, 10)
-        root.setSpacing(6)
+        root.setContentsMargins(10, 6, 10, 6)
+        root.setSpacing(3)
 
         # 第一行：图标 + message + 关闭按钮
         top = QHBoxLayout()
-        top.setSpacing(8)
+        top.setSpacing(5)
 
         self.icon_label = QLabel("💡")
-        self.icon_label.setStyleSheet("font-size: 22px; background: transparent;")
+        self.icon_label.setStyleSheet("font-size: 15px; background: transparent;")
         top.addWidget(self.icon_label)
 
         self.message_label = QLabel(self.intent.message)
         self.message_label.setWordWrap(True)
         self.message_label.setStyleSheet(
-            "color: white; font-size: 13px; background: transparent;"
+            "color: white; font-size: 11px; background: transparent;"
         )
         top.addWidget(self.message_label, stretch=1)
 
         self.close_btn = QPushButton("×")
-        self.close_btn.setFixedSize(20, 20)
+        self.close_btn.setFixedSize(16, 16)
         self.close_btn.setStyleSheet(
             "QPushButton { color: rgba(255,255,255,180); background: transparent;"
-            " border: none; font-size: 16px; font-weight: bold; }"
+            " border: none; font-size: 12px; font-weight: bold; }"
             "QPushButton:hover { color: white; background: rgba(255,255,255,30);"
-            " border-radius: 10px; }"
+            " border-radius: 8px; }"
         )
         self.close_btn.clicked.connect(self.fade_out)
         self.close_btn.setVisible(False)  # hover 时才显示
@@ -112,7 +112,7 @@ class ToastBubble(QWidget):
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
         self.progress.setTextVisible(False)
-        self.progress.setFixedHeight(3)
+        self.progress.setFixedHeight(2)
         self.progress.setStyleSheet(
             "QProgressBar { background: rgba(255,255,255,40); border: none; }"
             "QProgressBar::chunk { background: rgba(255,255,255,180); }"
@@ -210,7 +210,7 @@ class ToastBubble(QWidget):
         # 深色半透明背景
         painter.setBrush(QColor(28, 28, 32, 220))
         painter.setPen(QColor(255, 255, 255, 30))
-        painter.drawRoundedRect(rect, 12, 12)
+        painter.drawRoundedRect(rect, 8, 8)
         painter.end()
         super().paintEvent(event)
 
