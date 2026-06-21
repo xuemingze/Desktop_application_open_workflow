@@ -10,12 +10,12 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import re
 import time
 
 from PySide6.QtCore import (
-    Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, QPoint, QSize, Signal, QObject,
+    Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, QPoint, QSize, Signal, QObject, QThread, Slot,
 )
 from PySide6.QtGui import QColor, QPainter, QFont, QFontMetrics
 from PySide6.QtWidgets import (
@@ -31,7 +31,6 @@ class ToastIntent:
     message: str              # "发现 80 端口被占用，要帮你查 nginx.conf 吗？"
     suggested_action: str     # "search_local_files"
     action_param: str         # "nginx.conf"
-    actions: list[dict] = field(default_factory=list)  # 可选按钮: [{label, action, param}]
 
 
 class ToastBubble(QWidget):
@@ -63,8 +62,7 @@ class ToastBubble(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
 
-        self._actions = list(getattr(self.intent, "actions", None) or [])
-        self.setFixedSize(self.TOAST_WIDTH, self.TOAST_HEIGHT + (24 if self._actions else 0))
+        self.setFixedSize(self.TOAST_WIDTH, self.TOAST_HEIGHT)
         self._build_ui()
         self._build_animation()
 
@@ -120,22 +118,6 @@ class ToastBubble(QWidget):
             "QProgressBar::chunk { background: rgba(255,255,255,180); }"
         )
         root.addWidget(self.progress)
-
-        if self._actions:
-            btn_row = QHBoxLayout()
-            btn_row.setSpacing(4)
-            btn_row.addStretch()
-            for action in self._actions[:3]:
-                btn = QPushButton(str(action.get("label", "操作"))[:10])
-                btn.setFixedHeight(20)
-                btn.setStyleSheet(
-                    "QPushButton { color:white; background:rgba(255,255,255,35);"
-                    " border:1px solid rgba(255,255,255,50); border-radius:7px; font-size:10px; padding:1px 6px; }"
-                    "QPushButton:hover { background:rgba(255,255,255,70); }"
-                )
-                btn.clicked.connect(lambda _=False, a=action: self._emit_action(a))
-                btn_row.addWidget(btn)
-            root.addLayout(btn_row)
 
         # 进度条刷新计时器（每秒减一次）
         self._progress_timer = QTimer(self)
@@ -204,16 +186,6 @@ class ToastBubble(QWidget):
         self.closed.emit(self)
         self.deleteLater()
 
-    def _emit_action(self, action: dict):
-        intent = ToastIntent(
-            intent=self.intent.intent,
-            message=self.intent.message,
-            suggested_action=str(action.get("action") or self.intent.suggested_action),
-            action_param=str(action.get("param") or self.intent.action_param),
-        )
-        self.clicked.emit(intent)
-        self.fade_out()
-
     # ---- 鼠标事件 ----
     def enterEvent(self, event):
         self.pause_dismiss()
@@ -247,6 +219,7 @@ class ToastManager(QObject):
     """Toast 队列管理器——单例"""
 
     toast_clicked = Signal(ToastIntent)
+    _show_requested = Signal(ToastIntent)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -254,6 +227,7 @@ class ToastManager(QObject):
         self._move_animations: list[QPropertyAnimation] = []
         self._recent_keys: dict[str, float] = {}
         self._dedupe_seconds = 12.0
+        self._show_requested.connect(self._show_toast_now, Qt.QueuedConnection)
 
     def _intent_key(self, intent: ToastIntent) -> str:
         """短时间去重 key。
@@ -271,7 +245,19 @@ class ToastManager(QObject):
         return f"{intent.suggested_action}:{intent.action_param or intent.message[:30]}".lower()
 
     def show_toast(self, intent: ToastIntent):
-        """显示一个新气泡"""
+        """线程安全地显示一个新气泡。
+
+        QWidget 必须在 ToastManager 所在线程创建；工作流/AI 工具线程调用时，
+        只投递信号回 GUI 线程，避免 Windows/PyInstaller 下直接闪退。
+        """
+        if QThread.currentThread() is not self.thread():
+            self._show_requested.emit(intent)
+            return
+        self._show_toast_now(intent)
+
+    @Slot(ToastIntent)
+    def _show_toast_now(self, intent: ToastIntent):
+        """显示一个新气泡（仅在 GUI 线程执行）。"""
         key = self._intent_key(intent)
         now = time.time()
         # 清理旧 key
@@ -351,7 +337,7 @@ class ToastManager(QObject):
 
         for i, toast in enumerate(self._queue):
             # i=0 是最底部，i 越大越靠上
-            target_y = screen.bottom() - ToastBubble.MARGIN_BOTTOM - sum(t.height() for t in list(self._queue)[:i + 1]) - i * ToastBubble.SPACING
+            target_y = screen.bottom() - ToastBubble.MARGIN_BOTTOM - (i + 1) * ToastBubble.TOAST_HEIGHT - i * ToastBubble.SPACING
             target_x = screen.right() - ToastBubble.TOAST_WIDTH - ToastBubble.MARGIN_RIGHT
             target = QPoint(target_x, target_y)
 

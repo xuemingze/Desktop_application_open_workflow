@@ -1864,22 +1864,16 @@ class MainWindow(QMainWindow):
             action_type = str(item.get("action_type") or "toast")
             workflow_name = str(item.get("workflow_name") or "")
             payload = {"id": rid, "action_type": action_type, "workflow_name": workflow_name}
-            actions = [
-                {"label": "完成", "action": "reminder_done", "param": json.dumps(payload, ensure_ascii=False)},
-                {"label": "延后10分", "action": "reminder_snooze", "param": json.dumps(payload, ensure_ascii=False)},
-            ]
+            suggested_action = "reminder_done"
+            message = f"{content}（点击完成，关闭则稍后再提醒）"
             if action_type == "run_workflow" and workflow_name:
-                actions.append({
-                    "label": f"运行{workflow_name[:4]}",
-                    "action": "reminder_run_workflow",
-                    "param": json.dumps(payload, ensure_ascii=False),
-                })
+                suggested_action = "reminder_run_workflow"
+                message = f"{content}（点击运行工作流：{workflow_name}）"
             intent = ToastIntent(
                 intent="🔔 提醒",
-                message=content,
-                suggested_action="reminder_done",
+                message=message,
+                suggested_action=suggested_action,
                 action_param=json.dumps(payload, ensure_ascii=False),
-                actions=actions,
             )
             self.context_tab._toast_manager.show_toast(intent)
         except Exception as e:
