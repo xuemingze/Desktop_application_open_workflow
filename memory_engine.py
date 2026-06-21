@@ -88,13 +88,17 @@ class IdleWatcherThread(QThread):
 class MainPollThread(QThread):
     """主采样线程，包含状态合并压缩与流转机"""
     # 状态：ACTIVE, IDLE
+    chunk_ready = Signal(float, float, int)  # start_ts, end_ts, record_count
     
-    def __init__(self, db: ActivityLogDB, interval=30, idle_threshold=180, suspend_threshold=1800):
+    def __init__(self, db: ActivityLogDB, interval=30, idle_threshold=180, suspend_threshold=1800,
+                 chunk_record_threshold=50, min_chunk_interval_s=7200):
         super().__init__()
         self.db = db
         self.interval = interval
         self.idle_threshold = idle_threshold
         self.suspend_threshold = suspend_threshold
+        self.chunk_record_threshold = max(5, int(chunk_record_threshold or 50))
+        self.min_chunk_interval_s = max(300, int(min_chunk_interval_s or 7200))
         
         self._is_running = True
         self.is_suspended = False
@@ -106,6 +110,13 @@ class MainPollThread(QThread):
         self._cur_id = None
         self._cur_title = ""
         self._cur_app = ""
+        self._cur_start_ts = 0.0
+        self._cur_is_idle = False
+
+        # Phase C: 水桶策略。按有效活跃段数量触发组块化总结。
+        self._chunk_count = 0
+        self._chunk_start_ts = 0.0
+        self._last_chunk_emit_ts = 0.0
 
     def stop(self):
         self._is_running = False
@@ -156,6 +167,8 @@ class MainPollThread(QThread):
                         self._cur_table, self._cur_id = self.db.open_record(
                             now, title, app, category="[IDLE]", is_idle=1
                         )
+                        self._cur_start_ts = now
+                        self._cur_is_idle = True
                         self._state = "IDLE"
                     elif self._state == "IDLE":
                         # 保持空闲：延长 [IDLE] 段
@@ -179,6 +192,8 @@ class MainPollThread(QThread):
                             self._cur_table, self._cur_id = self.db.open_record(
                                 now, title, app, category=category, is_idle=0
                             )
+                            self._cur_start_ts = now
+                            self._cur_is_idle = False
                             self._cur_title = title
                             self._cur_app = app
                             
@@ -189,9 +204,49 @@ class MainPollThread(QThread):
 
     def _close_current_if_any(self, ts):
         if self._cur_table and self._cur_id:
+            start_ts = self._cur_start_ts or ts
+            is_idle = self._cur_is_idle
             self.db.close_record(self._cur_table, self._cur_id, ts)
+            if not is_idle:
+                self._note_active_record(start_ts, ts)
             self._cur_table = None
             self._cur_id = None
+            self._cur_start_ts = 0.0
+            self._cur_is_idle = False
+
+    def _note_active_record(self, start_ts: float, end_ts: float) -> None:
+        """Phase C: 有效活跃记录计数，达到阈值后触发 chunk 总结。"""
+        duration = max(0.0, end_ts - start_ts)
+        # 排除太短的误触/瞬时切窗。
+        if duration < min(20, max(5, self.interval / 2)):
+            return
+
+        # 跨午夜强制结算，保持日历边界干净。
+        if self._chunk_start_ts:
+            start_day = datetime.fromtimestamp(self._chunk_start_ts).date()
+            end_day = datetime.fromtimestamp(end_ts).date()
+            if start_day != end_day:
+                self._emit_chunk(end_ts)
+
+        if not self._chunk_start_ts:
+            self._chunk_start_ts = start_ts
+        self._chunk_count += 1
+
+        now = time.time()
+        if self._chunk_count >= self.chunk_record_threshold and (now - self._last_chunk_emit_ts) >= self.min_chunk_interval_s:
+            self._emit_chunk(end_ts)
+
+    def _emit_chunk(self, end_ts: float) -> None:
+        if not self._chunk_start_ts or self._chunk_count <= 0:
+            self._chunk_count = 0
+            self._chunk_start_ts = 0.0
+            return
+        start_ts = self._chunk_start_ts
+        count = self._chunk_count
+        self._chunk_count = 0
+        self._chunk_start_ts = 0.0
+        self._last_chunk_emit_ts = time.time()
+        self.chunk_ready.emit(start_ts, end_ts, count)
 
 
 class MemoryEngineManager(QObject):

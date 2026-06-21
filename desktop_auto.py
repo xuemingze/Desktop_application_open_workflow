@@ -1850,6 +1850,7 @@ class MainWindow(QMainWindow):
             # 2. 创建 Manager (还不 start, 等用户启用)
             self.memory_engine_mgr = MemoryEngineManager(USER_DATA_DIR)
             self.memory_engine_mgr.paused_changed.connect(self._on_memory_pause_changed)
+            self.memory_engine_mgr.main_poll.chunk_ready.connect(self._on_memory_chunk_ready)
             self._append_log("[Memory] 记忆引擎已加载 (未启动)")
 
             # 3. 启动每日复盘调度器 (不依檁采样是否运行)
@@ -1910,6 +1911,18 @@ class MainWindow(QMainWindow):
             self.context_tab.toast_broadcast.emit(intent)
         except Exception as e:
             self._append_log(f"[Memory] 推送复盘提醒失败: {e}")
+
+    def _on_memory_chunk_ready(self, start_ts: float, end_ts: float, record_count: int) -> None:
+        """Phase C: 水桶策略触发中期记忆总结。"""
+        try:
+            self._append_log(f"[Chunk] 触发中期记忆总结: {record_count} 条记录")
+            if not self.memory_engine_mgr:
+                return
+            from daily_diary import build_chunk_prompt
+            sys_p, user_p, fallback = build_chunk_prompt(self.memory_engine_mgr.db, start_ts, end_ts)
+            self._generate_chunk_async(start_ts, end_ts, sys_p, user_p, fallback)
+        except Exception as e:
+            self._append_log(f"[Chunk] 启动总结失败: {e}")
 
     def memory_pause(self, seconds: int) -> None:
         """公开 API: 暂停 N 秒"""
@@ -2147,6 +2160,73 @@ class MainWindow(QMainWindow):
             self._append_log(f"[Memory] 复盘生成中... ({date_str})")
         except Exception as e:
             self._append_log(f"[Memory] 启动复盘 worker 失败: {e}")
+
+    def _generate_chunk_async(self, start_ts, end_ts, sys_p, user_p, fallback_markdown: str) -> None:
+        """Phase C: 生成中期记忆 Chunk。LLM 不可用时写本地聚合兜底。"""
+        from PySide6.QtCore import QThread, Signal
+        from datetime import datetime
+
+        class _ChunkWorker(QThread):
+            done = Signal(str)
+
+            def __init__(self, agent_backend, sys_p, user_p, fallback_markdown, start_ts, end_ts, out_dir):
+                super().__init__()
+                self.agent_backend = agent_backend
+                self.sys_p = sys_p
+                self.user_p = user_p
+                self.fallback_markdown = fallback_markdown
+                self.start_ts = start_ts
+                self.end_ts = end_ts
+                self.out_dir = out_dir
+
+            def run(self):
+                try:
+                    start = datetime.fromtimestamp(self.start_ts)
+                    end = datetime.fromtimestamp(self.end_ts)
+                    filename = f"Chunk_{start.strftime('%Y%m%d_%H%M')}_{end.strftime('%H%M')}.md"
+                    out_path = self.out_dir / filename
+                    txt = ""
+                    if self.agent_backend:
+                        try:
+                            txt = self.agent_backend.infer(
+                                system_prompt=self.sys_p,
+                                user_text=self.user_p,
+                                timeout=60,
+                            ) or ""
+                        except Exception:
+                            txt = ""
+                    if not txt.strip():
+                        txt = self.fallback_markdown
+                    out_path.write_text(txt, encoding="utf-8")
+                    self.done.emit(str(out_path))
+                except Exception as e:
+                    self.done.emit(f"ERROR: {e}")
+
+        try:
+            out_dir = USER_DATA_DIR / "diary" / "chunks"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            backend = self.context_tab._agent._backend if hasattr(self, "context_tab") else None
+            self._chunk_worker = _ChunkWorker(backend, sys_p, user_p, fallback_markdown, start_ts, end_ts, out_dir)
+            self._chunk_worker.done.connect(self._on_chunk_done)
+            self._chunk_worker.start()
+            self._append_log("[Chunk] 中期记忆生成中...")
+        except Exception as e:
+            self._append_log(f"[Chunk] 启动 worker 失败: {e}")
+
+    def _on_chunk_done(self, result: str) -> None:
+        if result.startswith("ERROR:"):
+            self._append_log(f"[Chunk] 中期记忆失败: {result}")
+            return
+        self._append_log(f"[Chunk] ✅ 中期记忆已生成: {result}")
+        if hasattr(self, "context_tab") and self.context_tab:
+            from context_toast import ToastIntent
+            intent = ToastIntent(
+                intent="🧠 中期记忆",
+                message=f"已写入 {Path(result).name}",
+                suggested_action="open_diary",
+                action_param=result,
+            )
+            self.context_tab._toast_manager.show_toast(intent)
 
     def _on_diary_done(self, result: str) -> None:
         """复盘生成完成"""

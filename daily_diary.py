@@ -133,3 +133,94 @@ def build_diary_prompt(db: ActivityLogDB, target_date: datetime = None) -> tuple
         top_windows=top_wins
     )
     return sys_prompt, "请生成今日的 Markdown 复盘日记。"
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, float(seconds or 0))
+    hours, remainder = divmod(seconds, 3600)
+    mins = remainder // 60
+    if hours >= 1:
+        return f"{int(hours)}h {int(mins)}m"
+    return f"{int(mins)}m"
+
+
+def extract_chunk_summary(db: ActivityLogDB, start_ts: float, end_ts: float) -> tuple[str, str, str]:
+    """提取一个时间切片的本地聚合摘要，先 GroupBy 再交给 LLM，避免 Token 爆炸。"""
+    try:
+        conn = db._get_conn()
+        tables = [
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'activity_%'"
+            ).fetchall()
+            if db._parse_activity_table_month(r[0]) is not None
+        ]
+        category_totals: dict[str, float] = {}
+        app_totals: dict[str, float] = {}
+        window_totals: dict[str, float] = {}
+        total_active = 0.0
+        record_count = 0
+
+        for table in tables:
+            rows = conn.execute(f"""
+                SELECT exe_name, window_title, category, duration_s
+                FROM {table}
+                WHERE is_idle = 0 AND start_ts <= ? AND COALESCE(end_ts, start_ts) >= ?
+            """, (end_ts, start_ts)).fetchall()
+            for app, title, cat, dur in rows:
+                dur = float(dur or 0)
+                if dur <= 0:
+                    continue
+                record_count += 1
+                total_active += dur
+                category_totals[cat or "[其他]"] = category_totals.get(cat or "[其他]", 0.0) + dur
+                app_totals[app or "unknown"] = app_totals.get(app or "unknown", 0.0) + dur
+                short_title = (title or "").strip()[:60] or "(无标题)"
+                window_totals[short_title] = window_totals.get(short_title, 0.0) + dur
+
+        def top_lines(data: dict[str, float], limit: int = 8) -> str:
+            items = sorted(data.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+            return "\n".join(f"- {name}: {_format_duration(sec)}" for name, sec in items) or "- 暂无"
+
+        meta = (
+            f"切片时间: {datetime.fromtimestamp(start_ts).strftime('%Y-%m-%d %H:%M')}"
+            f" - {datetime.fromtimestamp(end_ts).strftime('%H:%M')}\n"
+            f"有效记录数: {record_count}\n"
+            f"活跃总时长: {_format_duration(total_active)}"
+        )
+        grouped = (
+            "## 分类汇总\n" + top_lines(category_totals) + "\n\n"
+            "## 应用汇总\n" + top_lines(app_totals) + "\n\n"
+            "## Top 窗口\n" + top_lines(window_totals)
+        )
+        fallback = f"# 工作切片摘要\n\n{meta}\n\n{grouped}\n"
+        return meta, grouped, fallback
+    except Exception as e:
+        log_bus.emit(f"[Chunk] 提取切片摘要失败: {e}")
+        return "切片数据提取失败", "暂无", f"# 工作切片摘要\n\n提取失败: {e}\n"
+
+
+CHUNK_PROMPT_TEMPLATE = """你是用户的私人工作记忆整理助手。
+
+下面是一段连续工作切片的本地聚合数据，已经由程序先做了 GroupBy 压缩。
+
+【切片元数据】
+{meta}
+
+【本地聚合】
+{grouped}
+
+请提取：
+1. 核心任务：用户这段时间主要在做什么
+2. 动作倾向：是在开发、排错、沟通、娱乐还是资料整理
+3. 可能的上下文线索：涉及哪些应用/窗口
+4. 下一步建议：一句话即可
+
+输出纯 Markdown，不要代码块。
+"""
+
+
+def build_chunk_prompt(db: ActivityLogDB, start_ts: float, end_ts: float) -> tuple[str, str, str]:
+    """返回 (system_prompt, user_prompt, fallback_markdown)。"""
+    meta, grouped, fallback = extract_chunk_summary(db, start_ts, end_ts)
+    sys_prompt = CHUNK_PROMPT_TEMPLATE.format(meta=meta, grouped=grouped)
+    return sys_prompt, "请生成这段工作切片的中期记忆 Markdown。", fallback
