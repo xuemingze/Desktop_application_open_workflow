@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 import time
 
@@ -31,6 +31,7 @@ class ToastIntent:
     message: str              # "发现 80 端口被占用，要帮你查 nginx.conf 吗？"
     suggested_action: str     # "search_local_files"
     action_param: str         # "nginx.conf"
+    actions: list[dict] = field(default_factory=list)  # 可选按钮: [{label, action, param}]
 
 
 class ToastBubble(QWidget):
@@ -62,7 +63,8 @@ class ToastBubble(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
 
-        self.setFixedSize(self.TOAST_WIDTH, self.TOAST_HEIGHT)
+        self._actions = list(getattr(self.intent, "actions", None) or [])
+        self.setFixedSize(self.TOAST_WIDTH, self.TOAST_HEIGHT + (24 if self._actions else 0))
         self._build_ui()
         self._build_animation()
 
@@ -118,6 +120,22 @@ class ToastBubble(QWidget):
             "QProgressBar::chunk { background: rgba(255,255,255,180); }"
         )
         root.addWidget(self.progress)
+
+        if self._actions:
+            btn_row = QHBoxLayout()
+            btn_row.setSpacing(4)
+            btn_row.addStretch()
+            for action in self._actions[:3]:
+                btn = QPushButton(str(action.get("label", "操作"))[:10])
+                btn.setFixedHeight(20)
+                btn.setStyleSheet(
+                    "QPushButton { color:white; background:rgba(255,255,255,35);"
+                    " border:1px solid rgba(255,255,255,50); border-radius:7px; font-size:10px; padding:1px 6px; }"
+                    "QPushButton:hover { background:rgba(255,255,255,70); }"
+                )
+                btn.clicked.connect(lambda _=False, a=action: self._emit_action(a))
+                btn_row.addWidget(btn)
+            root.addLayout(btn_row)
 
         # 进度条刷新计时器（每秒减一次）
         self._progress_timer = QTimer(self)
@@ -185,6 +203,16 @@ class ToastBubble(QWidget):
     def _on_fade_out_done(self):
         self.closed.emit(self)
         self.deleteLater()
+
+    def _emit_action(self, action: dict):
+        intent = ToastIntent(
+            intent=self.intent.intent,
+            message=self.intent.message,
+            suggested_action=str(action.get("action") or self.intent.suggested_action),
+            action_param=str(action.get("param") or self.intent.action_param),
+        )
+        self.clicked.emit(intent)
+        self.fade_out()
 
     # ---- 鼠标事件 ----
     def enterEvent(self, event):
@@ -323,7 +351,7 @@ class ToastManager(QObject):
 
         for i, toast in enumerate(self._queue):
             # i=0 是最底部，i 越大越靠上
-            target_y = screen.bottom() - ToastBubble.MARGIN_BOTTOM - (i + 1) * ToastBubble.TOAST_HEIGHT - i * ToastBubble.SPACING
+            target_y = screen.bottom() - ToastBubble.MARGIN_BOTTOM - sum(t.height() for t in list(self._queue)[:i + 1]) - i * ToastBubble.SPACING
             target_x = screen.right() - ToastBubble.TOAST_WIDTH - ToastBubble.MARGIN_RIGHT
             target = QPoint(target_x, target_y)
 

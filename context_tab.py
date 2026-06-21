@@ -972,6 +972,15 @@ class ContextTab(QWidget):
     def _on_toast_clicked(self, intent: ToastIntent):
         """用户点击了气泡 → 打开小聊天窗，并同步 AI 对话标签页记录"""
         self._append_log(f"[点击] 用户点击气泡: {intent.suggested_action}({intent.action_param})")
+        action = getattr(intent, "suggested_action", "") or ""
+        if action.startswith("reminder_"):
+            try:
+                parent = self.parent()
+                handler = getattr(parent, "handle_reminder_toast_action", None)
+                if handler and handler(action, getattr(intent, "action_param", "") or ""):
+                    return
+            except Exception as e:
+                self._append_log(f"[Reminder] 点击处理失败: {e}")
         self._inject_toast_context(intent)
         # 学习规则点击后只发送一条真实 AI 请求，不再额外追加“已接受推荐/点击气泡”两段记录
         if getattr(intent, "suggested_action", "") == "ai_prompt" and hasattr(self, "context_chat_tab"):

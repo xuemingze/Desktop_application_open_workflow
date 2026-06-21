@@ -224,3 +224,38 @@ def build_chunk_prompt(db: ActivityLogDB, start_ts: float, end_ts: float) -> tup
     meta, grouped, fallback = extract_chunk_summary(db, start_ts, end_ts)
     sys_prompt = CHUNK_PROMPT_TEMPLATE.format(meta=meta, grouped=grouped)
     return sys_prompt, "请生成这段工作切片的中期记忆 Markdown。", fallback
+
+
+PROFILE_MEMORY_PROMPT_TEMPLATE = """你是本地私人助手的长期记忆整理器。
+
+下面是用户今天和 AI 的对话流水，已经过滤掉 skip_memory=true 的操作型命令。
+
+【聊天流水】
+{chat_digest}
+
+请只提取稳定、有复用价值的用户事实、偏好、项目状态、文件锚点、人物/实体、近期状态。
+不要记录一次性命令，不要记录密码/密钥/隐私正文，不要编造。
+
+输出 JSON 数组，格式：
+[
+  {{"action":"add", "category":"preferences", "content":"用户偏好简短直接的回答", "confidence":0.9}},
+  {{"action":"add", "category":"projects", "content":"用户正在推进桌面自动化助手 Phase D", "confidence":0.8}}
+]
+
+category 只能是 facts/preferences/projects/entities/file_anchors/state。
+如果没有值得长期保存的内容，输出 []。
+"""
+
+
+def build_profile_memory_prompt(target_date: datetime = None) -> tuple[str, str] | None:
+    """读取当天聊天流水，构造用户画像抽取 Prompt。"""
+    try:
+        from chat_memory import build_chat_memory_digest
+        chat_digest = build_chat_memory_digest(target_date or datetime.now())
+        if not chat_digest.strip():
+            return None
+        sys_prompt = PROFILE_MEMORY_PROMPT_TEMPLATE.format(chat_digest=chat_digest[:12000])
+        return sys_prompt, "请抽取今天新增或更新的用户长期画像记忆，严格输出 JSON 数组。"
+    except Exception as e:
+        log_bus.emit(f"[Profile] 构造画像抽取 Prompt 失败: {e}")
+        return None

@@ -223,6 +223,35 @@ class ToolsTab(QWidget):
         hint.setWordWrap(True)
         v.addWidget(hint)
 
+        # Phase D: 独立画像记忆开关
+        line_mem = QFrame()
+        line_mem.setFrameShape(QFrame.HLine)
+        line_mem.setFrameShadow(QFrame.Sunken)
+        line_mem.setStyleSheet("color: #e5e7eb;")
+        v.addWidget(line_mem)
+
+        mem_box = QGroupBox("AI 独立画像记忆")
+        mem_v = QVBoxLayout(mem_box)
+        mem_v.setContentsMargins(8, 4, 8, 6)
+        self.chk_profile_memory = QCheckBox("启用 Proactive Memory（本地长期画像）")
+        self.chk_profile_memory.setToolTip("关闭后不再向 AI 对话注入用户画像，也不再写入新的画像记忆。")
+        try:
+            from user_profile import is_enabled
+            self.chk_profile_memory.setChecked(is_enabled())
+        except Exception:
+            self.chk_profile_memory.setChecked(True)
+        self.chk_profile_memory.toggled.connect(self._on_profile_memory_toggle)
+        mem_v.addWidget(self.chk_profile_memory)
+
+        mem_row = QHBoxLayout()
+        self.btn_clear_profile_memory = QPushButton("清空画像记忆")
+        self.btn_clear_profile_memory.setStyleSheet("QPushButton { color:#b91c1c; padding:5px 10px; }")
+        self.btn_clear_profile_memory.clicked.connect(self._clear_profile_memory)
+        mem_row.addWidget(self.btn_clear_profile_memory)
+        mem_row.addStretch()
+        mem_v.addLayout(mem_row)
+        v.addWidget(mem_box)
+
 
         # ----- 危险操作 -----
         line3 = QFrame()
@@ -949,6 +978,34 @@ exit /b 0
         if main_win is None or not isinstance(main_win, QWidget):
             return
         main_win.log_view.setVisible(checked)
+
+    def _on_profile_memory_toggle(self, checked: bool) -> None:
+        try:
+            from user_profile import set_enabled
+            set_enabled(bool(checked))
+            from log_bus import log_bus
+            log_bus.emit(f"[工具] Proactive Memory {'启用' if checked else '停用'}")
+        except Exception as e:
+            QMessageBox.warning(self, "提示", f"切换画像记忆失败: {e}")
+
+    def _clear_profile_memory(self) -> None:
+        ret = QMessageBox.question(
+            self,
+            "清空画像记忆",
+            "这会将当前长期画像记忆标记为失效，但不会删除聊天流水。确定继续吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if ret != QMessageBox.Yes:
+            return
+        try:
+            from user_profile import clear_all_memory
+            clear_all_memory()
+            QMessageBox.information(self, "完成", "画像记忆已清空。")
+            from log_bus import log_bus
+            log_bus.emit("[工具] 已清空 Proactive Memory")
+        except Exception as e:
+            QMessageBox.warning(self, "提示", f"清空画像记忆失败: {e}")
 
     def _hide_main_to_tray(self) -> None:
         """点击 "立即隐藏到托盘" 按钮"""

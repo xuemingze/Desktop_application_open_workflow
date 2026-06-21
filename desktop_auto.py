@@ -285,7 +285,7 @@ _cli_router()
 import pyperclip
 import win32com.client
 from PIL import Image
-from PySide6.QtCore import Qt, QRect, QPoint, QThread, Signal
+from PySide6.QtCore import Qt, QRect, QPoint, QThread, Signal, QTimer
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QGuiApplication, QAction, QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -1726,7 +1726,9 @@ class MainWindow(QMainWindow):
         # ---- 记忆引擎 (Phase A) ----
         self.memory_engine_mgr: Optional[memory_engine.MemoryEngineManager] = None
         self._diary_scheduler: Optional[daily_diary.DiaryScheduler] = None
+        self._reminder_timer: Optional[QTimer] = None
         self._init_memory_engine()
+        self._init_reminder_scheduler()
 
     # ---- 7.1 日志桥接 ----
     def _append_log(self, msg: str) -> None:
@@ -1826,6 +1828,89 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         super().closeEvent(event)
+
+    # ---- 7.9 提醒任务 (Phase D) ----
+    def _init_reminder_scheduler(self) -> None:
+        """启动本地提醒任务轮询。到期只弹 Toast，不静默执行工作流。"""
+        try:
+            from reminders import init_db
+            init_db()
+            self._reminder_timer = QTimer(self)
+            self._reminder_timer.setInterval(60_000)
+            self._reminder_timer.timeout.connect(self._check_due_reminders)
+            self._reminder_timer.start()
+            QTimer.singleShot(3000, self._check_due_reminders)
+            self._append_log("[Reminder] 提醒调度器已启动")
+        except Exception as e:
+            self._append_log(f"[Reminder] 初始化失败: {e}")
+
+    def _check_due_reminders(self) -> None:
+        try:
+            from reminders import get_due_reminders
+            dues = get_due_reminders(limit=10)
+            for item in dues:
+                self._show_reminder_toast(item)
+        except Exception as e:
+            self._append_log(f"[Reminder] 检查到期提醒失败: {e}")
+
+    def _show_reminder_toast(self, item: dict) -> None:
+        if not hasattr(self, "context_tab") or not self.context_tab:
+            return
+        try:
+            import json
+            from context_toast import ToastIntent
+            rid = int(item.get("id") or 0)
+            content = str(item.get("content") or "提醒")
+            action_type = str(item.get("action_type") or "toast")
+            workflow_name = str(item.get("workflow_name") or "")
+            payload = {"id": rid, "action_type": action_type, "workflow_name": workflow_name}
+            actions = [
+                {"label": "完成", "action": "reminder_done", "param": json.dumps(payload, ensure_ascii=False)},
+                {"label": "延后10分", "action": "reminder_snooze", "param": json.dumps(payload, ensure_ascii=False)},
+            ]
+            if action_type == "run_workflow" and workflow_name:
+                actions.append({
+                    "label": f"运行{workflow_name[:4]}",
+                    "action": "reminder_run_workflow",
+                    "param": json.dumps(payload, ensure_ascii=False),
+                })
+            intent = ToastIntent(
+                intent="🔔 提醒",
+                message=content,
+                suggested_action="reminder_done",
+                action_param=json.dumps(payload, ensure_ascii=False),
+                actions=actions,
+            )
+            self.context_tab._toast_manager.show_toast(intent)
+        except Exception as e:
+            self._append_log(f"[Reminder] 弹出提醒失败: {e}")
+
+    def handle_reminder_toast_action(self, action: str, action_param: str) -> bool:
+        """由 ContextTab 点击提醒 Toast 按钮后回调。"""
+        try:
+            import json
+            from reminders import update_reminder_status
+            payload = json.loads(action_param or "{}")
+            rid = int(payload.get("id") or 0)
+            workflow_name = str(payload.get("workflow_name") or "")
+            if not rid:
+                return False
+            if action == "reminder_snooze":
+                update_reminder_status(rid, "delayed", delay_minutes=10)
+                self._append_log(f"[Reminder] 已延后 10 分钟: #{rid}")
+                return True
+            if action == "reminder_run_workflow" and workflow_name:
+                update_reminder_status(rid, "done")
+                self._append_log(f"[Reminder] 用户确认运行工作流: {workflow_name}")
+                from mcp_embedded import run_workflow_sync
+                run_workflow_sync(workflow_name, log_func=self._append_log)
+                return True
+            update_reminder_status(rid, "done")
+            self._append_log(f"[Reminder] 已完成: #{rid}")
+            return True
+        except Exception as e:
+            self._append_log(f"[Reminder] 处理点击失败: {e}")
+            return False
 
     # ---- 8. 记忆引擎 (Phase A) ----
     def _init_memory_engine(self) -> None:
@@ -2142,6 +2227,21 @@ class MainWindow(QMainWindow):
                     # 写入文件
                     out_path = self.out_dir / f"{self.date_str}.md"
                     out_path.write_text(txt or "（LLM 未返回内容）", encoding="utf-8")
+
+                    # Phase D: 复盘时顺手抽取聊天长期画像，失败不影响日记生成。
+                    try:
+                        from datetime import datetime
+                        from daily_diary import build_profile_memory_prompt
+                        from user_profile import apply_memory_actions, parse_json_actions
+                        target = datetime.strptime(self.date_str, "%Y-%m-%d")
+                        profile_prompt = build_profile_memory_prompt(target)
+                        if profile_prompt:
+                            p_sys, p_user = profile_prompt
+                            raw = self.agent_backend.infer(system_prompt=p_sys, user_text=p_user, timeout=60)
+                            apply_memory_actions(parse_json_actions(raw), source="chat")
+                    except Exception:
+                        pass
+
                     self.done.emit(str(out_path))
                 except Exception as e:
                     self.done.emit(f"ERROR: {e}")

@@ -41,6 +41,9 @@ from context_toast import ToastIntent
 from mcp_embedded import (
     scan_desktop_shortcuts, load_workflows, run_workflow_sync, launch_shortcut_sync,
 )
+from chat_memory import append_chat_log, cleanup_old_logs
+from reminders import create_reminder
+from user_profile import get_active_profile_summary
 
 try:
     from search_panel import search_everything
@@ -112,6 +115,16 @@ TOOL_DEFINITIONS = [
             "path": "文件或文件夹的绝对路径",
             "method": "default (默认应用打开) 或 explorer (在资源管理器中定位)"
         },
+    },
+    {
+        "name": "create_reminder",
+        "description": "当用户要求在未来某个时间提醒他做某事时调用。默认只弹 Toast；如需关联工作流，只创建带按钮的提醒，必须用户到期后点击才运行。",
+        "params": {
+            "trigger_time": "ISO 时间或中文相对时间，如 2026-06-21T15:00:00、半小时后、明天下午3点",
+            "content": "提醒内容",
+            "action_type": "toast 或 run_workflow，默认 toast",
+            "workflow_name": "可选，action_type=run_workflow 时填写工作流名"
+        },
     }
 ]
 
@@ -158,6 +171,20 @@ def tool_run_workflow(name: str) -> dict:
 
 def tool_launch_shortcut(name: str) -> dict:
     return launch_shortcut_sync(name)
+
+
+def tool_create_reminder(trigger_time: str, content: str, action_type: str = "toast", workflow_name: str = "") -> dict:
+    try:
+        reminder_id = create_reminder(
+            trigger_time=trigger_time,
+            content=content,
+            action_type=action_type or "toast",
+            workflow_name=workflow_name or None,
+            created_from_chat=True,
+        )
+        return {"ok": True, "id": reminder_id, "trigger_time": trigger_time, "content": content}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 def tool_search_local_files(query: str, limit: int = 10, path: str = "") -> dict:
@@ -331,10 +358,19 @@ TOOL_DISPATCH = {
         args.get("query", ""), int(args.get("limit", 5))
     ),
     "read_file_content": lambda args: read_file_content_sync(
-        args.get("path", ""), int(args.get("max_lines", 200)), bool(args.get("read_from_tail", False))
+        args.get("path", ""),
+        int(args.get("max_lines", 200)),
+        int(args.get("max_chars", 10000)),
+        bool(args.get("read_from_tail", False)),
     ),
     "open_system_file": lambda args: open_system_file_sync(
         args.get("path", ""), args.get("method", "default")
+    ),
+    "create_reminder": lambda args: tool_create_reminder(
+        args.get("trigger_time", "") or args.get("time_expr", ""),
+        args.get("content", "") or args.get("task_content", ""),
+        args.get("action_type", "toast"),
+        args.get("workflow_name", ""),
     ),
 }
 
@@ -354,6 +390,12 @@ def build_chat_system_prompt(web_enabled: Optional[bool] = None) -> str:
         if web_enabled else
         "当前【联网】未开启：遇到必须联网的问题，回复用户需要开启【联网】开关。"
     )
+    profile_summary = ""
+    try:
+        profile_summary = get_active_profile_summary()
+    except Exception:
+        profile_summary = ""
+    profile_block = f"\n{profile_summary}\n" if profile_summary else ""
     return f"""你是一个桌面自动化助手,运行在用户的 Windows 电脑上。用户会用自然语言跟你说话,你需要:
 1. 理解用户意图
 2. 决定是否需要调用工具
@@ -363,7 +405,7 @@ def build_chat_system_prompt(web_enabled: Optional[bool] = None) -> str:
 【当前运行状态】
 - 联网开关: {web_state}
 - {web_rule}
-
+{profile_block}
 【可用工具】
 {tools_text}
 
@@ -536,10 +578,15 @@ class ContextChatTab(QWidget):
         self._history: list[dict] = []        # 对话历史 [{role, content}]
         self._worker: Optional[ChatWorker] = None
         self._pending_user_msg: str = ""
+        self._pending_tools: list[dict] = []
         self._next_context: list[dict] = []   # 点击气泡后注入给下一轮 AI 的隐藏上下文
         self._inline_status_active = False    # 本轮是否已在对话区显示状态 AI 行
         self._inline_status_phase = ""
         self._max_history = 20               # 保留最近 20 轮
+        try:
+            cleanup_old_logs(retention_days=30)
+        except Exception:
+            pass
         self._build_ui()
         self.setMaximumWidth(900)
 
@@ -673,6 +720,7 @@ class ContextChatTab(QWidget):
             pass
 
         self._pending_user_msg = text
+        self._pending_tools = []
         self._append_user(text)
         self.input_edit.clear()
         self.btn_send.setEnabled(False)
@@ -722,6 +770,7 @@ class ContextChatTab(QWidget):
     @Slot(str, dict)
     def _on_tool_call(self, action: str, args: dict):
         self.log_signal.emit(f"[AI对话] 调用工具: {action}({args})")
+        self._pending_tools.append({"name": action, "args": args, "ok": False})
         if self.chk_show_thinking.isChecked():
             args_str = ", ".join(f"{k}={v}" for k, v in args.items())
             self._append_system(f"🔧 调用工具: {action}({args_str})")
@@ -730,6 +779,10 @@ class ContextChatTab(QWidget):
     def _on_tool_result(self, action: str, result: dict):
         self.log_signal.emit(f"[AI对话] {action} 结果: {json.dumps(result, ensure_ascii=False)[:200]}")
         ok = result.get("ok", False)
+        for item in reversed(self._pending_tools):
+            if item.get("name") == action and item.get("ok") is False:
+                item["ok"] = bool(ok)
+                break
         icon = "✅" if ok else "❌"
         intent = ToastIntent(
             intent=f"{icon} {action}",
@@ -763,6 +816,10 @@ class ContextChatTab(QWidget):
             self._history.append({"role": "assistant", "content": msg})
             while len(self._history) > self._max_history * 2:
                 self._history.pop(0)
+        try:
+            append_chat_log(self._pending_user_msg or "", msg, tools_used=self._pending_tools)
+        except Exception as e:
+            self.log_signal.emit(f"[AI对话] 写入聊天流水失败: {e}")
 
     @Slot(str)
     def _on_error(self, msg: str):
