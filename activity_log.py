@@ -15,6 +15,7 @@ class ActivityLogDB:
         self._lock = threading.Lock()     # 保护写操作与建表
         self._local = threading.local()   # 线程局部存储，隔离 connection
         self._created_tables = set()      # 缓存已确认存在的表名
+        self.purge_old_tables(retention_months=3)
 
     def _get_conn(self) -> sqlite3.Connection:
         """获取当前线程的专属数据库连接"""
@@ -31,6 +32,53 @@ class ActivityLogDB:
         """根据时间戳计算按月分表的表名 (如: activity_2026_06)"""
         dt = datetime.fromtimestamp(ts)
         return f"activity_{dt.strftime('%Y_%m')}"
+
+    @staticmethod
+    def _month_index(year: int, month: int) -> int:
+        return year * 12 + month
+
+    @classmethod
+    def _parse_activity_table_month(cls, table_name: str) -> Optional[int]:
+        """解析 activity_YYYY_MM 表名为月份序号，非法表名返回 None。"""
+        parts = str(table_name or "").split("_")
+        if len(parts) != 3 or parts[0] != "activity":
+            return None
+        try:
+            year = int(parts[1])
+            month = int(parts[2])
+        except ValueError:
+            return None
+        if year < 2000 or month < 1 or month > 12:
+            return None
+        return cls._month_index(year, month)
+
+    def purge_old_tables(self, retention_months: int = 3, now: Optional[datetime] = None) -> list[str]:
+        """清理超过保留期的月分表。
+
+        Activity 数据按月分表，过期数据直接 DROP TABLE，避免单表 DELETE 带来的碎片和慢查询。
+        retention_months=3 表示保留当前月及最近 3 个月内的表。
+        """
+        retention_months = max(1, int(retention_months or 3))
+        now = now or datetime.now()
+        current_idx = self._month_index(now.year, now.month)
+        cutoff_idx = current_idx - retention_months
+        dropped: list[str] = []
+
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'activity_%'"
+            ).fetchall()
+            for (table_name,) in rows:
+                table_idx = self._parse_activity_table_month(table_name)
+                if table_idx is None or table_idx >= cutoff_idx:
+                    continue
+                # table_name 已由 _parse_activity_table_month 校验，只可能是 activity_YYYY_MM。
+                conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+                dropped.append(table_name)
+                self._created_tables.discard(table_name)
+            conn.commit()
+        return dropped
 
     def _ensure_table(self, table_name: str):
         """确保目标月份的数据表存在"""

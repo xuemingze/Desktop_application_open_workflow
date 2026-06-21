@@ -36,6 +36,7 @@ class _FileWriterThread(threading.Thread):
     """后台线程: 独站从队列里取行,批量写入文件
 
     这样主线程 emit() 不会同步打开/关闭文件,避免被杀毒/索引软件卡住。
+    自带轻量日志轮转,避免 desktop_auto.log 长期运行无限增长。
     """
 
     def __init__(self):
@@ -47,10 +48,14 @@ class _FileWriterThread(threading.Thread):
         self._batch: list[str] = []
         self._batch_max = 20     # 攒满 20 行刷一次
         self._flush_interval = 1.0  # 最多 1 秒刷一次
+        self._max_bytes = 10 * 1024 * 1024
+        self._backup_count = 5
 
-    def set_path(self, path: str) -> None:
+    def set_path(self, path: str, max_bytes: int = 10 * 1024 * 1024, backup_count: int = 5) -> None:
         """设置日志文件路径。下一轮 flush 生效。"""
         self._path = path
+        self._max_bytes = max(1024 * 1024, int(max_bytes or self._max_bytes))
+        self._backup_count = max(1, int(backup_count or self._backup_count))
         # 先关旧文件
         if self._fp:
             try:
@@ -105,9 +110,14 @@ class _FileWriterThread(threading.Thread):
             # 如果文件句柄未开, 打开
             if self._fp is None:
                 Path(self._path).parent.mkdir(parents=True, exist_ok=True)
+                self._rotate_if_needed()
                 self._fp = open(self._path, "a", encoding="utf-8", buffering=8192)
             # 一次性写
-            self._fp.write("\n".join(self._batch) + "\n")
+            text = "\n".join(self._batch) + "\n"
+            if self._should_rotate(len(text.encode("utf-8", errors="ignore"))):
+                self._rotate_now()
+                self._fp = open(self._path, "a", encoding="utf-8", buffering=8192)
+            self._fp.write(text)
             self._fp.flush()
         except Exception:
             # 写入失败,丢掉本批
@@ -119,6 +129,58 @@ class _FileWriterThread(threading.Thread):
                 self._fp = None
         finally:
             self._batch.clear()
+
+    def _should_rotate(self, incoming_bytes: int = 0) -> bool:
+        if not self._path or self._max_bytes <= 0:
+            return False
+        try:
+            path = Path(self._path)
+            current = path.stat().st_size if path.exists() else 0
+            return current + max(0, incoming_bytes) > self._max_bytes
+        except Exception:
+            return False
+
+    def _rotate_if_needed(self) -> None:
+        if self._should_rotate(0):
+            self._rotate_now()
+
+    def _rotate_now(self) -> None:
+        if not self._path:
+            return
+        path = Path(self._path)
+        try:
+            if self._fp:
+                try:
+                    self._fp.flush()
+                    self._fp.close()
+                except Exception:
+                    pass
+                self._fp = None
+
+            if not path.exists():
+                return
+
+            # desktop_auto.log.4 -> desktop_auto.log.5, ... desktop_auto.log -> desktop_auto.log.1
+            for idx in range(self._backup_count - 1, 0, -1):
+                src = path.with_name(f"{path.name}.{idx}")
+                dst = path.with_name(f"{path.name}.{idx + 1}")
+                if src.exists():
+                    try:
+                        if dst.exists():
+                            dst.unlink()
+                        src.rename(dst)
+                    except Exception:
+                        pass
+            first = path.with_name(f"{path.name}.1")
+            try:
+                if first.exists():
+                    first.unlink()
+                path.rename(first)
+            except Exception:
+                pass
+        except Exception:
+            # 日志轮转失败不能影响主程序
+            pass
 
 
 class LogBus(QObject):
@@ -145,8 +207,8 @@ class LogBus(QObject):
             # Signal 在 QObject 被 delete 后发会报这个, 忽略
             pass
 
-    def set_log_file(self, path: str) -> None:
-        self._writer.set_path(path)
+    def set_log_file(self, path: str, max_bytes: int = 10 * 1024 * 1024, backup_count: int = 5) -> None:
+        self._writer.set_path(path, max_bytes=max_bytes, backup_count=backup_count)
 
     def shutdown(self) -> None:
         """进程退出前调用, flush 剩余"""
