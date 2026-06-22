@@ -229,21 +229,26 @@ class ContextTab(QWidget):
         gb = QGroupBox(t("ctx_sensor_box"))
         v = QVBoxLayout(gb)
 
+        # 默认全部关闭（由 ai_sense.enabled 默认 false 决定）
         self.chk_clipboard = QCheckBox(t("ctx_chk_clipboard"))
-        self.chk_clipboard.setChecked(True)
+        self.chk_clipboard.setChecked(False)
         v.addWidget(self.chk_clipboard)
+        self.chk_clipboard.toggled.connect(self._on_ai_sense_mode_changed)
 
         self.chk_window = QCheckBox(t("ctx_chk_window"))
-        self.chk_window.setChecked(True)
+        self.chk_window.setChecked(False)
         v.addWidget(self.chk_window)
+        self.chk_window.toggled.connect(self._on_ai_sense_mode_changed)
 
         self.chk_file = QCheckBox(t("ctx_chk_file"))
         self.chk_file.setChecked(False)
         v.addWidget(self.chk_file)
+        self.chk_file.toggled.connect(self._on_ai_sense_mode_changed)
 
         self.chk_process = QCheckBox(t("ctx_chk_process"))
-        self.chk_process.setChecked(True)
+        self.chk_process.setChecked(False)
         v.addWidget(self.chk_process)
+        self.chk_process.toggled.connect(self._on_ai_sense_mode_changed)
 
         layout.addWidget(gb)
 
@@ -432,6 +437,8 @@ class ContextTab(QWidget):
         layout.addWidget(info_gb)
 
         self._load_backend_config_into_ui()
+        # 加载 AI 感知配置（总开关 + 4 个子模式），默认全关
+        self._load_ai_sense_config_into_ui()
 
         layout.addStretch()
         return w
@@ -680,6 +687,10 @@ class ContextTab(QWidget):
 
     # ---- 总开关 ----
     def _on_master_toggle(self, checked: bool):
+        if getattr(self, '_loading_ai_sense_config', False):
+            # 加载配置期间的 toggle 不重复启动/保存
+            self._enabled = checked
+            return
         self._enabled = checked
         if checked:
             modes = {
@@ -697,6 +708,91 @@ class ContextTab(QWidget):
             self.status_label.setText(t("ctx_status_stopped"))
             self.status_label.setStyleSheet("color: #888;")
             self._append_log("[系统] 上下文感知已停止")
+        # 持久化 AI 感知总开关 + 各子模式（默认关闭、启动后记忆）
+        self._save_ai_sense_config(checked)
+
+    def _on_ai_sense_mode_changed(self, _checked: bool) -> None:
+        """4 个子模式 checkbox 变更时：若总开关开着则重启传感器，同时持久化。"""
+        if getattr(self, '_loading_ai_sense_config', False):
+            return
+        self._save_ai_sense_config(self.master_switch.isChecked())
+        if self._enabled and hasattr(self, '_sensor_manager') and self._sensor_manager:
+            modes = {
+                "clipboard": self.chk_clipboard.isChecked(),
+                "window": self.chk_window.isChecked(),
+                "file": self.chk_file.isChecked(),
+                "process": self.chk_process.isChecked(),
+            }
+            self._sensor_manager.start(modes)
+            self._append_log(f"[系统] 上下文感知模式已更新: {modes}")
+
+    def _save_ai_sense_config(self, master_enabled: bool) -> None:
+        """把总开关 + 4 个子模式持久化到 config.json（主配置）"""
+        try:
+            from data_paths import USER_DATA_DIR
+            cfg_path = USER_DATA_DIR / "config.json"
+            cfg = {}
+            if cfg_path.exists():
+                try:
+                    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                except Exception:
+                    cfg = {}
+            cfg["ai_sense_enabled"] = bool(master_enabled)
+            cfg["ai_sense_modes"] = {
+                "clipboard": self.chk_clipboard.isChecked(),
+                "window": self.chk_window.isChecked(),
+                "file": self.chk_file.isChecked(),
+                "process": self.chk_process.isChecked(),
+            }
+            cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            self._append_log(f"[配置] AI 感知配置保存失败: {e}")
+
+    def _load_ai_sense_config_into_ui(self) -> None:
+        """从 config.json 读取 AI 感知配置到 UI（默认全关）。防止在设置状态时触发信号。"""
+        try:
+            from data_paths import USER_DATA_DIR
+            cfg_path = USER_DATA_DIR / "config.json"
+            cfg = {}
+            if cfg_path.exists():
+                try:
+                    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                except Exception:
+                    cfg = {}
+            master_enabled = bool(cfg.get("ai_sense_enabled", False))
+            modes = cfg.get("ai_sense_modes", {}) if isinstance(cfg.get("ai_sense_modes"), dict) else {}
+            # 在加载期间阻断 toggle 信号避免重复保存
+            self._loading_ai_sense_config = True
+            try:
+                for chk, key in (
+                    (self.chk_clipboard, "clipboard"),
+                    (self.chk_window, "window"),
+                    (self.chk_file, "file"),
+                    (self.chk_process, "process"),
+                ):
+                    chk.setChecked(bool(modes.get(key, False)))
+                self.master_switch.setChecked(master_enabled)
+            finally:
+                self._loading_ai_sense_config = False
+            if master_enabled:
+                # 启动后记忆：自动开启传感器
+                self._enabled = True
+                modes_now = {
+                    "clipboard": self.chk_clipboard.isChecked(),
+                    "window": self.chk_window.isChecked(),
+                    "file": self.chk_file.isChecked(),
+                    "process": self.chk_process.isChecked(),
+                }
+                self._sensor_manager.start(modes_now)
+                self.status_label.setText(t("ctx_status_running"))
+                self.status_label.setStyleSheet("color: #0a0;")
+                self._append_log(f"[系统] 上下文感知已从配置恢复，模式: {modes_now}")
+            else:
+                self.status_label.setText(t("ctx_status_stopped"))
+                self.status_label.setStyleSheet("color: #888;")
+        except Exception as e:
+            self._append_log(f"[配置] AI 感知配置加载失败: {e}")
 
     # ---- 记忆引擎事件 (Module A) ----
     def _on_mem_master_toggle(self, checked: bool) -> None:

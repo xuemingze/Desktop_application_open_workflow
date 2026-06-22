@@ -113,8 +113,30 @@ class ToolsTab(QWidget):
         self.mcp_proc: Optional[subprocess.Popen] = None
 
         self._build_ui()
-        # 启动时立即同步检查状态 (不走 QTimer 延迟, 避免“检测中”闪现)
+        # 启动时立即同步检查状态 (不走 QTimer 延迟, 避免"检测中"闪现）
         self._refresh_mcp_status()
+
+        # 加载桥接配置并初始化 UI
+        cfg = self._load_global_config()
+        self.chk_companion_enabled.setChecked(bool(cfg.get("companion_enabled", False)))
+        self.edit_companion_token.setText(cfg.get("companion_token", ""))
+        whitelist = cfg.get("companion_whitelist_workflows", [])
+        if isinstance(whitelist, list):
+            self.edit_companion_whitelist.setText(",".join(whitelist) if whitelist else "")
+        # 连接桥接线程信号（如果主窗口可用）
+        main_win = self.window()
+        if main_win and hasattr(main_win, "_companion_bridge") and hasattr(main_win._companion_bridge, "log_signal"):
+            main_win._companion_bridge.log_signal.connect(self._on_companion_log)
+            main_win._companion_bridge.status_signal.connect(self._on_companion_status)
+
+    def _on_companion_log(self, msg: str) -> None:
+        """桥接线程日志回调"""
+        from log_bus import log_bus
+        log_bus.emit(f"[桥接] {msg}")
+
+    def _on_companion_status(self, running: bool, msg: str) -> None:
+        """桥接线程状态回调"""
+        self._refresh_companion_status()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -233,8 +255,8 @@ class ToolsTab(QWidget):
         mem_box = QGroupBox("AI 独立画像记忆")
         mem_v = QVBoxLayout(mem_box)
         mem_v.setContentsMargins(8, 4, 8, 6)
-        self.chk_profile_memory = QCheckBox("启用 Proactive Memory（本地长期画像）")
-        self.chk_profile_memory.setToolTip("关闭后不再向 AI 对话注入用户画像，也不再写入新的画像记忆。")
+        self.chk_profile_memory = QCheckBox("启用 Proactive Memory(本地长期画像)")
+        self.chk_profile_memory.setToolTip("关闭后不再向 AI 对话注入用户画像,也不再写入新的画像记忆。")
         try:
             from user_profile import is_enabled
             self.chk_profile_memory.setChecked(is_enabled())
@@ -252,6 +274,53 @@ class ToolsTab(QWidget):
         mem_v.addLayout(mem_row)
         v.addWidget(mem_box)
 
+        # Phase D: 桌宠桥接配置
+        line_companion = QFrame()
+        line_companion.setFrameShape(QFrame.HLine)
+        line_companion.setFrameShadow(QFrame.Sunken)
+        line_companion.setStyleSheet("color: #e5e7eb;")
+        v.addWidget(line_companion)
+
+        companion_box = QGroupBox(t("桌宠桥接"))
+        companion_v = QVBoxLayout(companion_box)
+        companion_v.setContentsMargins(8, 4, 8, 6)
+
+        self.chk_companion_enabled = QCheckBox("启用桥接")
+        self.chk_companion_enabled.setToolTip("启用后,本地 HTTP Server 将在端口 16260 上运行,允许 MetaPact 调用工作流和状态。")
+        self.chk_companion_enabled.toggled.connect(self._on_companion_enabled_toggle)
+        companion_v.addWidget(self.chk_companion_enabled)
+
+        # Token 输入
+        token_row = QHBoxLayout()
+        token_row.addWidget(QLabel("Token (可选)"))
+        self.edit_companion_token = QLineEdit()
+        self.edit_companion_token.setPlaceholderText("留空则不校验")
+        self.edit_companion_token.setEchoMode(QLineEdit.Password)
+        self.edit_companion_token.editingFinished.connect(self._on_companion_token_changed)
+        token_row.addWidget(self.edit_companion_token)
+        token_row.addStretch()
+        companion_v.addLayout(token_row)
+
+        # 工作流白名单
+        whitelist_row = QHBoxLayout()
+        whitelist_row.addWidget(QLabel("工作流白名单 (逗号分隔)"))
+        self.edit_companion_whitelist = QLineEdit()
+        self.edit_companion_whitelist.setPlaceholderText("留空则不限制")
+        self.edit_companion_whitelist.editingFinished.connect(self._on_companion_whitelist_changed)
+        whitelist_row.addWidget(self.edit_companion_whitelist)
+        whitelist_row.addStretch()
+        companion_v.addLayout(whitelist_row)
+
+        # 状态显示
+        status_row = QHBoxLayout()
+        status_row.addWidget(QLabel("状态:"))
+        self.lbl_companion_status = QLabel("未启动")
+        self.lbl_companion_status.setStyleSheet("color: #666; font-size: 11px;")
+        status_row.addWidget(self.lbl_companion_status)
+        status_row.addStretch()
+        companion_v.addLayout(status_row)
+
+        v.addWidget(companion_box)
 
         # ----- 危险操作 -----
         line3 = QFrame()
@@ -304,7 +373,7 @@ class ToolsTab(QWidget):
         self._data_dir_edit = QLineEdit(str(self._get_current_data_dir()))
         self._data_dir_edit.setStyleSheet("background: #e8f0fe; padding: 4px 6px; border-radius: 3px;")
         self._data_dir_edit.editingFinished.connect(self._on_data_dir_edit_finished)
-        self._btn_browse_dir = QPushButton("…")
+        self._btn_browse_dir = QPushButton("...")
         self._btn_browse_dir.setMaximumWidth(36)
         self._btn_browse_dir.setToolTip(t("tools_data_migrate_title"))
         self._btn_browse_dir.clicked.connect(self._on_browse_data_dir)
@@ -332,7 +401,7 @@ class ToolsTab(QWidget):
         return gb
 
     def _get_current_data_dir(self) -> Path:
-        """获取当前数据目录，desktop_auto 局部导入避免循环依赖。"""
+        """获取当前数据目录,desktop_auto 局部导入避免循环依赖。"""
         try:
             from data_paths import USER_DATA_DIR as _data_dir
             return Path(_data_dir).expanduser().resolve()
@@ -349,7 +418,7 @@ class ToolsTab(QWidget):
             self._on_data_dir_edit_finished()
 
     def _on_data_dir_edit_finished(self) -> None:
-        """目录一改就弹迁移确认；取消则恢复当前目录。"""
+        """目录一改就弹迁移确认;取消则恢复当前目录。"""
         current = self._get_current_data_dir()
         target_text = self._data_dir_edit.text().strip() if hasattr(self, "_data_dir_edit") else ""
         if not target_text:
@@ -366,7 +435,7 @@ class ToolsTab(QWidget):
         self._do_migrate_data_dir()
 
     def _do_migrate_data_dir(self) -> None:
-        """生成脱机迁移脚本：主程序退出后用 robocopy /MOVE 移动目录内容。"""
+        """生成脱机迁移脚本:主程序退出后用 robocopy /MOVE 移动目录内容。"""
         from i18n import t
 
         current = self._get_current_data_dir()
@@ -375,7 +444,7 @@ class ToolsTab(QWidget):
             QMessageBox.warning(self, t("tools_data_migrate"), t("tools_data_migrate_empty", path=str(current)))
             return
 
-        # 用户选择的是父目录；实际数据目录固定为 <父目录>\桌面自动化助手。
+        # 用户选择的是父目录;实际数据目录固定为 <父目录>\桌面自动化助手。
         target = normalize_data_dir_target(target_text)
         if current == target:
             QMessageBox.information(self, t("tools_data_migrate"), t("tools_data_migrate_same"))
@@ -398,10 +467,10 @@ class ToolsTab(QWidget):
             guard = QMessageBox.question(
                 self,
                 t("tools_data_migrate"),
-                "你正在把数据目录迁回默认 C 盘目录：\n\n"
-                f"源目录：{current}\n"
-                f"目标目录：{target}\n\n"
-                "这通常是误操作。只有你明确要迁回 C 盘时才继续。是否继续？",
+                "你正在把数据目录迁回默认 C 盘目录:\n\n"
+                f"源目录:{current}\n"
+                f"目标目录:{target}\n\n"
+                "这通常是误操作。只有你明确要迁回 C 盘时才继续。是否继续?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -413,7 +482,7 @@ class ToolsTab(QWidget):
         reply = QMessageBox.question(
             self,
             t("tools_data_migrate"),
-            t("tools_data_migrate_confirm", src=str(current), dst=str(target)) + f"\n\n源目录：{current}\n目标目录：{target}",
+            t("tools_data_migrate_confirm", src=str(current), dst=str(target)) + f"\n\n源目录:{current}\n目标目录:{target}",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -443,7 +512,7 @@ class ToolsTab(QWidget):
         pending_file = target / MIGRATION_PENDING_FILE
 
         try:
-            # 点“是”后先落目标指针与 pending 标记，随后立即重读刷新，确保 GUI 当前目录已变更。
+            # 点"是"后先落目标指针与 pending 标记,随后立即重读刷新,确保 GUI 当前目录已变更。
             target.mkdir(parents=True, exist_ok=True)
             default_dir.mkdir(parents=True, exist_ok=True)
             pointer_payload = json.dumps({"path": str(target)}, ensure_ascii=False, indent=2)
@@ -542,7 +611,7 @@ exit /b 0
         try:
             bat_script_path.parent.mkdir(parents=True, exist_ok=True)
             ps_script_path.write_text(ps_code, encoding="utf-8-sig")
-            # cmd.exe 按系统 ANSI/OEM 编码解析 .bat；UTF-8 会把中文路径读乱码。
+            # cmd.exe 按系统 ANSI/OEM 编码解析 .bat;UTF-8 会把中文路径读乱码。
             bat_script_path.write_text(script_code, encoding="mbcs")
         except Exception as e:
             try:
@@ -612,7 +681,7 @@ exit /b 0
         try:
             set_lang(new_lang)
             lang_name = self.lang_combo.itemText(idx)
-            # 同时推送气泡通知（同步到 AI 对话 tab）
+            # 同时推送气泡通知(同步到 AI 对话 tab)
             main_win = self.parent()
             if main_win and hasattr(main_win, "context_tab") and main_win.context_tab:
                 from context_toast import ToastIntent
@@ -874,8 +943,8 @@ exit /b 0
         batch_path = Path(tmp_dir) / ("uninstall_desktop_auto_" + str(os.getpid()) + ".bat")
         exe_name = Path(exe_path).name
 
-        # 不要删除快捷栏自添加连接：这些是用户资产，不是程序缓存。
-        # 卸载时先临时保存 custom_apps.json / shortcut_meta.json，清理数据目录后再恢复。
+        # 不要删除快捷栏自添加连接:这些是用户资产,不是程序缓存。
+        # 卸载时先临时保存 custom_apps.json / shortcut_meta.json,清理数据目录后再恢复。
         _t = {
             "exe_name": exe_name,
             "exe_path": exe_path,
@@ -992,7 +1061,7 @@ exit /b 0
         ret = QMessageBox.question(
             self,
             "清空画像记忆",
-            "这会将当前长期画像记忆标记为失效，但不会删除聊天流水。确定继续吗？",
+            "这会将当前长期画像记忆标记为失效,但不会删除聊天流水。确定继续吗?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -1173,3 +1242,46 @@ exit /b 0
                 QMessageBox.information(self, "提示", "桌面快捷方式不存在")
         except Exception as e:
             self.lbl_mcp_status.setText(f"状态: ❌ 删除失败: {e}")
+
+    # ===== 桌宠桥接配置方法 =====
+    def _on_companion_enabled_toggle(self, checked: bool) -> None:
+        """桥接开关切换"""
+        cfg = self._load_global_config()
+        cfg["companion_enabled"] = bool(checked)
+        self._save_global_config(cfg)
+        # 通知主窗口更新桥接配置
+        main_win = self.window()
+        if main_win and hasattr(main_win, "_update_companion_config"):
+            main_win._update_companion_config(cfg)
+        # 刷新状态显示
+        self._refresh_companion_status()
+
+    def _on_companion_token_changed(self) -> None:
+        """Token 输入变更"""
+        self._on_companion_config_changed()
+
+    def _on_companion_whitelist_changed(self) -> None:
+        """白名单输入变更"""
+        self._on_companion_config_changed()
+
+    def _on_companion_config_changed(self) -> None:
+        """桥接配置变更(token 或白名单)"""
+        cfg = {
+            "token": self.edit_companion_token.text().strip(),
+            "whitelist_workflows": [w.strip() for w in self.edit_companion_whitelist.text().split(",") if w.strip()],
+        }
+        main_win = self.window()
+        if main_win and hasattr(main_win, "_update_companion_config"):
+            main_win._update_companion_config(cfg)
+        self._save_global_config(cfg)
+
+    def _refresh_companion_status(self) -> None:
+        """刷新桥接状态显示"""
+        cfg = self._load_global_config()
+        enabled = bool(cfg.get("companion_enabled", False))
+        if enabled:
+            self.lbl_companion_status.setText("状态: 已启用")
+            self.lbl_companion_status.setStyleSheet("color: #16a34a; font-size: 11px;")
+        else:
+            self.lbl_companion_status.setText("状态: 已禁用")
+            self.lbl_companion_status.setStyleSheet("color: #666; font-size: 11px;")
