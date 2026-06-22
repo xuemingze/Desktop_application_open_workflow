@@ -1883,22 +1883,23 @@ class MainWindow(QMainWindow):
     def _update_vtuber_config(self, config: dict) -> None:
         if self._vtuber_bridge:
             enabled = config.get("vtuber_enabled", False)
-            url = config.get("vtuber_backend_url", "http://127.0.0.1:18888")
+            url = config.get("vtuber_backend_url", "http://127.0.0.1:12393")
             self._vtuber_bridge.enabled = enabled
             self._vtuber_bridge.backend_url = url
+            self._vtuber_bridge._http_url = url
             self._append_log(f"[VTuber] 桥接配置已更新: enabled={enabled}, url={url}")
 
     def _init_vtuber_bridge(self) -> None:
         try:
             from vtuber_bridge import VTuberBridge
-            config = {"vtuber_enabled": False, "vtuber_backend_url": "http://127.0.0.1:18888"}
+            config = {"vtuber_enabled": False, "vtuber_backend_url": "http://127.0.0.1:12393"}
             config_path = USER_DATA_DIR / "config.json"
             if config_path.exists():
                 try:
                     import json
                     saved = json.loads(config_path.read_text(encoding="utf-8"))
                     config["vtuber_enabled"] = saved.get("vtuber_enabled", False)
-                    config["vtuber_backend_url"] = saved.get("vtuber_backend_url", "http://127.0.0.1:18888")
+                    config["vtuber_backend_url"] = saved.get("vtuber_backend_url", "http://127.0.0.1:12393")
                 except Exception:
                     pass
             self._vtuber_bridge = VTuberBridge(

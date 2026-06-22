@@ -341,8 +341,8 @@ class ToolsTab(QWidget):
         url_row = QHBoxLayout()
         url_row.addWidget(QLabel("后端地址"))
         self.edit_vtuber_url = QLineEdit()
-        self.edit_vtuber_url.setPlaceholderText("http://127.0.0.1:18888")
-        self.edit_vtuber_url.setText(cfg.get("vtuber_backend_url", "http://127.0.0.1:18888"))
+        self.edit_vtuber_url.setPlaceholderText("http://127.0.0.1:12393")
+        self.edit_vtuber_url.setText(cfg.get("vtuber_backend_url", "http://127.0.0.1:12393"))
         self.edit_vtuber_url.textChanged.connect(self._on_vtuber_url_changed)
         url_row.addWidget(self.edit_vtuber_url)
         url_row.addStretch()
@@ -1345,7 +1345,7 @@ exit /b 0
         cfg = self._load_global_config()
         enabled = bool(cfg.get("vtuber_enabled", False))
         if enabled:
-            url = cfg.get("vtuber_backend_url", "http://127.0.0.1:18888")
+            url = cfg.get("vtuber_backend_url", "http://127.0.0.1:12393")
             self.lbl_vtuber_status.setText(f"状态: 已启用 ({url})")
             self.lbl_vtuber_status.setStyleSheet("color: #16a34a; font-size: 11px;")
         else:
