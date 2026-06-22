@@ -689,36 +689,41 @@ class ContextTab(QWidget):
 
     # ---- 记忆引擎事件 (Module A) ----
     def _on_mem_master_toggle(self, checked: bool) -> None:
-        if not hasattr(self._agent, 'memory_engine_mgr'):
+        # memory_engine_mgr 在 DesktopAutoWindow (self.window()) 上，不在 ContextAgent 上
+        win = self.window()
+        if not win or not hasattr(win, 'memory_engine_mgr') or not win.memory_engine_mgr:
+            self._append_log("[MEM] 记忆引擎未就绪，请先启动应用")
             return
         if checked:
-            self._agent.memory_start()
+            win.memory_start()
             self.mem_status_label.setText(t("ctx_mem_status_on"))
             self.mem_status_label.setStyleSheet("color: #0a0;")
             self._append_log("[MEM] 记忆引擎已启动")
         else:
-            if self._agent.memory_engine_mgr:
-                self._agent.memory_engine_mgr.stop()
+            win.memory_engine_mgr.stop()
             self.mem_status_label.setText(t("ctx_mem_status_off"))
             self.mem_status_label.setStyleSheet("color: #c00;")
             self._append_log("[MEM] 记忆引擎已停止")
 
     def _on_mem_pause(self, seconds: int) -> None:
-        if hasattr(self._agent, 'memory_pause'):
-            self._agent.memory_pause(seconds)
+        win = self.window()
+        if win and hasattr(win, 'memory_pause'):
+            win.memory_pause(seconds)
             self._append_log(f"[MEM] 已暂停 {seconds // 3600} 小时")
 
     def _on_mem_resume(self) -> None:
-        if hasattr(self._agent, 'memory_start'):
-            self._agent.memory_start()
+        win = self.window()
+        if win and hasattr(win, 'memory_start'):
+            win.memory_start()
             self._append_log("[MEM] 记忆引擎已恢复")
 
     def _on_mem_interval_change(self) -> None:
         val = self.mem_interval_spin.value()
         self._config['memory_interval_sec'] = val
         self._save_config()
-        if hasattr(self._agent, 'memory_engine_mgr') and self._agent.memory_engine_mgr:
-            self._agent.memory_engine_mgr.set_interval(val)
+        win = self.window()
+        if win and hasattr(win, 'memory_engine_mgr') and win.memory_engine_mgr:
+            win.memory_engine_mgr.set_interval(val)
         self._append_log(f"[MEM] 采样间隔已更新为 {val} 秒")
 
     def _on_mem_log_bus(self, msg: str) -> None:
@@ -766,14 +771,15 @@ class ContextTab(QWidget):
 
     def _on_diary_generate_now(self) -> None:
         from daily_diary import build_diary_prompt
-        if not (hasattr(self._agent, 'memory_engine_mgr') and self._agent.memory_engine_mgr):
+        win = self.window()
+        if not (win and hasattr(win, 'memory_engine_mgr') and win.memory_engine_mgr):
             self._append_log("[MEM] 立即复盘失败: 记忆引擎未启动")
             return
-        if not hasattr(self._agent.memory_engine_mgr, 'db') or not self._agent.memory_engine_mgr.db:
+        if not hasattr(win.memory_engine_mgr, 'db') or not win.memory_engine_mgr.db:
             self._append_log("[MEM] 立即复盘失败: 数据库未就绪")
             return
         try:
-            db = self._agent.memory_engine_mgr.db
+            db = win.memory_engine_mgr.db
             sys_p, user_p = build_diary_prompt(db)
             self._append_log(f"[MEM] 复盘生成请求已提交 ({len(sys_p)} char prompt)")
             intent = ToastIntent(
