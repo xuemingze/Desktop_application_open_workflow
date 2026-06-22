@@ -17,7 +17,7 @@ import os
 import sys
 import threading
 import queue
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -30,6 +30,13 @@ if sys.platform == "win32":
         sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
+
+# 固定 CST (UTC+8)，不依赖系统 TZ 或 BIOS 时钟模式
+_CST = timezone(timedelta(hours=8))
+
+def _cst_now() -> datetime:
+    """返回当前 CST 时间（显式 timezone-aware）"""
+    return datetime.now(_CST)
 
 
 class _FileWriterThread(threading.Thread):
@@ -192,11 +199,10 @@ class LogBus(QObject):
         super().__init__()
         self._writer = _FileWriterThread()
         self._writer.start()
-        # Qt timer for Qt-thread deferred writes (also routes through writer)
 
     def emit(self, msg: str) -> None:
         """发送一条日志 (主线程调用, 不会阻塞 I/O)"""
-        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        ts = _cst_now().strftime("%H:%M:%S.%f")[:-3]
         line = f"[{ts}] {msg}"
         # 文件 (异步, 不阻塞)
         self._writer.submit(line)
