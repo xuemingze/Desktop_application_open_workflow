@@ -96,43 +96,14 @@ CONFIG_FILE = USER_DATA_DIR / "context_aware_config.json"
 
 
 # ---------------------------------------------------------------------------
-# 异步日记生成 Worker（模块级，避免方法内闭包陷阱）
+# 异步日记生成 Worker（threading.Thread + QTimer回到主线程，完全避免 PySide6 Signal 跨线程问题）
 # ---------------------------------------------------------------------------
-class _DiaryWorker(QThread):
-    """后台 QThread：调用 AI 生成日记并写入文件"""
-    done = Signal(str)   # 成功=文件绝对路径，失败=空字符串
-    log = Signal(str)    # 跨线程日志
+import threading
 
-    def __init__(self, backend, sys_p: str, user_p: str, out_dir, parent=None):
-        super().__init__(parent)
-        self._backend = backend
-        self._sys_p = sys_p
-        self._user_p = user_p
-        self._out_dir = out_dir
-
-    def run(self):
-        try:
-            self.log.emit("[MEM] AI 正在生成复盘...")
-            txt = ""
-            if self._backend:
-                try:
-                    txt = self._backend.infer(self._sys_p, self._user_p, timeout=60.0) or ""
-                except Exception as ex:
-                    self.log.emit(f"[MEM] AI 调用异常: {ex}")
-            if not txt:
-                txt = "[MEM] AI 未返回内容，以下为原始数据汇总。\n\n" + self._user_p
-            from datetime import datetime
-            date_str = datetime.now().strftime("%Y-%m-%d")
-            filename = f"Diary_{date_str}.md"
-            out_path = self._out_dir / filename
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(txt, encoding="utf-8")
-            path_str = str(out_path.resolve())
-            self.log.emit(f"[MEM] 复盘已保存: {path_str}")
-            self.done.emit(path_str)
-        except Exception as e:
-            self.log.emit(f"[MEM] 复盘生成异常: {e}")
-            self.done.emit("")
+class _DiaryResult:
+    def __init__(self):
+        self.path = ""  # 成功=文件路径，失败=""
+        self.logs = []  # 过程日志列表
 
 
 class ContextTab(QWidget):
@@ -827,21 +798,46 @@ class ContextTab(QWidget):
             sys_p, user_p = build_diary_prompt(db)
             diary_dir = USER_DATA_DIR / 'diary'
             backend = self._agent._backend
-            worker = _DiaryWorker(backend, sys_p, user_p, diary_dir)
+            result = _DiaryResult()
 
-            def _on_done(path: str):
-                if path:
-                    self._append_log(f"[MEM] 复盘已生成: {path}")
+            def _thread_target():
+                """运行在后台线程：调 AI 并写文件，不操作任何 Qt 对象"""
+                result.logs.append("[MEM] AI 正在生成复盘...")
+                txt = ""
+                if backend:
+                    try:
+                        txt = backend.infer(sys_p, user_p, timeout=60.0) or ""
+                    except Exception as ex:
+                        result.logs.append(f"[MEM] AI 调用异常: {ex}")
+                if not txt:
+                    txt = "[MEM] AI 未返回内容，以下为原始数据汇总。\n\n" + user_p
+                try:
+                    from datetime import datetime
+                    date_str = datetime.now().strftime("%Y-%m-%d")
+                    filename = f"Diary_{date_str}.md"
+                    out_path = diary_dir / filename
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                    out_path.write_text(txt, encoding="utf-8")
+                    result.path = str(out_path.resolve())
+                    result.logs.append(f"[MEM] 复盘已保存: {result.path}")
+                except Exception as e:
+                    result.logs.append(f"[MEM] 复盘写入异常: {e}")
+
+            def _on_thread_done():
+                """运行在主线程：通过 QTimer.singleShot 回调，结果通过 result 对象传递"""
+                for log_msg in result.logs:
+                    self._append_log(log_msg)
+                if result.path:
                     intent = ToastIntent(
                         intent="\U0001f4dd 复盘完成",
                         message="复盘已生成，点击打开",
                         suggested_action="open_file",
-                        action_param=path,
+                        action_param=result.path,
                     )
                     self._toast_manager.show_toast(intent)
                     self.toast_broadcast.emit(intent)
                 else:
-                    self._append_log("[MEM] 复盘生成失败（AI 未返回内容）")
+                    self._append_log("[MEM] 复盘生成失败")
                     intent = ToastIntent(
                         intent="\U0001f4dd 复盘失败",
                         message="复盘生成失败，请检查 AI 后端是否可用",
@@ -850,9 +846,15 @@ class ContextTab(QWidget):
                     )
                     self._toast_manager.show_toast(intent)
 
-            worker.log.connect(self._append_log)
-            worker.done.connect(_on_done)
-            worker.start()
+            thread = threading.Thread(target=_thread_target, daemon=True)
+            thread.start()
+            # 等线程结束后，通过 QTimer.singleShot 回到主线程执行回调
+            def _wait_and_callback():
+                if thread.is_alive():
+                    QTimer.singleShot(100, _wait_and_callback)
+                else:
+                    QTimer.singleShot(0, _on_thread_done)
+            QTimer.singleShot(100, _wait_and_callback)
         except Exception as e:
             self._append_log(f"[MEM] 立即复盘异常: {e}")
 
