@@ -4,12 +4,19 @@
 from __future__ import annotations
 
 import datetime as _dt
-import re
+import re as _re
 import sqlite3
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from data_paths import USER_DATA_DIR
+
+# CST (UTC+8) 时区修复：避免 Windows BIOS=UTC 导致 datetime.now() 返回 UTC 而非本地时间
+_CST = _dt.timezone(_dt.timedelta(hours=8))
+
+def _now() -> _dt.datetime:
+    """返回当前 CST 时间（naive，不带时区信息但值为本地时间）"""
+    return _dt.datetime.now(_CST).replace(microsecond=0)
 
 DB_PATH = USER_DATA_DIR / "reminders.sqlite"
 _VALID_ACTIONS = {"toast", "run_workflow"}
@@ -80,7 +87,7 @@ def parse_time_expr(time_expr: str, base: Optional[_dt.datetime] = None) -> str:
 
     if "半小时" in text or "半个小时" in text:
         return (base + _dt.timedelta(minutes=30)).isoformat()
-    m = re.search(r"(\d+)\s*(分钟|分|小时|个小时|天)后", text)
+    m = _re.search(r"(\d+)\s*(分钟|分|小时|个小时|天)后", text)
     if m:
         num = int(m.group(1))
         unit = m.group(2)
@@ -95,7 +102,7 @@ def parse_time_expr(time_expr: str, base: Optional[_dt.datetime] = None) -> str:
     # 明天/今天 + 上午/下午 + N点[:MM]
     day_offset = 1 if "明天" in text else 0
     if "今天" in text or "明天" in text:
-        m = re.search(r"(上午|下午|晚上|中午)?\s*(\d{1,2})(?:[:：点](\d{1,2})?)?", text)
+        m = _re.search(r"(上午|下午|晚上|中午)?\s*(\d{1,2})(?:[:：点](\d{1,2})?)?", text)
         if m:
             period = m.group(1) or ""
             hour = int(m.group(2))
