@@ -715,11 +715,11 @@ class ContextTab(QWidget):
         self._append_log(f"[MEM] 采样间隔已更新为 {interval} 秒")
 
     def _on_mem_log_bus(self, msg: str) -> None:
-        """Module D 日志: 只显示 [MEM] 标签的记录"""
+        """Module D 日志: 只显示 [Memory] 标签的记录（[MemoryEngine]/[Memory]/[IdleWatcher]/[MainPoll]）"""
         if not hasattr(self, 'mem_log_view'):
             return
-        tag = "[MEM]"
-        if tag not in msg:
+        # memory_engine 发: [MemoryEngine], [Memory], [IdleWatcher], [MainPoll]
+        if not any(tag in msg for tag in ("[MemoryEngine]", "[Memory]", "[IdleWatcher]", "[MainPoll]")):
             return
         from datetime import datetime
         ts = datetime.now().strftime("%H:%M:%S")

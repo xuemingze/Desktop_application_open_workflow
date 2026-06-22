@@ -220,6 +220,17 @@ class LogBus(QObject):
         """进程退出前调用, flush 剩余"""
         self._writer.stop()
 
+    def connect(self, slot) -> None:
+        """连接 log_signal 槽函数（类似 Qt signal.connect）"""
+        self.log_signal.connect(slot)
+
+    def disconnect(self, slot) -> None:
+        """断开 log_signal 槽函数"""
+        try:
+            self.log_signal.disconnect(slot)
+        except Exception:
+            pass
+
 
 # 进程内单例
 log_bus = LogBus()
