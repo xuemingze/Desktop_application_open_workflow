@@ -146,6 +146,12 @@ class ContextTab(QWidget):
         self._behavior_matcher.triggered.connect(self._on_behavior_question)
 
         self._build_ui()
+        # 全域日志窗口引用（指向主窗口 DesktopAutoWindow.log_view）
+        # 这样其他 tab 按钮的 _append_log 写这里，视觉反馈才正常
+        self.log_view = self.window().log_view if (
+            hasattr(self, 'window') and callable(self.window) and
+            self.window() and hasattr(self.window(), 'log_view')
+        ) else None
         self._refresh_rule_list()
         self._refresh_blacklist_list()
 
@@ -654,7 +660,7 @@ class ContextTab(QWidget):
         # 连接 log_bus，Module D 只显示 [MEM] 标签的记录
         try:
             from log_bus import log_bus
-            self._mem_log_conn = log_bus.connect(self._on_mem_log_bus)
+            self._mem_log_conn = log_bus.log_signal.connect(self._on_mem_log_bus)
         except Exception:
             pass
 
