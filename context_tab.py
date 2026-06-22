@@ -791,14 +791,14 @@ class ContextTab(QWidget):
         """弹出挂起提醒查看器窗口"""
         self._append_log(f"[REM] 方法被调用")
         try:
-            dlg = QDialog(self._main_window, Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+            dlg = QDialog(self.window(), Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
             dlg.setWindowTitle(t("ctx_remind_view_pending"))
             dlg.setMinimumSize(600, 400)
         except Exception as e:
             self._append_log(f"[REM] 弹窗异常: {e}")
             QMessageBox.critical(
-                self._main_window,
-                t("error"),
+                self.window(),
+                t("error") if hasattr(t, '__call__') else "错误",
                 f"无法打开提醒查看器: {e}",
             )
             return
@@ -1303,25 +1303,24 @@ class ContextTab(QWidget):
     # ---- 日志 ----
     def _append_log(self, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")
-        # 1. 写本 tab 的本地 log_view
-        self.log_view.append(f"[{ts}] {msg}")
+        # 1. 写本 tab 的本地 log_view (如果存在)
+        if hasattr(self, 'log_view') and self.log_view:
+            self.log_view.append(f"[{ts}] {msg}")
+            # 限制行数 (限 300 行,减轻 QTextEdit 负担)
+            if self.log_view.document().blockCount() > 300:
+                cursor = self.log_view.textCursor()
+                cursor.movePosition(cursor.Start)
+                cursor.movePosition(cursor.Down, cursor.KeepAnchor, 100)
+                cursor.removeSelectedText()
+                cursor.deleteChar()
+        
         # 2. 推全局 log_bus (后台线程写文件 + Qt Signal 转发到主窗口 log)
-        # 同一个 _append_log 被 _append_log 订阅会成环: 但 log_bus.emit 里加了内容不同
-        # 这里改为只在消息未带 [AI感知] 前缀时才发
         if not msg.startswith("[AI感知]"):
             try:
                 from log_bus import log_bus
                 log_bus.emit(f"[AI感知] {msg}")
             except Exception:
                 pass
-        # 3. 限制行数 (限 300 行,减轻 QTextEdit 负担)
-        if self.log_view.document().blockCount() > 300:
-            cursor = self.log_view.textCursor()
-            cursor.movePosition(cursor.Start)
-            cursor.movePosition(cursor.Down, cursor.KeepAnchor, 100)
-            cursor.removeSelectedText()
-            cursor.deleteChar()
-        # 4. 更新计数 (原 5% CPU 消耗项: 简化)
 
     # ---- 配置持久化 ----
     def _load_config(self) -> dict:
