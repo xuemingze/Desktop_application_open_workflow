@@ -1106,6 +1106,12 @@ class ContextTab(QWidget):
             return
 
         self._append_log(f"[放行] 命中规则: {result.rule_name}")
+
+        # VTuber 桥接事件转发
+        win = self.window()
+        if hasattr(win, "_vtuber_bridge") and win._vtuber_bridge and win._vtuber_bridge.enabled:
+            msg = f"检测到: [{capsule.source}] {capsule.foreground_window or '(无窗口)'} | {capsule.clipboard_text[:50]!r}"
+            win._vtuber_bridge.notify_event(msg)
         # 学习类规则由本地规则直接生成 AI 任务，不再送 LLM 做意图判断，避免额外推荐/重复气泡
         if capsule.source == "clipboard" and result.rule_name in ("英文文本", "学术词汇"):
             self._fallback_toast_by_rule(capsule, result.rule_name)
@@ -1128,6 +1134,11 @@ class ContextTab(QWidget):
         )
         self._toast_manager.show_toast(intent)
         self.toast_broadcast.emit(intent)
+
+        # VTuber 桥接事件转发（主动嗅探结果）
+        win = self.window()
+        if hasattr(win, "_vtuber_bridge") and win._vtuber_bridge and win._vtuber_bridge.enabled:
+            win._vtuber_bridge.notify_event(f"主动嗅探 - {q.category}: {q.text}")
 
     def _open_mini_chat(self, intent: ToastIntent | None = None):
         """打开/激活小聊天窗，复用 AI 对话标签页的同一份记录。"""

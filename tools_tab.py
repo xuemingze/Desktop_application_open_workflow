@@ -322,6 +322,43 @@ class ToolsTab(QWidget):
 
         v.addWidget(companion_box)
 
+        # Phase E: VTuber 桥接配置
+        line_vtuber = QFrame()
+        line_vtuber.setFrameShape(QFrame.HLine)
+        line_vtuber.setFrameShadow(QFrame.Sunken)
+        line_vtuber.setStyleSheet("color: #e5e7eb;")
+        v.addWidget(line_vtuber)
+
+        vtuber_box = QGroupBox(t("VTuber 桥接"))
+        vtuber_v = QVBoxLayout(vtuber_box)
+        vtuber_v.setContentsMargins(8, 4, 8, 6)
+
+        self.chk_vtuber_enabled = QCheckBox("启用桥接")
+        self.chk_vtuber_enabled.setToolTip("启用后,感知事件将转发到 Open-LLM-VTuber 桌宠进行 AI 对话渲染。")
+        self.chk_vtuber_enabled.toggled.connect(self._on_vtuber_enabled_toggle)
+        vtuber_v.addWidget(self.chk_vtuber_enabled)
+
+        url_row = QHBoxLayout()
+        url_row.addWidget(QLabel("后端地址"))
+        self.edit_vtuber_url = QLineEdit()
+        self.edit_vtuber_url.setPlaceholderText("http://127.0.0.1:18888")
+        self.edit_vtuber_url.setText(cfg.get("vtuber_backend_url", "http://127.0.0.1:18888"))
+        self.edit_vtuber_url.textChanged.connect(self._on_vtuber_url_changed)
+        url_row.addWidget(self.edit_vtuber_url)
+        url_row.addStretch()
+        vtuber_v.addLayout(url_row)
+
+        status_row2 = QHBoxLayout()
+        status_row2.addWidget(QLabel("状态:"))
+        self.lbl_vtuber_status = QLabel("未启动")
+        self.lbl_vtuber_status.setStyleSheet("color: #666; font-size: 11px;")
+        status_row2.addWidget(self.lbl_vtuber_status)
+        status_row2.addStretch()
+        vtuber_v.addLayout(status_row2)
+
+        v.addWidget(vtuber_box)
+        self._refresh_vtuber_status()
+
         # ----- 危险操作 -----
         line3 = QFrame()
         line3.setFrameShape(QFrame.HLine)
@@ -1285,3 +1322,32 @@ exit /b 0
         else:
             self.lbl_companion_status.setText("状态: 已禁用")
             self.lbl_companion_status.setStyleSheet("color: #666; font-size: 11px;")
+
+    # ===== VTuber 桥接配置方法 =====
+    def _on_vtuber_enabled_toggle(self, checked: bool) -> None:
+        cfg = self._load_global_config()
+        cfg["vtuber_enabled"] = bool(checked)
+        self._save_global_config(cfg)
+        main_win = self.window()
+        if main_win and hasattr(main_win, "_update_vtuber_config"):
+            main_win._update_vtuber_config(cfg)
+        self._refresh_vtuber_status()
+
+    def _on_vtuber_url_changed(self, text: str) -> None:
+        cfg = self._load_global_config()
+        cfg["vtuber_backend_url"] = text.strip()
+        self._save_global_config(cfg)
+        main_win = self.window()
+        if main_win and hasattr(main_win, "_update_vtuber_config"):
+            main_win._update_vtuber_config(cfg)
+
+    def _refresh_vtuber_status(self) -> None:
+        cfg = self._load_global_config()
+        enabled = bool(cfg.get("vtuber_enabled", False))
+        if enabled:
+            url = cfg.get("vtuber_backend_url", "http://127.0.0.1:18888")
+            self.lbl_vtuber_status.setText(f"状态: 已启用 ({url})")
+            self.lbl_vtuber_status.setStyleSheet("color: #16a34a; font-size: 11px;")
+        else:
+            self.lbl_vtuber_status.setText("状态: 已禁用")
+            self.lbl_vtuber_status.setStyleSheet("color: #666; font-size: 11px;")

@@ -1730,9 +1730,12 @@ class MainWindow(QMainWindow):
 
         # ---- 7.2 桌宠桥接 (Phase D) ----
         self._companion_bridge: Optional["companion_bridge.CompanionBridgeThread"] = None
+        # ---- 7.3 VTuber 桥接 (Phase E) ----
+        self._vtuber_bridge: Optional["vtuber_bridge.VTuberBridge"] = None
         self._init_memory_engine()
         self._init_reminder_scheduler()
         self._init_companion_bridge()
+        self._init_vtuber_bridge()
 
     # ---- 7.1 日志桥接 ----
     def _append_log(self, msg: str) -> None:
@@ -1876,6 +1879,35 @@ class MainWindow(QMainWindow):
             self._companion_bridge.start()
         except Exception as e:
             self._append_log(f"[桥接] 初始化失败: {e}")
+
+    def _update_vtuber_config(self, config: dict) -> None:
+        if self._vtuber_bridge:
+            enabled = config.get("vtuber_enabled", False)
+            url = config.get("vtuber_backend_url", "http://127.0.0.1:18888")
+            self._vtuber_bridge.enabled = enabled
+            self._vtuber_bridge.backend_url = url
+            self._append_log(f"[VTuber] 桥接配置已更新: enabled={enabled}, url={url}")
+
+    def _init_vtuber_bridge(self) -> None:
+        try:
+            from vtuber_bridge import VTuberBridge
+            config = {"vtuber_enabled": False, "vtuber_backend_url": "http://127.0.0.1:18888"}
+            config_path = USER_DATA_DIR / "config.json"
+            if config_path.exists():
+                try:
+                    import json
+                    saved = json.loads(config_path.read_text(encoding="utf-8"))
+                    config["vtuber_enabled"] = saved.get("vtuber_enabled", False)
+                    config["vtuber_backend_url"] = saved.get("vtuber_backend_url", "http://127.0.0.1:18888")
+                except Exception:
+                    pass
+            self._vtuber_bridge = VTuberBridge(
+                backend_url=config["vtuber_backend_url"],
+                enabled=config["vtuber_enabled"],
+            )
+            self._append_log(f"[VTuber] 桥接已初始化 (enabled={config['vtuber_enabled']})，后端: {config['vtuber_backend_url']}")
+        except Exception as e:
+            self._append_log(f"[VTuber] 初始化失败: {e}")
 
     # ---- 7.9 提醒任务 (Phase D) ----
     def _init_reminder_scheduler(self) -> None:
