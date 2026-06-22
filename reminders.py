@@ -153,6 +153,22 @@ def get_due_reminders(now: Optional[_dt.datetime] = None, limit: int = 20) -> Li
     return [dict(row) for row in rows]
 
 
+def get_all_pending_reminders(limit: int = 100) -> List[Dict]:
+    """获取所有状态为 pending 的提醒，不限制时间（含未来时间）"""
+    init_db()
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM reminders
+            WHERE status = 'pending'
+            ORDER BY trigger_time ASC
+            LIMIT ?
+            """,
+            (int(limit or 100),),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def update_reminder_status(reminder_id: int, status: str, delay_minutes: Optional[int] = None) -> bool:
     init_db()
     status = status if status in _VALID_STATUS else "dismissed"

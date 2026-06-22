@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QCheckBox, QPushButton,
     QLabel, QListWidget, QListWidgetItem, QLineEdit, QTextEdit, QSpinBox,
     QFormLayout, QTabWidget, QFileDialog, QMessageBox, QComboBox, QSizePolicy, QSpacerItem,
+    QDialog, QScrollArea, QAbstractItemView,
 )
 
 from context_sensor import ContextSensorManager, ContextCapsule
@@ -34,6 +35,7 @@ from proactive_sniff import (
 )
 from context_chat import ContextChatTab, MiniChatDialog, set_tavily_api_key
 from i18n import t
+from reminders import get_all_pending_reminders, update_reminder_status
 
 # ---------------------------------------------------------------------------
 # 后台 Worker: 拉取模型列表 (避免同步 HTTP 阻塞 UI)
@@ -786,7 +788,113 @@ class ContextTab(QWidget):
         self._append_log(f"[MEM] AI 自动创建提醒 {'已启用' if checked else '已禁用'}")
 
     def _on_remind_view_pending(self) -> None:
-        self._append_log("[MEM] Phase D 挂起提醒查看器：功能开发中...")
+        """弹出挂起提醒查看器窗口"""
+        dlg = QDialog(self._main_window, Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+        dlg.setWindowTitle(t("ctx_remind_view_pending"))
+        dlg.setMinimumSize(600, 400)
+        main_layout = QVBoxLayout(dlg)
+
+        # 标题栏
+        title_label = QLabel(t("ctx_remind_view_pending"))
+        title_label.setFont(QFont("", 11, QFont.Bold))
+        main_layout.addWidget(title_label)
+
+        # 滚动区域
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        list_container = QWidget()
+        list_layout = QVBoxLayout(list_container)
+        list_layout.setAlignment(Qt.AlignTop)
+        scroll.setWidget(list_container)
+        main_layout.addWidget(scroll)
+
+        def _refresh():
+            # 清空旧列表
+            while list_layout.count():
+                item = list_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+
+            reminders = get_all_pending_reminders()
+            if not reminders:
+                empty_lbl = QLabel(t("ctx_no_pending_reminders") if hasattr(t, '__call__') else "暂无挂起提醒")
+                empty_lbl.setAlignment(Qt.AlignCenter)
+                empty_lbl.setStyleSheet("color: #888; padding: 20px;")
+                list_layout.addWidget(empty_lbl)
+                return
+
+            for rem in reminders:
+                card = QWidget()
+                card_layout = QHBoxLayout(card)
+                card_layout.setContentsMargins(4, 4, 4, 4)
+
+                # 时间 + 内容
+                info_layout = QVBoxLayout()
+                time_str = rem["trigger_time"][:16].replace("T", " ")
+                time_lbl = QLabel(f"🕐 {time_str}")
+                time_lbl.setFont(QFont("", 9, QFont.Bold))
+                content_lbl = QLabel(rem["content"][:80])
+                content_lbl.setWordWrap(True)
+                content_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                action_lbl = QLabel(f"📌 {rem['action_type'] or 'toast'}")
+                action_lbl.setFont(QFont("", 8))
+                action_lbl.setStyleSheet("color: #888;")
+                info_layout.addWidget(time_lbl)
+                info_layout.addWidget(content_lbl)
+                info_layout.addWidget(action_lbl)
+                info_layout.addStretch()
+
+                # 按钮组
+                btn_layout = QVBoxLayout()
+                btn_done = QPushButton("✅ 完成")
+                btn_done.setFixedWidth(70)
+                btn_done.clicked.connect(
+                    lambda checked, rid=rem["id"]: _on_done(rid)
+                )
+                btn_delete = QPushButton("🗑 删除")
+                btn_delete.setFixedWidth(70)
+                btn_delete.setStyleSheet("QPushButton { color: #c00; }")
+                btn_delete.clicked.connect(
+                    lambda checked, rid=rem["id"]: _on_delete(rid)
+                )
+                btn_layout.addWidget(btn_done)
+                btn_layout.addWidget(btn_delete)
+                btn_layout.addStretch()
+
+                card_layout.addLayout(info_layout, 1)
+                card_layout.addLayout(btn_layout)
+
+                # 分隔线
+                sep = QLabel()
+                sep.setFixedHeight(1)
+                sep.setStyleSheet("background: #eee;")
+                list_layout.addWidget(card)
+                list_layout.addWidget(sep)
+
+        def _on_done(rid: int):
+            update_reminder_status(rid, "done")
+            self._append_log(f"[MEM] 提醒已完成: ID={rid}")
+            _refresh()
+
+        def _on_delete(rid: int):
+            update_reminder_status(rid, "dismissed")
+            self._append_log(f"[MEM] 提醒已删除: ID={rid}")
+            _refresh()
+
+        # 底部按钮栏
+        bottom_layout = QHBoxLayout()
+        btn_refresh = QPushButton("🔄 刷新")
+        btn_refresh.clicked.connect(_refresh)
+        btn_close = QPushButton("关闭")
+        btn_close.clicked.connect(dlg.accept)
+        bottom_layout.addWidget(btn_refresh)
+        bottom_layout.addStretch()
+        bottom_layout.addWidget(btn_close)
+        main_layout.addLayout(bottom_layout)
+
+        _refresh()
+        dlg.exec()
 
     # ---- 胶囊事件 ----
     def _on_capsule(self, capsule: ContextCapsule):
