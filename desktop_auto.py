@@ -1727,8 +1727,12 @@ class MainWindow(QMainWindow):
         self.memory_engine_mgr: Optional[memory_engine.MemoryEngineManager] = None
         self._diary_scheduler: Optional[daily_diary.DiaryScheduler] = None
         self._reminder_timer: Optional[QTimer] = None
+
+        # ---- 7.2 桌宠桥接 (Phase D) ----
+        self._companion_bridge: Optional["companion_bridge.CompanionBridgeThread"] = None
         self._init_memory_engine()
         self._init_reminder_scheduler()
+        self._init_companion_bridge()
 
     # ---- 7.1 日志桥接 ----
     def _append_log(self, msg: str) -> None:
@@ -1822,12 +1826,56 @@ class MainWindow(QMainWindow):
                 self.memory_engine_mgr.stop()
         except Exception:
             pass
+
+        # 停止桌宠桥接（Phase D）
+        try:
+            if hasattr(self, "_companion_bridge") and self._companion_bridge:
+                self._companion_bridge.stop()
+        except Exception:
+            pass
+
         if self._tray_icon:
             try:
                 self._tray_icon.hide()
             except Exception:
                 pass
         super().closeEvent(event)
+
+    # ---- 7.2 桌宠桥接 (Phase D) ----
+    def _update_companion_config(self, config: dict) -> None:
+        """更新桥接配置（由 Tools 標签页调用）。"""
+        if self._companion_bridge:
+            self._companion_bridge.update_config(config)
+
+    def _init_companion_bridge(self) -> None:
+        """启动 MetaPact 桌宠桥接（默认禁用）。"""
+        try:
+            from companion_bridge import CompanionBridgeThread
+            # 读取配置：优先从 tools_tab 注入，fallback 到 USER_DATA_DIR/config.json
+            config = {
+                "enabled": False,
+                "token": "",
+                "whitelist_workflows": [],
+            }
+            config_path = USER_DATA_DIR / "config.json"
+            if config_path.exists():
+                try:
+                    import json
+                    saved = json.loads(config_path.read_text(encoding="utf-8"))
+                    config["enabled"] = saved.get("companion_enabled", False)
+                    config["token"] = saved.get("companion_token", "")
+                    config["whitelist_workflows"] = saved.get("companion_whitelist_workflows", [])
+                except Exception as e:
+                    self._append_log(f"[桥接] 读取配置失败: {e}")
+            self._companion_bridge = CompanionBridgeThread(port=16260)
+            # 桥接日志信号（plain callback，threading 版本不需要 .connect()）
+            self._companion_bridge.log_signal = self._append_log
+            self._companion_bridge.status_signal = lambda running, msg: self._append_log(f"[桥接] {msg}")
+            # 透传配置
+            self._companion_bridge.update_config(config)
+            self._companion_bridge.start()
+        except Exception as e:
+            self._append_log(f"[桥接] 初始化失败: {e}")
 
     # ---- 7.9 提醒任务 (Phase D) ----
     def _init_reminder_scheduler(self) -> None:
@@ -1843,6 +1891,9 @@ class MainWindow(QMainWindow):
             self._append_log("[Reminder] 提醒调度器已启动")
         except Exception as e:
             self._append_log(f"[Reminder] 初始化失败: {e}")
+
+        # 启动 MetaPact 桌宠桥接
+        self._init_companion_bridge()
 
     def _check_due_reminders(self) -> None:
         try:

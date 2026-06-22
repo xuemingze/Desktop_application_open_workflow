@@ -11,7 +11,7 @@ class ActivityLogDB:
     def __init__(self, db_dir: Path):
         self.db_path = db_dir / "activity_log.db"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         self._lock = threading.Lock()     # 保护写操作与建表
         self._local = threading.local()   # 线程局部存储，隔离 connection
         self._created_tables = set()      # 缓存已确认存在的表名
@@ -73,7 +73,6 @@ class ActivityLogDB:
                 table_idx = self._parse_activity_table_month(table_name)
                 if table_idx is None or table_idx >= cutoff_idx:
                     continue
-                # table_name 已由 _parse_activity_table_month 校验，只可能是 activity_YYYY_MM。
                 conn.execute(f"DROP TABLE IF EXISTS {table_name}")
                 dropped.append(table_name)
                 self._created_tables.discard(table_name)
@@ -86,7 +85,6 @@ class ActivityLogDB:
             return
 
         conn = self._get_conn()
-        # 注意：sqlite 不能用参数化绑定表名，必须用字符串拼接 (已内部控制 table_name 格式，安全)
         conn.execute(f"""
             CREATE TABLE IF NOT EXISTS {table_name} (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,7 +99,6 @@ class ActivityLogDB:
                 hour_bucket INTEGER
             )
         """)
-        # 创建索引优化查询
         conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_date ON {table_name}(date_str)")
         conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_ts ON {table_name}(start_ts)")
         conn.commit()
@@ -110,22 +107,22 @@ class ActivityLogDB:
     def open_record(self, ts: float, title: str, app: str, category: str, is_idle: int = 0) -> Tuple[str, int]:
         """开启一条新记录，返回 (表名, 记录ID)"""
         table_name = self._get_table_name(ts)
-        
+
         with self._lock:
             self._ensure_table(table_name)
             conn = self._get_conn()
-            
+
             dt = datetime.fromtimestamp(ts)
             date_str = dt.strftime("%Y-%m-%d")
             hour_bucket = dt.hour
-            
+
             cursor = conn.cursor()
             cursor.execute(f"""
-                INSERT INTO {table_name} 
+                INSERT INTO {table_name}
                 (start_ts, end_ts, duration_s, exe_name, window_title, category, is_idle, date_str, hour_bucket)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (ts, ts, 0, app, title, category, is_idle, date_str, hour_bucket))
-            
+
             record_id = cursor.lastrowid
             conn.commit()
             return table_name, record_id
@@ -134,13 +131,12 @@ class ActivityLogDB:
         """延长记录的结束时间 (状态合并)"""
         if not table_name or not record_id:
             return
-            
+
         with self._lock:
             conn = self._get_conn()
-            # 动态计算 duration_s
             conn.execute(f"""
-                UPDATE {table_name} 
-                SET end_ts = ?, duration_s = ? - start_ts 
+                UPDATE {table_name}
+                SET end_ts = ?, duration_s = ? - start_ts
                 WHERE id = ?
             """, (end_ts, end_ts, record_id))
             conn.commit()
@@ -148,3 +144,46 @@ class ActivityLogDB:
     def close_record(self, table_name: str, record_id: int, end_ts: float):
         """关闭一条记录 (语义上与 update_end 一致，保留接口用于后续扩展)"""
         self.update_end(table_name, record_id, end_ts)
+
+    def query_latest(self, limit: int = 10, ref_ts: Optional[float] = None) -> list[dict]:
+        """查询最近 N 条记录（跨全表），返回 dict 列表"""
+        ref_ts = ref_ts or datetime.now().timestamp()
+        # 收集最近 3 个月的表
+        tables: list[str] = []
+        for offset in range(3):
+            dt = datetime.fromtimestamp(ref_ts)
+            year = dt.year
+            month = dt.month - offset
+            while month <= 0:
+                month += 12
+                year -= 1
+            table = f"activity_{year}_{month:02d}"
+            conn = self._get_conn()
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (table,)
+            ).fetchone()
+            if cursor:
+                tables.append(table)
+
+        if not tables:
+            return []
+
+        # 用 UNION ALL 跨表查询（仅最新）
+        union = " UNION ALL ".join(
+            f"SELECT *, '{t}' as _tbl FROM {t}" for t in tables
+        )
+        sql = f"""
+            SELECT exe_name, window_title, category, is_idle, date_str, start_ts, end_ts, duration_s
+            FROM ({union})
+            ORDER BY start_ts DESC
+            LIMIT ?
+        """
+        try:
+            conn = self._get_conn()
+            cursor = conn.execute(sql, (limit,))
+            rows = cursor.fetchall()
+            cols = ["exe_name", "window_title", "category", "is_idle", "date_str", "start_ts", "end_ts", "duration_s"]
+            return [dict(zip(cols, r)) for r in rows]
+        except Exception:
+            return []

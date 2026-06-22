@@ -1,9 +1,9 @@
 """
 companion_bridge.py
-桌宠桥接层：为 MetaPact 等外部桌宠/陪伴 AI 提供本地 API 接口。
+桌宠桥接层：为 MetaPact 等外部桌宠/陪伴 AI 提供本地 API。
 
 设计原则：
-- 运行在 QThread 中，不阻塞 PySide6 主界面
+- 运行在标准库 Thread 中，不阻塞 PySide6 主界面
 - 只暴露必要的、安全的端点
 - 所有调用走现有模块（mcp_embedded, user_profile, ActivityLogDB）
 - 强制 token 校验（可选）
@@ -13,11 +13,9 @@ companion_bridge.py
 from __future__ import annotations
 
 import json
-import sqlite3
+import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
-
-from PySide6.QtCore import QThread, Signal
 
 
 # =======================
@@ -49,28 +47,28 @@ except ImportError:
 
 def _log(message: str) -> None:
     """统一日志输出（兼容 log_bus 缺失场景）"""
+    msg = f"[CompanionBridge] {message}"
     if log_bus:
-        log_bus.emit(f"[CompanionBridge] {message}")
+        try:
+            log_bus.emit(msg)
+        except Exception:
+            print(msg)
     else:
-        print(f"[CompanionBridge] {message}")
+        print(msg)
 
 
 def _get_data_dir():
-    """获取用户数据目录：优先 data_paths，fallback 回退到旧路径"""
-    if USER_DATA_DIR is not None:
-        return USER_DATA_DIR
-    return None
+    """获取用户数据目录"""
+    return USER_DATA_DIR
 
 
 # =======================
-# HTTP Handler
+# HTTP Handler（无状态，每请求独立处理）
 # =======================
 class CompanionAPIHandler(BaseHTTPRequestHandler):
     """处理来自 MetaPact 的 HTTP 请求"""
 
-    server = None  # type: Optional[CompanionBridgeServer]
-
-    # 可选配置（由 desktop_auto 注入）
+    # 类级别配置（运行时由 desktop_auto 注入）
     config = {
         "enabled": True,
         "token": "",
@@ -78,7 +76,6 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
     }
 
     def _send_json(self, status_code: int, data: dict) -> None:
-        """发送 JSON 响应"""
         self.send_response(status_code)
         self.send_header("Content-type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -88,37 +85,31 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
 
     def _check_token(self) -> bool:
-        """检查请求头中的 token 是否匹配配置"""
-        if not self.config["token"]:
-            return True  # 未配置 token = 不校验
-        auth_header = self.headers.get("Authorization", "")
-        return auth_header == f"Bearer {self.config['token']}"
+        if not self.config.get("token"):
+            return True
+        auth = self.headers.get("Authorization", "")
+        return auth == f"Bearer {self.config['token']}"
 
     def log_message(self, format: str, *args) -> None:
-        """禁用默认日志"""
+        """禁用默认 apache 风格日志"""
         pass
 
     def do_GET(self):
-        """GET 请求：/api/status"""
-        parsed = = urlparse(self.path)
-        if parsed.path == "/api/status":
+        if self.path == "/api/status":
             self._handle_status()
         else:
             self._send_json(404, {"ok": False, "error": "Not Found"})
 
     def do_POST(self):
-        """POST 请求：/api/action/run_workflow"""
-        parsed = urlparse(self.path)
-        if parsed.path == "/api/action/run_workflow":
+        if self.path == "/api/action/run_workflow":
             if not self._check_token():
-                self._send_json(401, {"ok": False, "error": "Unauthorized: invalid token"})
+                self._send_json(401, {"ok": False, "error": "Unauthorized"})
                 return
             self._handle_run_workflow()
         else:
             self._send_json(404, {"ok": False, "error": "Not Found"})
 
     def do_OPTIONS(self):
-        """CORS 预检"""
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -126,20 +117,18 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _handle_status(self) -> None:
-        """返回当前用户画像 + 最近活动"""
         profile = "暂无画像"
         if get_active_profile_summary is not None:
             try:
                 profile = get_active_profile_summary()
             except Exception:
-                profile = "暂无画像"
+                pass
 
         current_activity = "未知"
         data_dir = _get_data_dir()
-        if data_dir is not None and ActivityLogDB is not None:
+        if data_dir and ActivityLogDB:
             try:
                 db = ActivityLogDB(data_dir)
-                # 使用 query_latest 而不直接拼表名
                 latest = db.query_latest(limit=1)
                 if latest:
                     row = latest[0]
@@ -156,7 +145,6 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
         })
 
     def _handle_run_workflow(self) -> None:
-        """执行指定工作流（带白名单校验）"""
         content_length = int(self.headers.get("Content-Length", 0))
         post_data = self.rfile.read(content_length).decode("utf-8") if content_length > 0 else "{}"
         try:
@@ -170,18 +158,12 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"ok": False, "error": "缺少 name 参数"})
             return
 
-        # 白名单校验
         whitelist = self.config.get("whitelist_workflows", [])
         if whitelist and wf_name not in whitelist:
-            _log(f"[桥接] 工作流 {wf_name} 不在白名单中，拒绝执行")
-            self._send_json(403, {"ok": False, "error": f"工作流 '{wf_name}' 不在白名单中"})
+            _log(f"[桥接] 工作流 {wf_name} 不在白名单，拒绝")
+            self._send_json(403, {"ok": False, "error": f"工作流 '{wf_name}' 不在白名单"})
             return
 
-        # 通知主线程（通过回调）
-        if self.server and hasattr(self.server, "log_cb") and self.server.log_cb:
-            self.server.log_cb(f"[桥接] MetaPact 请求执行工作流: {wf_name}")
-
-        # 实际执行
         if run_workflow_sync is not None:
             res = run_workflow_sync(wf_name)
             self._send_json(200, res)
@@ -190,48 +172,69 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
 
 
 # =======================
-# 桥接线程（QThread）
+# 桥接线程（标准库 threading，更稳）
 # =======================
-class CompanionBridgeThread(QThread):
-    """后台运行 HTTP Server 的 QThread"""
+class CompanionBridgeThread:
+    """后台运行 HTTP Server 的标准库线程"""
 
-    log_signal = Signal(str)  # 日志输出
-    status_signal = Signal(bool, str)  # (running, message)
-
-    def __init__(self, port: int = DEFAULT_PORT, parent=None):
-        super().__init__(parent)
+    def __init__(self, port: int = DEFAULT_PORT):
         self.port = port
-        self.httpd = None
-        self._is_running = False
-        self.handler = CompanionAPIHandler()
-        self.handler.server = self  # 循环引用，供回调
+        self._thread: threading.Thread | None = None
+        self._httpd: HTTPServer | None = None
+        self._running = False
+        # Qt Signal 风格回调（由 desktop_auto 注入，设为可调用对象）
+        self.log_signal = None
+        self.status_signal = None
 
     def update_config(self, config: dict) -> None:
-        """更新运行时配置（enabled, token, whitelist_workflows）"""
-        self.handler.config.update(config)
+        """更新运行时配置"""
+        CompanionAPIHandler.config.update(config)
 
-    def run(self) -> None:
-        """启动 HTTP server"""
-        if not self.handler.config["enabled"]:
-            self.log_signal.emit("[桥接] 已禁用，不启动")
-            self.status_signal.emit(False, "已禁用")
+    def _emit_log(self, msg: str) -> None:
+        if self.log_signal:
+            try:
+                self.log_signal.emit(msg)
+            except Exception:
+                pass
+        _log(msg)
+
+    def _emit_status(self, running: bool, msg: str) -> None:
+        if self.status_signal:
+            try:
+                self.status_signal.emit(running, msg)
+            except Exception:
+                pass
+
+    def start(self) -> None:
+        cfg = CompanionAPIHandler.config
+        if not cfg.get("enabled", False):
+            self._emit_log("[桥接] 已禁用，不启动")
+            self._emit_status(False, "已禁用")
             return
 
         try:
-            self.httpd = HTTPServer(("127.0.0.1", self.port), self.handler)
-            self.httpd.log_cb = self.log_signal.emit
-            self._is_running = True
-            self.status_signal.emit(True, f"已启动，端口: {self.port}")
-            self.log_signal.emit(f"🔗 桌宠桥接 API 已启动 (端口: {self.port})")
-            self.httpd.serve_forever()
+            self._httpd = HTTPServer(("127.0.0.1", self.port), CompanionAPIHandler)
+            self._running = True
+            self._emit_status(True, f"已启动，端口: {self.port}")
+            self._emit_log(f"🔗 桌宠桥接 API 已启动 (端口: {self.port})")
+            self._thread = threading.Thread(target=self._serve, daemon=True, name="CompanionBridge")
+            self._thread.start()
         except OSError as e:
-            self.log_signal.emit(f"❌ 桌宠桥接 API 启动失败: {e}")
-            self.status_signal.emit(False, str(e))
+            self._emit_log(f"❌ 桌宠桥接 API 启动失败: {e}")
+            self._emit_status(False, str(e))
+
+    def _serve(self) -> None:
+        """在独立线程中运行 HTTP 服务器（阻塞直到 stop）"""
+        if self._httpd:
+            self._httpd.serve_forever()
 
     def stop(self) -> None:
-        """停止 HTTP server"""
-        self._is_running = False
-        if self.httpd:
-            self.httpd.shutdown()
-            self.httpd.server_close()
-            self.log_signal.emit("⏹ 桌宠桥接 API 已停止")
+        self._running = False
+        if self._httpd:
+            try:
+                self._httpd.shutdown()
+                self._httpd.server_close()
+                self._emit_log("⏹ 桌宠桥接 API 已停止")
+            except Exception as e:
+                self._emit_log(f"停止桥接时出错: {e}")
+        self._emit_status(False, "已停止")
