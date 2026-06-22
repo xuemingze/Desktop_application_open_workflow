@@ -708,11 +708,12 @@ class ContextTab(QWidget):
             self._append_log("[MEM] 记忆引擎已恢复")
 
     def _on_mem_interval_change(self) -> None:
-        self._config['memory_interval_sec'] = self.mem_interval_spin.value()
+        val = self.mem_interval_spin.value()
+        self._config['memory_interval_sec'] = val
         self._save_config()
         if hasattr(self._agent, 'memory_engine_mgr') and self._agent.memory_engine_mgr:
-            self._agent.memory_engine_mgr.set_interval(interval)
-        self._append_log(f"[MEM] 采样间隔已更新为 {interval} 秒")
+            self._agent.memory_engine_mgr.set_interval(val)
+        self._append_log(f"[MEM] 采样间隔已更新为 {val} 秒")
 
     def _on_mem_log_bus(self, msg: str) -> None:
         """Module D 日志: 只显示 [Memory] 标签的记录（[MemoryEngine]/[Memory]/[IdleWatcher]/[MainPoll]）"""
@@ -750,20 +751,25 @@ class ContextTab(QWidget):
     def _on_diary_hour_change(self) -> None:
         self._config['diary_first_hour'] = self.diary_hour_spin.value()
         self._save_config()
-        self._append_log(f"[MEM] 复盘提醒时间已更新为 {hour}:00")
+        self._append_log(f"[MEM] 复盘提醒时间已更新为 {self.diary_hour_spin.value()}:00")
 
     def _on_diary_max_change(self) -> None:
         self._config['diary_max_prompts'] = self.diary_max_spin.value()
         self._save_config()
-        self._append_log(f"[MEM] 每日复盘次数已更新为 {mx} 次")
+        self._append_log(f"[MEM] 每日复盘次数已更新为 {self.diary_max_spin.value()} 次")
 
     def _on_diary_generate_now(self) -> None:
         from daily_diary import build_diary_prompt
-        if hasattr(self._agent, 'memory_engine_mgr') and self._agent.memory_engine_mgr:
+        if not (hasattr(self._agent, 'memory_engine_mgr') and self._agent.memory_engine_mgr):
+            self._append_log("[MEM] 立即复盘失败: 记忆引擎未启动")
+            return
+        if not hasattr(self._agent.memory_engine_mgr, 'db') or not self._agent.memory_engine_mgr.db:
+            self._append_log("[MEM] 立即复盘失败: 数据库未就绪")
+            return
+        try:
             db = self._agent.memory_engine_mgr.db
             sys_p, user_p = build_diary_prompt(db)
             self._append_log(f"[MEM] 复盘生成请求已提交 ({len(sys_p)} char prompt)")
-            # 触发 toast 通知 AI 生成复盘
             intent = ToastIntent(
                 intent="📝 立即复盘",
                 message="已触发立即复盘，请稍候...",
@@ -772,6 +778,8 @@ class ContextTab(QWidget):
             )
             self._toast_manager.show_toast(intent)
             self.toast_broadcast.emit(intent)
+        except Exception as e:
+            self._append_log(f"[MEM] 立即复盘异常: {e}")
 
     def _on_diary_open_dir(self) -> None:
         diary_dir = USER_DATA_DIR / 'diary'
