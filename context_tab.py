@@ -730,8 +730,9 @@ class ContextTab(QWidget):
         """Module D 日志: 只显示 [Memory] 标签的记录（[MemoryEngine]/[Memory]/[IdleWatcher]/[MainPoll]）"""
         if not hasattr(self, 'mem_log_view'):
             return
-        # memory_engine 发: [MemoryEngine], [Memory], [IdleWatcher], [MainPoll]
-        if not any(tag in msg for tag in ("[MemoryEngine]", "[Memory]", "[IdleWatcher]", "[MainPoll]")):
+        # memory_engine 发: [MemoryEngine], [Memory], [IdleWatcher], [MainPoll];
+        # ContextTab UI 也发 [MEM]（来自 _append_log）
+        if not any(tag in msg for tag in ("[MemoryEngine]", "[Memory]", "[IdleWatcher]", "[MainPoll]", "[MEM]")):
             return
         from datetime import datetime
         ts = datetime.now().strftime("%H:%M:%S")
@@ -771,6 +772,7 @@ class ContextTab(QWidget):
 
     def _on_diary_generate_now(self) -> None:
         from daily_diary import build_diary_prompt
+        from PySide6.QtCore import QThread
         win = self.window()
         if not (win and hasattr(win, 'memory_engine_mgr') and win.memory_engine_mgr):
             self._append_log("[MEM] 立即复盘失败: 记忆引擎未启动")
@@ -778,18 +780,71 @@ class ContextTab(QWidget):
         if not hasattr(win.memory_engine_mgr, 'db') or not win.memory_engine_mgr.db:
             self._append_log("[MEM] 立即复盘失败: 数据库未就绪")
             return
+
+        # 提示用户正在生成
+        self._append_log("[MEM] 正在生成复盘，请稍候...")
+
+        class _DiaryWorker(QThread):
+            done = Signal(str)  # 成功返回文件路径，失败返回 ""
+            log = Signal(str)    # 跨线程日志信号
+
+            def __init__(self, backend, sys_p, user_p, out_dir):
+                super().__init__()
+                self._backend = backend
+                self._sys_p = sys_p
+                self._user_p = user_p
+                self._out_dir = out_dir
+
+            def run(self):
+                try:
+                    self.log.emit("[MEM] AI 正在生成复盘...")
+                    txt = ""
+                    if self._backend:
+                        txt = self._backend.infer(self._sys_p, self._user_p, timeout=60.0) or ""
+                    if not txt:
+                        txt = "[MEM] AI 未返回内容，以下为原始数据汇总。\n\n" + self._user_p
+                    from datetime import datetime
+                    date_str = datetime.now().strftime("%Y-%m-%d")
+                    filename = f"Diary_{date_str}.md"
+                    out_path = self._out_dir / filename
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                    out_path.write_text(txt, encoding="utf-8")
+                    self.done.emit(str(out_path.resolve()))
+                except Exception as e:
+                    self.log.emit(f"[MEM] 复盘生成异常: {e}")
+                    self.done.emit("")
+
         try:
             db = win.memory_engine_mgr.db
             sys_p, user_p = build_diary_prompt(db)
-            self._append_log(f"[MEM] 复盘生成请求已提交 ({len(sys_p)} char prompt)")
-            intent = ToastIntent(
-                intent="📝 立即复盘",
-                message="已触发立即复盘，请稍候...",
-                suggested_action="generate_diary",
-                action_param=None,
-            )
-            self._toast_manager.show_toast(intent)
-            self.toast_broadcast.emit(intent)
+            diary_dir = USER_DATA_DIR / 'diary'
+            backend = self._agent._backend
+            worker = _DiaryWorker(backend, sys_p, user_p, diary_dir)
+
+            def _on_done(path: str):
+                if path:
+                    self._append_log(f"[MEM] 复盘已生成: {path}")
+                    intent = ToastIntent(
+                        intent="📝 复盘完成",
+                        message=f"复盘已生成，点击打开",
+                        suggested_action="open_file",
+                        action_param=path,
+                    )
+                    self._toast_manager.show_toast(intent)
+                    self.toast_broadcast.emit(intent)
+                else:
+                    self._append_log("[MEM] 复盘生成失败")
+                    intent = ToastIntent(
+                        intent="📝 复盘失败",
+                        message="复盘生成失败，请检查 AI 后端是否可用",
+                        suggested_action="",
+                        action_param=None,
+                    )
+                    self._toast_manager.show_toast(intent)
+
+            worker.log.connect(self._append_log)
+            worker.done.connect(_on_done)
+            worker.start()
         except Exception as e:
             self._append_log(f"[MEM] 立即复盘异常: {e}")
 
@@ -1111,6 +1166,12 @@ class ContextTab(QWidget):
         """用户点击了气泡 → 打开小聊天窗，并同步 AI 对话标签页记录"""
         self._append_log(f"[点击] 用户点击气泡: {intent.suggested_action}({intent.action_param})")
         action = getattr(intent, "suggested_action", "") or ""
+        if action == "open_file":
+            path = getattr(intent, "action_param", "") or ""
+            if path:
+                import subprocess
+                subprocess.Popen(["explorer", path])
+            return
         if action.startswith("reminder_"):
             try:
                 parent = self.parent()
