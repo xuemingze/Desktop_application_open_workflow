@@ -789,9 +789,19 @@ class ContextTab(QWidget):
 
     def _on_remind_view_pending(self) -> None:
         """弹出挂起提醒查看器窗口"""
-        dlg = QDialog(self._main_window, Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
-        dlg.setWindowTitle(t("ctx_remind_view_pending"))
-        dlg.setMinimumSize(600, 400)
+        self._append_log(f"[REM] 方法被调用")
+        try:
+            dlg = QDialog(self._main_window, Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+            dlg.setWindowTitle(t("ctx_remind_view_pending"))
+            dlg.setMinimumSize(600, 400)
+        except Exception as e:
+            self._append_log(f"[REM] 弹窗异常: {e}")
+            QMessageBox.critical(
+                self._main_window,
+                t("error"),
+                f"无法打开提醒查看器: {e}",
+            )
+            return
         main_layout = QVBoxLayout(dlg)
 
         # 标题栏
