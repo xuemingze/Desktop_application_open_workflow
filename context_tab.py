@@ -95,6 +95,46 @@ if not USER_DATA_DIR.exists():
 CONFIG_FILE = USER_DATA_DIR / "context_aware_config.json"
 
 
+# ---------------------------------------------------------------------------
+# 异步日记生成 Worker（模块级，避免方法内闭包陷阱）
+# ---------------------------------------------------------------------------
+class _DiaryWorker(QThread):
+    """后台 QThread：调用 AI 生成日记并写入文件"""
+    done = Signal(str)   # 成功=文件绝对路径，失败=空字符串
+    log = Signal(str)    # 跨线程日志
+
+    def __init__(self, backend, sys_p: str, user_p: str, out_dir, parent=None):
+        super().__init__(parent)
+        self._backend = backend
+        self._sys_p = sys_p
+        self._user_p = user_p
+        self._out_dir = out_dir
+
+    def run(self):
+        try:
+            self.log.emit("[MEM] AI 正在生成复盘...")
+            txt = ""
+            if self._backend:
+                try:
+                    txt = self._backend.infer(self._sys_p, self._user_p, timeout=60.0) or ""
+                except Exception as ex:
+                    self.log.emit(f"[MEM] AI 调用异常: {ex}")
+            if not txt:
+                txt = "[MEM] AI 未返回内容，以下为原始数据汇总。\n\n" + self._user_p
+            from datetime import datetime
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            filename = f"Diary_{date_str}.md"
+            out_path = self._out_dir / filename
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(txt, encoding="utf-8")
+            path_str = str(out_path.resolve())
+            self.log.emit(f"[MEM] 复盘已保存: {path_str}")
+            self.done.emit(path_str)
+        except Exception as e:
+            self.log.emit(f"[MEM] 复盘生成异常: {e}")
+            self.done.emit("")
+
+
 class ContextTab(QWidget):
     """AI 感知主标签页"""
 
@@ -772,7 +812,6 @@ class ContextTab(QWidget):
 
     def _on_diary_generate_now(self) -> None:
         from daily_diary import build_diary_prompt
-        from PySide6.QtCore import QThread
         win = self.window()
         if not (win and hasattr(win, 'memory_engine_mgr') and win.memory_engine_mgr):
             self._append_log("[MEM] 立即复盘失败: 记忆引擎未启动")
@@ -781,38 +820,7 @@ class ContextTab(QWidget):
             self._append_log("[MEM] 立即复盘失败: 数据库未就绪")
             return
 
-        # 提示用户正在生成
         self._append_log("[MEM] 正在生成复盘，请稍候...")
-
-        class _DiaryWorker(QThread):
-            done = Signal(str)  # 成功返回文件路径，失败返回 ""
-            log = Signal(str)    # 跨线程日志信号
-
-            def __init__(self, backend, sys_p, user_p, out_dir):
-                super().__init__()
-                self._backend = backend
-                self._sys_p = sys_p
-                self._user_p = user_p
-                self._out_dir = out_dir
-
-            def run(self):
-                try:
-                    self.log.emit("[MEM] AI 正在生成复盘...")
-                    txt = ""
-                    if self._backend:
-                        txt = self._backend.infer(self._sys_p, self._user_p, timeout=60.0) or ""
-                    if not txt:
-                        txt = "[MEM] AI 未返回内容，以下为原始数据汇总。\n\n" + self._user_p
-                    from datetime import datetime
-                    date_str = datetime.now().strftime("%Y-%m-%d")
-                    filename = f"Diary_{date_str}.md"
-                    out_path = self._out_dir / filename
-                    out_path.parent.mkdir(parents=True, exist_ok=True)
-                    out_path.write_text(txt, encoding="utf-8")
-                    self.done.emit(str(out_path.resolve()))
-                except Exception as e:
-                    self.log.emit(f"[MEM] 复盘生成异常: {e}")
-                    self.done.emit("")
 
         try:
             db = win.memory_engine_mgr.db
@@ -825,17 +833,17 @@ class ContextTab(QWidget):
                 if path:
                     self._append_log(f"[MEM] 复盘已生成: {path}")
                     intent = ToastIntent(
-                        intent="📝 复盘完成",
-                        message=f"复盘已生成，点击打开",
+                        intent="\U0001f4dd 复盘完成",
+                        message="复盘已生成，点击打开",
                         suggested_action="open_file",
                         action_param=path,
                     )
                     self._toast_manager.show_toast(intent)
                     self.toast_broadcast.emit(intent)
                 else:
-                    self._append_log("[MEM] 复盘生成失败")
+                    self._append_log("[MEM] 复盘生成失败（AI 未返回内容）")
                     intent = ToastIntent(
-                        intent="📝 复盘失败",
+                        intent="\U0001f4dd 复盘失败",
                         message="复盘生成失败，请检查 AI 后端是否可用",
                         suggested_action="",
                         action_param=None,
