@@ -153,11 +153,22 @@ class VTuberBackendManager:
             # 退路: 当前 Python 解释器 (sys.executable)
             python_exe = self.find_venv_python(path) or sys.executable
 
+            # CREATE_NO_WINDOW (0x08000000) 阻止子进程闪出控制台窗口
+            # CREATE_NEW_PROCESS_GROUP: 让子进程独立, GUI 关闭时不受信号干扰
+            # DETACHED_PROCESS: 让子进程脱离父进程的 console
+            if sys.platform == "win32":
+                creationflags = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP
+                    | subprocess.DETACHED_PROCESS
+                    | 0x08000000  # CREATE_NO_WINDOW
+                )
+            else:
+                creationflags = 0
+
             proc = subprocess.Popen(
                 [python_exe, run_server],
                 cwd=str(Path(path)),
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-                | subprocess.DETACHED_PROCESS,
+                creationflags=creationflags,
                 stdout=log_f if log_f else subprocess.DEVNULL,
                 stderr=subprocess.STDOUT if log_f else subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
