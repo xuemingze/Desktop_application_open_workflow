@@ -98,6 +98,7 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
         chat_id = f"chatcmpl-{int(time.time() * 1000)}"
         created = int(time.time())
         sock = self.request
+        self.close_connection = True
         # 手动构建 HTTP 响应（绕过 BaseHTTPRequestHandler 的 wfile 缓冲）
         resp_headers = (
             "HTTP/1.1 200 OK\r\n"
