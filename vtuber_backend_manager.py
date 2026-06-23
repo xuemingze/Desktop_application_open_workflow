@@ -133,8 +133,25 @@ class VTuberBackendManager:
 
         try:
             # 启动子进程，独立进程组
+            # 问题: 某些 Python 发行版 (如 embedded / 某些 pyInstaller frozen) 使用 python._pth
+            #   会忽略 PYTHONPATH 和脚本所在目录。
+            # 解决方案: 生成一个临时 wrapper 脚本, 里面先 sys.path.insert, 再调 runpy.run_path。
+            import tempfile
+            wrapper_dir = Path(USER_DATA_DIR) / "vtuber_wrapper"
+            wrapper_dir.mkdir(parents=True, exist_ok=True)
+            wrapper_path = wrapper_dir / "_run_vtuber_server.py"
+            # 用 UTF-8 写避免中文路径编码问题
+            wrapper_content = (
+                "# -*- coding: utf-8 -*-\n"
+                "import sys, runpy\n"
+                "from pathlib import Path\n"
+                f"sys.path.insert(0, r'{Path(path).resolve()}')\n"
+                f"runpy.run_path(r'{run_server}', run_name='__main__')\n"
+            )
+            wrapper_path.write_text(wrapper_content, encoding="utf-8")
+
             proc = subprocess.Popen(
-                [sys.executable, run_server],
+                [sys.executable, str(wrapper_path)],
                 cwd=str(Path(path)),
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                 | subprocess.DETACHED_PROCESS,
