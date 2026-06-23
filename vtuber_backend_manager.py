@@ -123,6 +123,14 @@ class VTuberBackendManager:
             return False, info
         run_server = info
 
+        # 准备一个临时文件接收 stdout/stderr, 便于出错时诊断
+        log_path = Path(USER_DATA_DIR) / "vtuber_backend_stderr.log"
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_f = open(log_path, "w", encoding="utf-8", errors="ignore")
+        except Exception:
+            log_f = None
+
         try:
             # 启动子进程，独立进程组
             proc = subprocess.Popen(
@@ -130,18 +138,37 @@ class VTuberBackendManager:
                 cwd=str(Path(path)),
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                 | subprocess.DETACHED_PROCESS,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=log_f if log_f else subprocess.DEVNULL,
+                stderr=subprocess.STDOUT if log_f else subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
                 close_fds=True,
             )
         except Exception as e:
+            if log_f: log_f.close()
             return False, f"启动失败: {e}"
 
-        # 等 1.5 秒确认进程真的拉起来了（避免立刻崩了但 PID 已记录）
-        time.sleep(1.5)
-        if not _is_pid_alive(proc.pid):
-            return False, "进程启动后立即退出，请检查 run_server.py 和 conf.yaml"
+        # 等 2 秒确认进程真的拉起来了（避免立刻崩了但 PID 已记录）
+        time.sleep(2.0)
+        alive = _is_pid_alive(proc.pid)
+        if not alive:
+            # 读取日志尾部作为诊断信息
+            tail = ""
+            if log_f:
+                log_f.flush()
+                log_f.close()
+            try:
+                if log_path.exists():
+                    content = log_path.read_text(encoding="utf-8", errors="ignore")
+                    tail = content[-600:] if content else ""
+            except Exception:
+                tail = ""
+            msg = f"进程启动后立即退出 (PID={proc.pid})"
+            if tail.strip():
+                msg += f"\n\n输出尾部:\n{tail}"
+            else:
+                msg += "\n\n常见原因: run_server.py 依赖未安装 (需运行 uv sync)"
+            msg += f"\n\n日志文件: {log_path}"
+            return False, msg
 
         self.state = {
             "pid": proc.pid,
@@ -149,6 +176,7 @@ class VTuberBackendManager:
             "started_at": int(time.time()),
         }
         _save_state(self.state)
+        # 不要在父进程关闭 log_f, 保持打开以便子进程后续日志也能写入
         return True, f"已启动 (PID={proc.pid})"
 
     def stop(self) -> Tuple[bool, str]:

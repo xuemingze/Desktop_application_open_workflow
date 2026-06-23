@@ -1404,13 +1404,29 @@ exit /b 0
             QMessageBox.warning(self, "保存路径", f"保存失败: {e}")
 
     def _on_browse_vtuber_backend(self) -> None:
-        """浏览选择 VTuber 后端目录"""
-        start = self.edit_vtuber_backend_path.text().strip() if hasattr(self, "edit_vtuber_backend_path") else ""
-        path = QFileDialog.getExistingDirectory(
-            self, "选择 Open-LLM-VTuber 目录", start
+        """浏览选择 VTuber 后端的 run_server.py 文件 (能同时看到目录结构和验证文件存在)"""
+        start_dir = ""
+        current = self.edit_vtuber_backend_path.text().strip() if hasattr(self, "edit_vtuber_backend_path") else ""
+        if current and Path(current).is_dir():
+            start_dir = current
+        elif current and Path(current).is_file():
+            start_dir = str(Path(current).parent)
+        # 用文件选择器, 过滤出 run_server.py, 选中后自动取所在目录
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择 Open-LLM-VTuber 目录中的 run_server.py",
+            start_dir,
+            "Python files (run_server.py);;All files (*.*)",
         )
-        if path:
-            self.edit_vtuber_backend_path.setText(path)
+        if file_path:
+            # 如果选的就是 run_server.py, 取所在目录
+            p = Path(file_path)
+            if p.name == "run_server.py":
+                folder = str(p.parent)
+            else:
+                # 如果用户选错了文件 (不是 run_server.py), 仍取其目录
+                folder = str(p.parent)
+            self.edit_vtuber_backend_path.setText(folder)
             self._on_vtuber_backend_path_edit_finished()
 
     def _on_vtuber_backend_path_edit_finished(self) -> None:
