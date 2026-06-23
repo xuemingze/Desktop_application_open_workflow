@@ -356,6 +356,11 @@ class ToolsTab(QWidget):
         status_row2.addStretch()
         vtuber_v.addLayout(status_row2)
 
+        self.lbl_vtuber_backend_hint = QLabel(t("tools_vtuber_backend_hint"))
+        self.lbl_vtuber_backend_hint.setWordWrap(True)
+        self.lbl_vtuber_backend_hint.setStyleSheet("color: #6b7280; font-size: 11px; padding-left: 42px;")
+        vtuber_v.addWidget(self.lbl_vtuber_backend_hint)
+
         # 后端路径选择
         path_row = QHBoxLayout()
         path_row.addWidget(QLabel("后端路径:"))
