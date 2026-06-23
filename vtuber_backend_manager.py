@@ -95,6 +95,23 @@ class VTuberBackendManager:
             return False, f"未找到 run_server.py: {run_server}"
         return True, str(run_server)
 
+    @staticmethod
+    def find_venv_python(path: str) -> Optional[str]:
+        """
+        查找 VTuber 目录里的 venv Python.
+        Windows: <path>\\.venv\\Scripts\\python.exe
+        Linux:   <path>/.venv/bin/python
+        找不到返回 None
+        """
+        p = Path(path)
+        if sys.platform == "win32":
+            cand = p / ".venv" / "Scripts" / "python.exe"
+        else:
+            cand = p / ".venv" / "bin" / "python"
+        if cand.exists():
+            return str(cand)
+        return None
+
     def is_running(self) -> bool:
         """检查后端是否在运行"""
         return _is_pid_alive(self.state.get("pid"))
@@ -132,26 +149,12 @@ class VTuberBackendManager:
             log_f = None
 
         try:
-            # 启动子进程，独立进程组
-            # 问题: 某些 Python 发行版 (如 embedded / 某些 pyInstaller frozen) 使用 python._pth
-            #   会忽略 PYTHONPATH 和脚本所在目录。
-            # 解决方案: 生成一个临时 wrapper 脚本, 里面先 sys.path.insert, 再调 runpy.run_path。
-            import tempfile
-            wrapper_dir = Path(USER_DATA_DIR) / "vtuber_wrapper"
-            wrapper_dir.mkdir(parents=True, exist_ok=True)
-            wrapper_path = wrapper_dir / "_run_vtuber_server.py"
-            # 用 UTF-8 写避免中文路径编码问题
-            wrapper_content = (
-                "# -*- coding: utf-8 -*-\n"
-                "import sys, runpy\n"
-                "from pathlib import Path\n"
-                f"sys.path.insert(0, r'{Path(path).resolve()}')\n"
-                f"runpy.run_path(r'{run_server}', run_name='__main__')\n"
-            )
-            wrapper_path.write_text(wrapper_content, encoding="utf-8")
+            # 优先用 VTuber 自带 venv 里的 Python, 这样能访问到 uv sync 装的依赖
+            # 退路: 当前 Python 解释器 (sys.executable)
+            python_exe = self.find_venv_python(path) or sys.executable
 
             proc = subprocess.Popen(
-                [sys.executable, str(wrapper_path)],
+                [python_exe, run_server],
                 cwd=str(Path(path)),
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                 | subprocess.DETACHED_PROCESS,
@@ -194,7 +197,8 @@ class VTuberBackendManager:
         }
         _save_state(self.state)
         # 不要在父进程关闭 log_f, 保持打开以便子进程后续日志也能写入
-        return True, f"已启动 (PID={proc.pid})"
+        py_info = f"venv" if self.find_venv_python(path) else "sys"
+        return True, f"已启动 (PID={proc.pid}, python={py_info})"
 
     def stop(self) -> Tuple[bool, str]:
         """停止 VTuber 后端"""
