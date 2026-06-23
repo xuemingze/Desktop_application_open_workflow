@@ -1851,25 +1851,43 @@ class MainWindow(QMainWindow):
             self._companion_bridge.update_config(config)
 
     def _init_companion_bridge(self) -> None:
-        """启动 MetaPact 桌宠桥接（默认禁用）。"""
+        """启动 MetaPact 桌宠桥接（默认禁用）。同时初始化 LLM backend 供 VTuber /v1/chat/completions 调用。"""
         try:
-            from companion_bridge import CompanionBridgeThread
+            from companion_bridge import CompanionBridgeThread, CompanionAPIHandler
+            from context_agent import OpenAICompatibleBackend
+
+            # 创建 LLM backend 实例（使用和 context_agent 相同的默认参数）
+            # 后续可通过环境变量或配置文件调整
+            backend = OpenAICompatibleBackend(
+                base_url="http://127.0.0.1:11434/v1",
+                api_key="EMPTY",
+                model="qwen2.5:7b",
+            )
+            # 设置给 CompanionAPIHandler 类级别属性
+            CompanionAPIHandler._backend = backend
+            self._append_log("[桥接] LLM backend 已初始化: OpenAICompatibleBackend(ollama)")
+
             # 读取配置：优先从 tools_tab 注入，fallback 到 USER_DATA_DIR/config.json
             config = {
-                "enabled": False,
+                "enabled": True,  # 默认启用 companion bridge HTTP server（供 VTuber LLM 调用）
                 "token": "",
                 "whitelist_workflows": [],
             }
             config_path = USER_DATA_DIR / "config.json"
+            self._append_log(f"[桥接] config_path: {config_path}, exists={config_path.exists()}")
             if config_path.exists():
                 try:
                     import json
                     saved = json.loads(config_path.read_text(encoding="utf-8"))
-                    config["enabled"] = saved.get("companion_enabled", False)
+                    raw_enabled = saved.get("companion_enabled", False)
+                    self._append_log(f"[桥接] raw companion_enabled={raw_enabled}, type={type(raw_enabled)}")
+                    config["enabled"] = bool(raw_enabled)
                     config["token"] = saved.get("companion_token", "")
                     config["whitelist_workflows"] = saved.get("companion_whitelist_workflows", [])
                 except Exception as e:
                     self._append_log(f"[桥接] 读取配置失败: {e}")
+            else:
+                self._append_log(f"[桥接] config.json 不存在，使用默认 config")
             self._companion_bridge = CompanionBridgeThread(port=16260)
             # 桥接日志信号（plain callback，threading 版本不需要 .connect()）
             self._companion_bridge.log_signal = self._append_log

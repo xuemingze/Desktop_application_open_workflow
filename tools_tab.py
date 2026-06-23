@@ -342,7 +342,7 @@ class ToolsTab(QWidget):
         url_row.addWidget(QLabel("后端地址"))
         self.edit_vtuber_url = QLineEdit()
         self.edit_vtuber_url.setPlaceholderText("http://127.0.0.1:12393")
-        self.edit_vtuber_url.setText(cfg.get("vtuber_backend_url", "http://127.0.0.1:12393"))
+        self.edit_vtuber_url.setText("http://127.0.0.1:12393")
         self.edit_vtuber_url.textChanged.connect(self._on_vtuber_url_changed)
         url_row.addWidget(self.edit_vtuber_url)
         url_row.addStretch()

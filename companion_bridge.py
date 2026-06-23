@@ -33,12 +33,15 @@ try:
     from mcp_embedded import run_workflow_sync
     from log_bus import log_bus
     from activity_log import ActivityLogDB
+    from context_agent import OpenAICompatibleBackend, parse_intent_response
 except ImportError:
     USER_DATA_DIR = None
     get_active_profile_summary = None
     run_workflow_sync = None
     log_bus = None
     ActivityLogDB = None
+    OpenAICompatibleBackend = None
+    parse_intent_response = None
 
 
 # =======================
@@ -66,7 +69,7 @@ def _get_data_dir():
 # HTTP Handler（无状态，每请求独立处理）
 # =======================
 class CompanionAPIHandler(BaseHTTPRequestHandler):
-    """处理来自 MetaPact 的 HTTP 请求"""
+    """处理来自 MetaPact 的 HTTP 请求，并新增 OpenAI 兼容 LLM 端点供 VTuber 调用"""
 
     # 类级别配置（运行时由 desktop_auto 注入）
     config = {
@@ -74,6 +77,9 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
         "token": "",
         "whitelist_workflows": [],
     }
+
+    # 共享的 LLM 后端实例（由 desktop_auto 设置）
+    _backend = None
 
     def _send_json(self, status_code: int, data: dict) -> None:
         self.send_response(status_code)
@@ -97,6 +103,8 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/status":
             self._handle_status()
+        elif self.path == "/v1/models":
+            self._handle_models()
         else:
             self._send_json(404, {"ok": False, "error": "Not Found"})
 
@@ -106,6 +114,8 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
                 self._send_json(401, {"ok": False, "error": "Unauthorized"})
                 return
             self._handle_run_workflow()
+        elif self.path == "/v1/chat/completions":
+            self._handle_chat_completions()
         else:
             self._send_json(404, {"ok": False, "error": "Not Found"})
 
@@ -150,7 +160,7 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
         try:
             body = json.loads(post_data)
         except json.JSONDecodeError:
-            self._send_json(400, {"ok": False, "error": "Invalid JSON"})
+            self._send_json(400, {"ok": False, "error": "Invalid ISON"})
             return
 
         wf_name = body.get("name")
@@ -163,12 +173,89 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
             _log(f"[桥接] 工作流 {wf_name} 不在白名单，拒绝")
             self._send_json(403, {"ok": False, "error": f"工作流 '{wf_name}' 不在白名单"})
             return
-
         if run_workflow_sync is not None:
             res = run_workflow_sync(wf_name)
             self._send_json(200, res)
         else:
             self._send_json(500, {"ok": False, "error": "mcp_embedded 模块未加载"})
+
+    def _handle_models(self) -> None:
+        """返回 OpenAI 兼容的模型列表（用于 VTuber）"""
+        self._send_json(200, {
+            "object": "list",
+            "data": [
+                {
+                    "id": "desktop-auto-v1",
+                    "object": "model",
+                    "created": 1718880000,
+                    "owned_by": "desktop-auto",
+                }
+            ],
+        })
+
+    def _handle_chat_completions(self) -> None:
+        """处理 OpenAI 兼容的 /v1/chat/completions 请求"""
+        if CompanionAPIHandler._backend is None:
+            self._send_json(500, {"ok": False, "error": "LLM backend 未初始化"})
+            return
+
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        post_data = self.rfile.read(content_length).decode("utf-8") if content_length > 0 else "{}"
+        try:
+            body = json.loads(post_data)
+        except json.JSONDecodeError as e:
+            _log(f"[桥接] JSON 解析失败: {e}")
+            self._send_json(400, {"ok": False, "error": "Invalid ISON"})
+            return
+
+
+        messages = body.get("messages", [])
+        if not messages:
+            self._send_json(400, {"ok": False, "error": "Missing messages"})
+            return
+
+
+        # 拆出 system 和最后一条 user 消息（OpenAICompatibleBackend 只接受 system + user）
+        system_prompt = ""
+        user_text = ""
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "system":
+                system_prompt = content
+            elif role == "user":
+                user_text = content
+
+        if not user_text:
+            self._send_json(400, {"ok": False, "error": "Missing user message"})
+            return
+
+
+        # 调用后端推理
+        raw = CompanionAPIHandler._backend.infer(system_prompt, user_text, timeout=15.0)
+        if not raw:
+            self._send_json(500, {"ok": False, "error": "LLM inference failed"})
+            return
+
+
+        # 包成 OpenAI 兼容响应格式
+        self._send_json(200, {
+            "id": "chatcmpl-001",
+            "object": "chat.completion",
+            "created": int(__import__("time").time()),
+            "model": "desktop-auto-v1",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": raw,
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        })
 
 
 # =======================
