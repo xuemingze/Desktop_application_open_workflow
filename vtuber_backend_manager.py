@@ -99,12 +99,17 @@ class VTuberBackendManager:
     def find_venv_python(path: str) -> Optional[str]:
         """
         查找 VTuber 目录里的 venv Python.
-        Windows: <path>\\.venv\\Scripts\\python.exe
+        优先 pythonw.exe (无控制台), 退路 python.exe.
+        Windows: <path>\\.venv\\Scripts\\pythonw.exe 或 python.exe
         Linux:   <path>/.venv/bin/python
         找不到返回 None
         """
         p = Path(path)
         if sys.platform == "win32":
+            # 优先 pythonw.exe (GUI 版本, 不会弹控制台)
+            cand = p / ".venv" / "Scripts" / "pythonw.exe"
+            if cand.exists():
+                return str(cand)
             cand = p / ".venv" / "Scripts" / "python.exe"
         else:
             cand = p / ".venv" / "bin" / "python"
@@ -149,26 +154,31 @@ class VTuberBackendManager:
             log_f = None
 
         try:
-            # 优先用 VTuber 自带 venv 里的 Python, 这样能访问到 uv sync 装的依赖
+            # 优先用 VTuber 自带 venv 里的 Pythonw.exe (GUI 版本, 不会闪控制台)
             # 退路: 当前 Python 解释器 (sys.executable)
             python_exe = self.find_venv_python(path) or sys.executable
 
             # CREATE_NO_WINDOW (0x08000000) 阻止子进程闪出控制台窗口
             # CREATE_NEW_PROCESS_GROUP: 让子进程独立, GUI 关闭时不受信号干扰
-            # DETACHED_PROCESS: 让子进程脱离父进程的 console
+            # 不要用 DETACHED_PROCESS (会丢失 stdio 重定向)
             if sys.platform == "win32":
                 creationflags = (
                     subprocess.CREATE_NEW_PROCESS_GROUP
-                    | subprocess.DETACHED_PROCESS
                     | 0x08000000  # CREATE_NO_WINDOW
                 )
+                # startupinfo 双保险: 额外设置 wShowWindow = SW_HIDE
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = 0  # SW_HIDE
             else:
                 creationflags = 0
+                startupinfo = None
 
             proc = subprocess.Popen(
                 [python_exe, run_server],
                 cwd=str(Path(path)),
                 creationflags=creationflags,
+                startupinfo=startupinfo,
                 stdout=log_f if log_f else subprocess.DEVNULL,
                 stderr=subprocess.STDOUT if log_f else subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
