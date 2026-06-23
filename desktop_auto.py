@@ -1888,6 +1888,12 @@ class MainWindow(QMainWindow):
 
             # 设置给 CompanionAPIHandler 类级别属性
             CompanionAPIHandler._backend = backend
+            if hasattr(backend, "model"):
+                CompanionAPIHandler._backend_model = backend.model
+            elif hasattr(backend, "_model"):
+                CompanionAPIHandler._backend_model = backend._model
+            else:
+                CompanionAPIHandler._backend_model = model
             self._append_log(f"[桥接] LLM backend 已初始化: {backend_desc}")
 
             # 读取配置：优先从 tools_tab 注入，fallback 到 USER_DATA_DIR/config.json

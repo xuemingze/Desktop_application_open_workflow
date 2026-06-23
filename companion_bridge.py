@@ -80,6 +80,7 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
 
     # 共享的 LLM 后端实例（由 desktop_auto 设置）
     _backend = None
+    _backend_model = "desktop-auto-v1"  # 实际模型名，由 desktop_auto 注入
 
     def _send_json(self, status_code: int, data: dict) -> None:
         self.send_response(status_code)
@@ -229,12 +230,14 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"ok": False, "error": "mcp_embedded 模块未加载"})
 
     def _handle_models(self) -> None:
-        """返回 OpenAI 兼容的模型列表（用于 VTuber）"""
+        """返回 OpenAI 兼容的模型列表（用于 VTuber），自动同步真实后端模型名"""
+        self._sync_backend_from_config()
+        model_id = CompanionAPIHandler._backend_model or "desktop-auto-v1"
         self._send_json(200, {
             "object": "list",
             "data": [
                 {
-                    "id": "desktop-auto-v1",
+                    "id": model_id,
                     "object": "model",
                     "created": 1718880000,
                     "owned_by": "desktop-auto",
@@ -242,8 +245,52 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
             ],
         })
 
+    @classmethod
+    def _sync_backend_from_config(cls) -> bool:
+        """从 context_aware_config.json 重新加载后端配置（桌面助手重启后也可同步）"""
+        try:
+            cfg_path = None
+            if _get_data_dir():
+                cfg_path = _get_data_dir() / "context_aware_config.json"
+            if not cfg_path or not cfg_path.exists():
+                return False
+            import json
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            bc = cfg.get("backend", {}) if isinstance(cfg, dict) else {}
+            if int(bc.get("type", 0) or 0) != 1:
+                return False
+            from context_agent import OpenAICompatibleBackend
+            base_url = str(bc.get("base_url") or "").strip()
+            api_key = str(bc.get("api_key") or "EMPTY").strip() or "EMPTY"
+            model = str(bc.get("model") or "").strip()
+            if not base_url or not model:
+                return False
+            if cls._backend is not None and cls._backend_model == model:
+                return True
+            cls._backend = OpenAICompatibleBackend(
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+            )
+            cls._backend_model = model
+            _log(f"后端配置已同步: {base_url}, model={model}")
+            return True
+        except Exception as e:
+            _log(f"后端配置同步失败: {e}")
+            return False
+
+    def _handle_reload_backend(self) -> None:
+        """手动触发后端配置重新加载"""
+        ok = self._sync_backend_from_config()
+        model = CompanionAPIHandler._backend_model or "none"
+        if ok:
+            self._send_json(200, {"ok": True, "model": model, "message": f"后端已重载: {model}"})
+        else:
+            self._send_json(200, {"ok": False, "model": model, "message": "配置未变化或读取失败"})
+
     def _handle_chat_completions(self) -> None:
         """处理 OpenAI 兼容的 /v1/chat/completions 请求"""
+        self._sync_backend_from_config()
         if CompanionAPIHandler._backend is None:
             self._send_json(500, {"ok": False, "error": "LLM backend 未初始化"})
             return
