@@ -27,10 +27,16 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-# EXE 名称 (跟 PyInstaller 打包配置一致)
-EXE_NAME = "桌面自动化助手.exe"
+# EXE 目录
 EXE_DIR = Path(__file__).parent / "dist"
-EXE_PATH = EXE_DIR / EXE_NAME
+
+def _find_latest_exe() -> Optional[Path]:
+    """查找 dist 中最新的 EXE。"""
+    exes = sorted(EXE_DIR.glob("desktop-auto-v*.exe"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return exes[0] if exes else None
+
+EXE_PATH = _find_latest_exe()
+EXE_NAME = EXE_PATH.name if EXE_PATH else "desktop-auto-v*.exe"
 
 
 def _find_pid() -> list:
