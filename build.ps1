@@ -36,11 +36,17 @@ try {
         $TimeStr = "-" + (Get-Date -Format "HHmm")
     }
 
+    $GitHash = ""
+    try {
+        $GitHash = (git rev-parse --short HEAD 2>$null)
+    } catch {}
+
     $Tag = "$Date$TimeStr"
-    $ExeName = "desktop-auto-v$Tag"
+    $TagWithHash = if ($GitHash) { "$Tag-g$GitHash" } else { $Tag }
+    $ExeName = "desktop-auto-v$TagWithHash"
     $Output = "dist\$ExeName.exe"
 
-    Write-Host "[BUILD] Tag: $Tag" -ForegroundColor Cyan
+    Write-Host "[BUILD] Tag: $TagWithHash  (git: $GitHash)" -ForegroundColor Cyan
 
     if (-not $NoBuild) {
         $pyinstaller = Get-Command pyinstaller -ErrorAction SilentlyContinue
