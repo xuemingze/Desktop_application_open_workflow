@@ -92,24 +92,30 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
 
     def _send_chat_stream(self, raw: str, model: str = "desktop-auto-v1") -> None:
-        """发送 OpenAI 兼容 SSE 流式响应（VTuber 固定 stream=True）。"""
+        """发送 OpenAI 兼容 SSE 流式响应（VTuber 固定 stream=True）。
+        使用 raw socket 直接发送避免 BufferedWriter 缓冲问题。"""
         import time
         chat_id = f"chatcmpl-{int(time.time() * 1000)}"
         created = int(time.time())
-        self.send_response(200)
-        self.send_header("Content-type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        self.end_headers()
+        sock = self.request
+        # 手动构建 HTTP 响应（绕过 BaseHTTPRequestHandler 的 wfile 缓冲）
+        resp_headers = (
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/event-stream; charset=utf-8\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Connection: close\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "\r\n"
+        )
+        try:
+            sock.sendall(resp_headers.encode("utf-8"))
+        except Exception:
+            return
 
         def send_event(payload: dict) -> None:
             line = "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
-            self.wfile.write(line.encode("utf-8"))
             try:
-                self.wfile.flush()
+                sock.sendall(line.encode("utf-8"))
             except Exception:
                 pass
 
@@ -134,9 +140,8 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
             "model": model,
             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
         })
-        self.wfile.write(b"data: [DONE]\n\n")
         try:
-            self.wfile.flush()
+            sock.sendall(b"data: [DONE]\n\n")
         except Exception:
             pass
 
