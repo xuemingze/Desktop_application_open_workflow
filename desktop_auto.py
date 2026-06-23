@@ -1854,18 +1854,41 @@ class MainWindow(QMainWindow):
         """启动 MetaPact 桌宠桥接（默认禁用）。同时初始化 LLM backend 供 VTuber /v1/chat/completions 调用。"""
         try:
             from companion_bridge import CompanionBridgeThread, CompanionAPIHandler
-            from context_agent import OpenAICompatibleBackend
+            from context_agent import EchoBackend, OpenAICompatibleBackend
 
-            # 创建 LLM backend 实例（使用和 context_agent 相同的默认参数）
-            # 后续可通过环境变量或配置文件调整
-            backend = OpenAICompatibleBackend(
-                base_url="http://127.0.0.1:11434/v1",
-                api_key="EMPTY",
-                model="qwen2.5:7b",
-            )
+            # 创建 LLM backend 实例：优先复用 AI 感知页保存的真实后端配置
+            backend = EchoBackend()
+            backend_desc = "EchoBackend"
+            context_cfg_path = USER_DATA_DIR / "context_aware_config.json"
+            try:
+                import json
+                if context_cfg_path.exists():
+                    context_cfg = json.loads(context_cfg_path.read_text(encoding="utf-8"))
+                    backend_cfg = context_cfg.get("backend", {}) if isinstance(context_cfg, dict) else {}
+                    backend_type = int(backend_cfg.get("type", 0) or 0)
+                    if backend_type == 1:
+                        base_url = str(backend_cfg.get("base_url") or "").strip()
+                        api_key = str(backend_cfg.get("api_key") or "EMPTY").strip() or "EMPTY"
+                        model = str(backend_cfg.get("model") or "").strip()
+                        if base_url and model:
+                            backend = OpenAICompatibleBackend(
+                                base_url=base_url,
+                                api_key=api_key,
+                                model=model,
+                            )
+                            backend_desc = f"OpenAICompatibleBackend({base_url}, model={model})"
+                        else:
+                            self._append_log(f"[桥接] AI 后端配置不完整，使用 EchoBackend: {backend_cfg}")
+                    else:
+                        self._append_log(f"[桥接] AI 后端为 Echo/未配置，VTuber 聊天将使用 EchoBackend")
+                else:
+                    self._append_log(f"[桥接] context_aware_config.json 不存在，使用 EchoBackend: {context_cfg_path}")
+            except Exception as e:
+                self._append_log(f"[桥接] 读取 AI 后端配置失败，使用 EchoBackend: {e}")
+
             # 设置给 CompanionAPIHandler 类级别属性
             CompanionAPIHandler._backend = backend
-            self._append_log("[桥接] LLM backend 已初始化: OpenAICompatibleBackend(ollama)")
+            self._append_log(f"[桥接] LLM backend 已初始化: {backend_desc}")
 
             # 读取配置：优先从 tools_tab 注入，fallback 到 USER_DATA_DIR/config.json
             config = {

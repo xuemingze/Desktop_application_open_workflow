@@ -216,25 +216,48 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
             return
 
 
+        def _content_to_text(content) -> str:
+            """兼容 OpenAI 文本 content 与多模态 content list。"""
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = []
+                for item in content:
+                    if isinstance(item, dict):
+                        if item.get("type") == "text":
+                            parts.append(str(item.get("text") or ""))
+                        elif "text" in item:
+                            parts.append(str(item.get("text") or ""))
+                    elif isinstance(item, str):
+                        parts.append(item)
+                return "\n".join([p for p in parts if p.strip()])
+            if content is None:
+                return ""
+            return str(content)
+
         # 拆出 system 和最后一条 user 消息（OpenAICompatibleBackend 只接受 system + user）
         system_prompt = ""
         user_text = ""
         for msg in messages:
             role = msg.get("role", "")
-            content = msg.get("content", "")
+            content_text = _content_to_text(msg.get("content", ""))
             if role == "system":
-                system_prompt = content
+                system_prompt = content_text
             elif role == "user":
-                user_text = content
+                user_text = content_text
 
         if not user_text:
             self._send_json(400, {"ok": False, "error": "Missing user message"})
             return
 
-
         # 调用后端推理
-        raw = CompanionAPIHandler._backend.infer(system_prompt, user_text, timeout=15.0)
+        try:
+            raw = CompanionAPIHandler._backend.infer(system_prompt, user_text, timeout=30.0)
+        except Exception as e:
+            _log(f"[桥接] LLM 推理异常: {type(e).__name__}: {e}")
+            raw = None
         if not raw:
+            _log(f"[桥接] LLM 推理失败: backend={type(CompanionAPIHandler._backend).__name__}, user={user_text[:80]!r}")
             self._send_json(500, {"ok": False, "error": "LLM inference failed"})
             return
 
