@@ -356,8 +356,51 @@ class ToolsTab(QWidget):
         status_row2.addStretch()
         vtuber_v.addLayout(status_row2)
 
+        # 后端路径选择
+        path_row = QHBoxLayout()
+        path_row.addWidget(QLabel("后端路径:"))
+        self.edit_vtuber_backend_path = QLineEdit()
+        self.edit_vtuber_backend_path.setPlaceholderText("选择 Open-LLM-VTuber 目录（需含 run_server.py）")
+        self.edit_vtuber_backend_path.setText(self._load_vtuber_backend_path())
+        self.edit_vtuber_backend_path.editingFinished.connect(self._on_vtuber_backend_path_edit_finished)
+        path_row.addWidget(self.edit_vtuber_backend_path, 1)
+        self.btn_browse_vtuber_backend = QPushButton("浏览...")
+        self.btn_browse_vtuber_backend.setMaximumWidth(70)
+        self.btn_browse_vtuber_backend.clicked.connect(self._on_browse_vtuber_backend)
+        path_row.addWidget(self.btn_browse_vtuber_backend)
+        vtuber_v.addLayout(path_row)
+
+        # 启动/停止按钮
+        btn_row = QHBoxLayout()
+        self.btn_start_vtuber_backend = QPushButton("启动后端")
+        self.btn_start_vtuber_backend.setStyleSheet(
+            "QPushButton { background: #16a34a; color: white; font-weight: bold; "
+            "padding: 6px 14px; border-radius: 4px; }"
+            "QPushButton:hover { background: #15803d; }"
+            "QPushButton:disabled { background: #9ca3af; }"
+        )
+        self.btn_start_vtuber_backend.clicked.connect(self._on_start_vtuber_backend)
+        btn_row.addWidget(self.btn_start_vtuber_backend)
+        self.btn_stop_vtuber_backend = QPushButton("停止后端")
+        self.btn_stop_vtuber_backend.setStyleSheet(
+            "QPushButton { background: #dc2626; color: white; font-weight: bold; "
+            "padding: 6px 14px; border-radius: 4px; }"
+            "QPushButton:hover { background: #b91c1c; }"
+            "QPushButton:disabled { background: #9ca3af; }"
+        )
+        self.btn_stop_vtuber_backend.clicked.connect(self._on_stop_vtuber_backend)
+        btn_row.addWidget(self.btn_stop_vtuber_backend)
+        btn_row.addStretch()
+        vtuber_v.addLayout(btn_row)
+
         v.addWidget(vtuber_box)
         self._refresh_vtuber_status()
+        # 后端状态轮询
+        self._vtuber_status_timer = QTimer(self)
+        self._vtuber_status_timer.setInterval(3000)
+        self._vtuber_status_timer.timeout.connect(self._refresh_vtuber_backend_status)
+        self._vtuber_status_timer.start()
+        self._refresh_vtuber_backend_status()
 
         # ----- 危险操作 -----
         line3 = QFrame()
@@ -1340,6 +1383,106 @@ exit /b 0
         main_win = self.window()
         if main_win and hasattr(main_win, "_update_vtuber_config"):
             main_win._update_vtuber_config(cfg)
+
+    # ===== VTuber 后端路径与启停 =====
+    def _load_vtuber_backend_path(self) -> str:
+        """从 config.json 读取保存的 VTuber 后端路径"""
+        try:
+            cfg = self._load_global_config()
+            p = cfg.get("vtuber_backend_path", "")
+            return p if p else ""
+        except Exception:
+            return ""
+
+    def _save_vtuber_backend_path(self, path: str) -> None:
+        """保存 VTuber 后端路径到 config.json"""
+        try:
+            cfg = self._load_global_config()
+            cfg["vtuber_backend_path"] = path.strip()
+            self._save_global_config(cfg)
+        except Exception as e:
+            QMessageBox.warning(self, "保存路径", f"保存失败: {e}")
+
+    def _on_browse_vtuber_backend(self) -> None:
+        """浏览选择 VTuber 后端目录"""
+        start = self.edit_vtuber_backend_path.text().strip() if hasattr(self, "edit_vtuber_backend_path") else ""
+        path = QFileDialog.getExistingDirectory(
+            self, "选择 Open-LLM-VTuber 目录", start
+        )
+        if path:
+            self.edit_vtuber_backend_path.setText(path)
+            self._on_vtuber_backend_path_edit_finished()
+
+    def _on_vtuber_backend_path_edit_finished(self) -> None:
+        """路径编辑框失焦时保存"""
+        if not hasattr(self, "edit_vtuber_backend_path"):
+            return
+        path = self.edit_vtuber_backend_path.text().strip()
+        self._save_vtuber_backend_path(path)
+
+    def _on_start_vtuber_backend(self) -> None:
+        """启动 VTuber 后端"""
+        from vtuber_backend_manager import get_manager
+        path = self.edit_vtuber_backend_path.text().strip() if hasattr(self, "edit_vtuber_backend_path") else ""
+        if not path:
+            QMessageBox.warning(self, "启动后端", "请先选择 Open-LLM-VTuber 目录（需含 run_server.py）")
+            return
+        # 保存路径（启动前确保最新）
+        self._save_vtuber_backend_path(path)
+
+        mgr = get_manager()
+        if mgr.is_running():
+            QMessageBox.information(self, "启动后端", f"后端已在运行 (PID={mgr.get_status().get('pid')})")
+            return
+        ok, msg = mgr.start(path)
+        if ok:
+            QMessageBox.information(self, "启动后端", msg)
+        else:
+            QMessageBox.critical(self, "启动后端", msg)
+        self._refresh_vtuber_backend_status()
+
+    def _on_stop_vtuber_backend(self) -> None:
+        """停止 VTuber 后端"""
+        from vtuber_backend_manager import get_manager
+        mgr = get_manager()
+        if not mgr.is_running():
+            QMessageBox.information(self, "停止后端", "后端未运行")
+            self._refresh_vtuber_backend_status()
+            return
+        ok, msg = mgr.stop()
+        if ok:
+            QMessageBox.information(self, "停止后端", msg)
+        else:
+            QMessageBox.warning(self, "停止后端", msg)
+        self._refresh_vtuber_backend_status()
+
+    def _refresh_vtuber_backend_status(self) -> None:
+        """每 3 秒轮询一次后端状态，更新标签与按钮可用性"""
+        if not hasattr(self, "lbl_vtuber_status"):
+            return
+        try:
+            from vtuber_backend_manager import get_manager
+        except Exception:
+            return
+        mgr = get_manager()
+        status = mgr.get_status()
+        if status.get("running"):
+            pid = status.get("pid")
+            path = status.get("path") or ""
+            short = path[:40] + "..." if len(path) > 40 else path
+            self.lbl_vtuber_status.setText(f"已启动 · PID={pid} · {short}")
+            self.lbl_vtuber_status.setStyleSheet("color: #16a34a; font-size: 11px;")
+            if hasattr(self, "btn_start_vtuber_backend"):
+                self.btn_start_vtuber_backend.setEnabled(False)
+            if hasattr(self, "btn_stop_vtuber_backend"):
+                self.btn_stop_vtuber_backend.setEnabled(True)
+        else:
+            self.lbl_vtuber_status.setText("后端未运行")
+            self.lbl_vtuber_status.setStyleSheet("color: #666; font-size: 11px;")
+            if hasattr(self, "btn_start_vtuber_backend"):
+                self.btn_start_vtuber_backend.setEnabled(True)
+            if hasattr(self, "btn_stop_vtuber_backend"):
+                self.btn_stop_vtuber_backend.setEnabled(False)
 
     def _refresh_vtuber_status(self) -> None:
         cfg = self._load_global_config()

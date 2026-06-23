@@ -29,6 +29,7 @@ hiddenimports = [
     'daily_diary',
     'companion_bridge',  # MetaPact 桌宠桥接
     'vtuber_bridge',       # Open-LLM-VTuber 事件转发桥接
+    'vtuber_backend_manager',  # VTuber 后端进程启停管理
     'PySide6.QtCore',
     'PySide6.QtGui',
     'PySide6.QtWidgets',

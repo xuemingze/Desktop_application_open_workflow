@@ -40,6 +40,13 @@ build/
 dist/
 
 
+# Open-LLM-VTuber (外部项目,不应入仓)
+Open-LLM-VTuber-v1.2.1-zh/
+Open-LLM-VTuber-v1.2.1-zh.zip
+Open-LLM-VTuber-v1.2.1-zh-*.zip
+open-llm-vtuber-*-setup.exe
+
+
 # 操作系统
 .DS_Store
 Thumbs.db
