@@ -57,9 +57,14 @@ def _is_pid_alive(pid: Optional[int]) -> bool:
     if not pid:
         return False
     try:
+        # tasklist 是 console 程序, 必须加 CREATE_NO_WINDOW 避免每 3 秒闪一次
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = 0x08000000  # CREATE_NO_WINDOW
         out = subprocess.run(
             ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-            capture_output=True, text=True, encoding="gbk", errors="ignore"
+            capture_output=True, text=True, encoding="gbk", errors="ignore",
+            creationflags=creationflags
         )
         # tasklist 在进程存在时返回 "..." 开头的一行；不存在时返回 "INFO: ..."
         return str(pid) in out.stdout
@@ -231,9 +236,12 @@ class VTuberBackendManager:
             _save_state(self.state)
             return True, "进程已不存在（清理状态）"
         try:
+            # taskkill 是 console 程序, 加 CREATE_NO_WINDOW 避免闪框
+            creationflags = 0x08000000 if sys.platform == "win32" else 0
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
-                capture_output=True, text=True, encoding="gbk", errors="ignore"
+                capture_output=True, text=True, encoding="gbk", errors="ignore",
+                creationflags=creationflags
             )
         except Exception as e:
             return False, f"taskkill 失败: {e}"
