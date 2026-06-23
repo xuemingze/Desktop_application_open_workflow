@@ -364,6 +364,10 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
             return
 
 
+        # 过滤掉 <think>...</think> 推理块，只保留最终回复发给 VTuber
+        import re as _re
+        raw = _re.sub(r'<think>[\s\S]*?</think>', '', raw).strip()
+
         model = body.get("model") or "desktop-auto-v1"
         if bool(body.get("stream", False)):
             self._send_chat_stream(raw, model=model)
