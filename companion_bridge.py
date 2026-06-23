@@ -90,6 +90,55 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
 
+    def _send_chat_stream(self, raw: str, model: str = "desktop-auto-v1") -> None:
+        """发送 OpenAI 兼容 SSE 流式响应（VTuber 固定 stream=True）。"""
+        import time
+        chat_id = f"chatcmpl-{int(time.time() * 1000)}"
+        created = int(time.time())
+        self.send_response(200)
+        self.send_header("Content-type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.end_headers()
+
+        def send_event(payload: dict) -> None:
+            line = "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+            self.wfile.write(line.encode("utf-8"))
+            try:
+                self.wfile.flush()
+            except Exception:
+                pass
+
+        send_event({
+            "id": chat_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+        })
+        send_event({
+            "id": chat_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{"index": 0, "delta": {"content": raw}, "finish_reason": None}],
+        })
+        send_event({
+            "id": chat_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        })
+        self.wfile.write(b"data: [DONE]\n\n")
+        try:
+            self.wfile.flush()
+        except Exception:
+            pass
+
     def _check_token(self) -> bool:
         if not self.config.get("token"):
             return True
@@ -262,12 +311,17 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
             return
 
 
+        model = body.get("model") or "desktop-auto-v1"
+        if bool(body.get("stream", False)):
+            self._send_chat_stream(raw, model=model)
+            return
+
         # 包成 OpenAI 兼容响应格式
         self._send_json(200, {
             "id": "chatcmpl-001",
             "object": "chat.completion",
             "created": int(__import__("time").time()),
-            "model": "desktop-auto-v1",
+            "model": model,
             "choices": [
                 {
                     "index": 0,
