@@ -349,16 +349,24 @@ class ToolsTab(QWidget):
         vtuber_v.addLayout(url_row)
 
         status_row2 = QHBoxLayout()
-        status_row2.addWidget(QLabel("状态:"))
+        status_row2.addWidget(QLabel("桥接状态:"))
         self.lbl_vtuber_status = QLabel("未启动")
         self.lbl_vtuber_status.setStyleSheet("color: #666; font-size: 11px;")
         status_row2.addWidget(self.lbl_vtuber_status)
         status_row2.addStretch()
         vtuber_v.addLayout(status_row2)
 
+        backend_status_row = QHBoxLayout()
+        backend_status_row.addWidget(QLabel("后端状态:"))
+        self.lbl_vtuber_backend_status = QLabel("后端未运行")
+        self.lbl_vtuber_backend_status.setStyleSheet("color: #666; font-size: 11px;")
+        backend_status_row.addWidget(self.lbl_vtuber_backend_status)
+        backend_status_row.addStretch()
+        vtuber_v.addLayout(backend_status_row)
+
         self.lbl_vtuber_backend_hint = QLabel(t("tools_vtuber_backend_hint"))
         self.lbl_vtuber_backend_hint.setWordWrap(True)
-        self.lbl_vtuber_backend_hint.setStyleSheet("color: #6b7280; font-size: 11px; padding-left: 42px;")
+        self.lbl_vtuber_backend_hint.setStyleSheet("color: #6b7280; font-size: 11px; padding-left: 56px;")
         vtuber_v.addWidget(self.lbl_vtuber_backend_hint)
 
         # 后端路径选择
@@ -1479,7 +1487,7 @@ exit /b 0
 
     def _refresh_vtuber_backend_status(self) -> None:
         """每 3 秒轮询一次后端状态，更新标签与按钮可用性"""
-        if not hasattr(self, "lbl_vtuber_status"):
+        if not hasattr(self, "lbl_vtuber_backend_status"):
             return
         try:
             from vtuber_backend_manager import get_manager
@@ -1491,15 +1499,15 @@ exit /b 0
             pid = status.get("pid")
             path = status.get("path") or ""
             short = path[:40] + "..." if len(path) > 40 else path
-            self.lbl_vtuber_status.setText(f"已启动 · PID={pid} · {short}")
-            self.lbl_vtuber_status.setStyleSheet("color: #16a34a; font-size: 11px;")
+            self.lbl_vtuber_backend_status.setText(f"已启动 · PID={pid} · {short}")
+            self.lbl_vtuber_backend_status.setStyleSheet("color: #16a34a; font-size: 11px;")
             if hasattr(self, "btn_start_vtuber_backend"):
                 self.btn_start_vtuber_backend.setEnabled(False)
             if hasattr(self, "btn_stop_vtuber_backend"):
                 self.btn_stop_vtuber_backend.setEnabled(True)
         else:
-            self.lbl_vtuber_status.setText("后端未运行")
-            self.lbl_vtuber_status.setStyleSheet("color: #666; font-size: 11px;")
+            self.lbl_vtuber_backend_status.setText("后端未运行")
+            self.lbl_vtuber_backend_status.setStyleSheet("color: #666; font-size: 11px;")
             if hasattr(self, "btn_start_vtuber_backend"):
                 self.btn_start_vtuber_backend.setEnabled(True)
             if hasattr(self, "btn_stop_vtuber_backend"):
