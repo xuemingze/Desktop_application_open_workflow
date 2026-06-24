@@ -16,12 +16,63 @@ assistant_core.py — 纯逻辑层大脑(无 PySide6 依赖)
 import json
 import logging
 import re
+import time
 import uuid
 import urllib.request
 import urllib.error
 from typing import Generator, Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# ---- 工具调用的重试装饰器 (抗瞬时IO错误) -------------------------
+# 某些工具 (读文件/查 SQLite) 可能因为临时文件占用/系统瞬间IO忙碌而失败。
+# 重试 1-2 次可以屏蔽 ~90% 的瞬时错误,避免模型连续 3 轮看到失败结果而陷入混乱。
+#
+# 重试策略: 重试次数按工具名配置,默认 2 次,间隔 0.3 秒递增。
+TOOL_RETRY_CONFIG = {
+    # 轻量读操作 - 重试 3 次,反正快
+    "read_file": 3,
+    "list_directory": 3,
+    "search_local_files": 3,
+    # 数据库写入 - 重试 2 次
+    "set_reminder": 2,
+    "log_diary": 2,
+    # 重操作 - 不重试 (双击已点开/快捷方式已启动)
+    "launch_shortcut": 0,
+    "open_system_file": 0,
+    "run_command": 0,
+}
+_DEFAULT_RETRY = 2
+_RETRY_BASE_DELAY = 0.3  # 秒
+
+
+def retry_tool(func, max_retries: int = None):
+    """装饰器: 重试工具调用 (适用于IO型工具)。
+    如果 max_retries=None,自动从 TOOL_RETRY_CONFIG 读取。"""
+    if max_retries is None:
+        max_retries = TOOL_RETRY_CONFIG.get(func.__name__, _DEFAULT_RETRY)
+
+    def wrapper(args):
+        last_err = None
+        for attempt in range(max_retries + 1):
+            try:
+                return func(args)
+            except Exception as e:
+                last_err = e
+                if attempt < max_retries:
+                    delay = _RETRY_BASE_DELAY * (attempt + 1)
+                    logger.warning(
+                        "Tool %s 第 %d 次失败: %s — %0.2fs 后重试",
+                        func.__name__, attempt + 1, e, delay,
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error("Tool %s 第 %d 次仍失败: %s", func.__name__, attempt + 1, e)
+        return {"ok": False, "error": f"{type(last_err).__name__}: {last_err}", "retries_exhausted": True}
+
+    wrapper.__name__ = func.__name__
+    return wrapper
 
 EXPRESSION_PATTERN = re.compile(
     r"\[(neutral|anger|disgust|fear|joy|smirk|sadness|surprise|thinking)\]"
@@ -62,6 +113,20 @@ VTUBER_EXPRESSION_HINT = (
 )
 
 
+# 静音工具清单: 执行耗时 <0.5s 的轻量工具, 不吐 "正在..." 占位文本
+# (避免快速操作产生冗余 TTS 语音, 用户体验更丝滑)
+SILENT_TOOLS = {
+    "read_file",
+    "list_directory",
+    "search_local_files",
+    "set_reminder",
+    "log_diary",
+    "recall_memory",
+    "show_reminders",
+    "delete_reminder",
+}
+
+
 class AssistantCore:
     """
     复用 context_chat 的工具集和 chat 流程(基于自定义 JSON action 协议)。
@@ -93,7 +158,10 @@ class AssistantCore:
         from context_agent import parse_intent_response
 
         self.TOOL_DEFINITIONS = TOOL_DEFINITIONS
-        self.TOOL_DISPATCH = TOOL_DISPATCH
+        # 用 retry 装饰器包装 TOOL_DISPATCH, 屏蔽瞬时IO错误
+        self.TOOL_DISPATCH = {
+            name: retry_tool(func) for name, func in TOOL_DISPATCH.items()
+        }
         self.build_chat_system_prompt = build_chat_system_prompt
         self.parse_intent_response = parse_intent_response
 
@@ -183,10 +251,20 @@ class AssistantCore:
                 )
 
                 # 最后一轮:强制定稿,禁止再调工具
-                if turn >= self.max_turns - 1 and action and action in self.TOOL_DISPATCH:
-                    logger.info("最后一轮,强制结束 (忽略工具 %s)", action)
-                    final_reply = clean_reply or clean_raw_fallback or "操作已完成。"
-                    yield {"type": "text", "content": final_reply}
+                # 【改进 3】双保险: turn 计数 OR messages 长度 任一触发即终止
+                _force_final = (
+                    turn >= self.max_turns - 1
+                    or len(messages) > 6  # 3 轮 system+user+assistant+tool*6 ≈ 12 条
+                )
+                if _force_final and action and action in self.TOOL_DISPATCH:
+                    logger.info(
+                        "最后一轮,强制结束 (turn=%s, msgs=%s, 忽略工具 %s)",
+                        turn, len(messages), action,
+                    )
+                    # 【改进 4】智能兑底: 优先 reply > raw > 不说话 (避免机械的"操作已完成。")
+                    final_reply = clean_reply or clean_raw_fallback
+                    if final_reply:
+                        yield {"type": "text", "content": final_reply}
                     return
 
                 # 没工具调用,直接结束
@@ -200,8 +278,8 @@ class AssistantCore:
                 # 有 reply 先抛一段自然语言
                 if clean_reply:
                     yield {"type": "text", "content": clean_reply}
-                else:
-                    # 【改进 1-B】AI 决定调工具但没给 reply,手动补一句让 VTuber 有话说
+                elif action not in SILENT_TOOLS:
+                    # 【改进 5】静音工具不补 "正在..." 占位文本 (避免冗余 TTS)
                     yield {"type": "text", "content": f"正在为您执行 {action} 操作..."}
 
                 yield {"type": "tool_start", "tool_name": action, "args": args}
