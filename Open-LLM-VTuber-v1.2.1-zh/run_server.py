@@ -3,41 +3,10 @@ import sys
 import atexit
 import asyncio
 import argparse
-from pathlib import Path
-
-# ── GLOBAL SUBPROCESS WINDOW HIDE ──────────────────────────────────────────
-# Must be before 'import subprocess' so the patched Popen is what all modules get
-if sys.platform == "win32":
-    import subprocess as _subprocess
-    _orig_popen = _subprocess.Popen
-
-    class _NoWindowPopen:
-        """Popen wrapper that forces CREATE_NO_WINDOW on Windows for ALL calls."""
-        __slots__ = ("_popen",)
-
-        def __init__(self, *args, creationflags=0, **kwargs):
-            kwargs["creationflags"] = creationflags | _subprocess.CREATE_NO_WINDOW
-            self._popen = _orig_popen(*args, **kwargs)
-
-        def __getattr__(self, name):
-            return getattr(self._popen, name)
-
-        def __enter__(self):
-            return self._popen.__enter__()
-
-        def __exit__(self, *args):
-            return self._popen.__exit__(*args)
-
-    _subprocess.Popen = _NoWindowPopen
-
-    # Also patch pydub.audio_segment.subprocess if pydub is already imported
-    try:
-        import pydub.audio_segment as _pa
-        _pa.subprocess.Popen = _NoWindowPopen
-    except (ImportError, AttributeError):
-        pass
-
 import subprocess
+import tomli
+import uvicorn
+from pathlib import Path
 from loguru import logger
 from upgrade_codes.upgrade_manager import UpgradeManager
 
@@ -157,6 +126,26 @@ def parse_args():
 def run(console_log_level: str):
     init_logger(console_log_level)
     logger.info(f"Open-LLM-VTuber, version v{get_version()}")
+
+    # ── FORCE CREATE_NO_WINDOW on all FFmpeg subprocess calls ──────────────────
+    # pydub uses `from subprocess import Popen` at import time, which captures
+    # the original Popen. Patch pydub.audio_segment.Popen directly so all FFmpeg
+    # calls (from_file, export) inherit CREATE_NO_WINDOW without flashing windows.
+    if sys.platform == "win32":
+        try:
+            import pydub.audio_segment as _pa
+            import subprocess as _sub
+
+            class _NoWinPopen(_sub.Popen):
+                def __init__(self, *args, creationflags=0, **kwargs):
+                    kwargs["creationflags"] = creationflags | _sub.CREATE_NO_WINDOW
+                    super().__init__(*args, **kwargs)
+
+            _pa.Popen = _NoWinPopen
+            _pa.subprocess.Popen = _NoWinPopen
+            _sub.Popen = _NoWinPopen
+        except (ImportError, AttributeError):
+            pass
 
     # Get selected language
     lang = upgrade_manager.lang
