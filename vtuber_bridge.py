@@ -129,13 +129,15 @@ class VTuberBridge:
 
     def notify_event(self, message: str) -> bool:
         """
-        向桌宠推送感知事件，触发 AI 回复 + TTS + 动画。
+        向桌宠推送感知事件，触发 AI 主动回复 + TTS + 动画。
+        通过 bubble-event 类型发送，后端会广播 full-text 给所有 WS 客户端，
+        前端浏览器收到后显示气泡并触发 TTS 朗读。
         """
         if not self._ensure_connected():
             return False
         ok = self._send({
-            "type": "text-input",
-            "text": message,
+            "type": "bubble-event",
+            "content": message,
         })
         if ok:
             log.debug(f"[VTuberBridge] 已发送: {message[:50]}")
