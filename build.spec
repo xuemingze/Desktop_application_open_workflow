@@ -30,6 +30,8 @@ hiddenimports = [
     'companion_bridge',  # MetaPact 桌宠桥接
     'vtuber_bridge',       # Open-LLM-VTuber 事件转发桥接
     'vtuber_backend_manager',  # VTuber 后端进程启停管理
+    'websocket',                # vtuber_bridge 运行时需要 (try/except 无法被 PyInstaller 分析)
+    'websocket.Client',         # 同上
     'PySide6.QtCore',
     'PySide6.QtGui',
     'PySide6.QtWidgets',
@@ -86,17 +88,33 @@ except Exception as e:
         ('.venv/Lib/site-packages/jsonschema_specifications/schemas', 'jsonschema_specifications/schemas'),
     ]
 
-datas = [
-    ('workflow_panel.py', '.'),
-    ('image_match.py', '.'),
-    ('i18n.py', '.'),
-    ('mcp_embedded.py', '.'),
-    ('mcp_patch.py', '.'),
-    ('autostart.py', '.'),
-    ('samples', 'samples'),
-    ('app_icon.ico', '.'),  # 应用图标
-    ('app_icon_512_v2.png', '.'),  # README 用图标
-] + jsonschema_spec_datas
+# Collect all websocket files for data
+try:
+    from PyInstaller.utils.hooks import collect_data_files, collect_all
+    ws_datas, ws_binaries, ws_hiddenimports = collect_all('websocket')
+    print('[spec] websocket datas:', len(ws_datas), 'binaries:', len(ws_binaries), 'hidden:', len(ws_hiddenimports))
+except Exception as e:
+    print('[spec] collect websocket_client failed:', e)
+    ws_datas, ws_binaries, ws_hiddenimports = [], [], []
+
+datas = (
+    [
+        ('workflow_panel.py', '.'),
+        ('image_match.py', '.'),
+        ('i18n.py', '.'),
+        ('mcp_embedded.py', '.'),
+        ('mcp_patch.py', '.'),
+        ('autostart.py', '.'),
+        ('samples', 'samples'),
+        ('app_icon.ico', '.'),  # 应用图标
+        ('app_icon_512_v2.png', '.'),  # README 用图标
+    ] + jsonschema_spec_datas
+    + ws_datas
+)
+
+binaries_list = ws_binaries
+
+hiddenimports = hiddenimports + ws_hiddenimports
 
 # 排除掉大且不需要的包
 excludes = [
@@ -117,7 +135,7 @@ excludes = [
 a = Analysis(
     ['desktop_auto.py'],
     pathex=[],
-    binaries=[],
+    binaries=binaries_list,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
