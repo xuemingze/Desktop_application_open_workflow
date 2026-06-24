@@ -1847,7 +1847,7 @@ class MainWindow(QMainWindow):
     # ---- 7.2 桌宠桥接 (Phase D) ----
     def _update_companion_config(self, config: dict) -> None:
         """更新桥接配置（由 Tools 標签页调用）。"""
-        if self._companion_bridge:
+        if hasattr(self, "_companion_bridge") and self._companion_bridge:
             self._companion_bridge.update_config(config)
 
     def _init_companion_bridge(self) -> None:
@@ -1928,7 +1928,7 @@ class MainWindow(QMainWindow):
             self._append_log(f"[桥接] 初始化失败: {e}")
 
     def _update_vtuber_config(self, config: dict) -> None:
-        if self._vtuber_bridge:
+        if hasattr(self, "_vtuber_bridge") and self._vtuber_bridge:
             enabled = config.get("vtuber_enabled", False)
             url = config.get("vtuber_backend_url", "http://127.0.0.1:12393")
             self._vtuber_bridge.enabled = enabled
