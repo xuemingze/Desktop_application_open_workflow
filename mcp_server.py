@@ -89,15 +89,24 @@ def launch_shortcut(name: str):
         return {"ok": False, "error": str(e)}
 
 
-def search_files(query: str, path: str = None):
+def search_files(query: str = None, path: str = None, file_pattern: str = None):
+    """Search for files by name keyword.
+    
+    Args:
+        query: Search keyword (partial filename match, case-insensitive). Required.
+        path: Root directory to search in. Defaults to user home directory.
+        file_pattern: Alias for query — if query is not provided, use file_pattern.
+    """
     import fnmatch
+    # file_pattern is an alias for query (model often uses this name)
+    search_term = query if query else (file_pattern or "")
     root = Path(path) if path else Path.home()
     results = []
     try:
         for p in root.rglob("*"):
-            if query.lower() in p.name.lower():
+            if p.is_file() and search_term.lower() in p.name.lower():
                 results.append(str(p))
-                if len(results) >= 20:
+                if len(results) >= 30:
                     break
     except Exception:
         pass
@@ -133,10 +142,19 @@ def execute_command(command: str):
 def get_system_info():
     import platform
     import datetime
+    import os
+    try:
+        username = os.getlogin()
+    except Exception:
+        username = os.environ.get("USERNAME", "unknown")
     return {
-        "platform": platform.platform(),
+        "os": platform.platform(),
+        "os_version": platform.version(),
+        "architecture": platform.machine(),
+        "processor": platform.processor(),
         "python_version": platform.python_version(),
         "hostname": platform.node(),
+        "username": username,
         "datetime": datetime.datetime.now().isoformat(),
     }
 
@@ -146,7 +164,7 @@ TOOL_HANDLERS = {
     "run_workflow": lambda name="": run_workflow(name),
     "list_shortcuts": list_shortcuts,
     "launch_shortcut": lambda name="": launch_shortcut(name),
-    "search_files": lambda query="", path=None: search_files(query, path),
+    "search_files": lambda query=None, path=None, file_pattern=None: search_files(query, path, file_pattern),
     "read_file": lambda path="", max_lines=100: read_file(path, max_lines),
     "execute_command": lambda command="": execute_command(command),
     "get_system_info": get_system_info,
@@ -187,14 +205,14 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "search_files",
-        "description": "在指定目录（默认用户主目录）下按文件名关键字搜索文件，返回匹配文件的完整路径列表。",
+        "description": "在指定目录（默认用户主目录）下按文件名关键字搜索文件，返回匹配文件的完整路径列表。搜索是大小写不敏感的模糊匹配。",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "搜索关键字（文件名包含此字符串，不区分大小写）"},
-                "path": {"type": "string", "description": "搜索根目录路径，默认为用户主目录。如：C:\\Users\\Administrator"},
+                "query": {"type": "string", "description": "搜索关键字（文件名包含此字符串，不区分大小写）。例如：query=\"txt\" 找所有文件名中含有'txt'的文件"},
+                "path": {"type": "string", "description": "搜索根目录路径，默认为用户主目录。例如：path=\"C:\\\\Users\\\\Administrator\\\\Desktop\" 表示搜索桌面目录"},
+                "file_pattern": {"type": "string", "description": "搜索关键字，等同于 query 参数。模型常使用此参数名。"},
             },
-            "required": ["query"],
         },
     },
     {
@@ -222,7 +240,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "get_system_info",
-        "description": "获取本地计算机的系统信息，包括操作系统版本、Python版本、主机名和当前日期时间。",
+        "description": "获取本地计算机的详细系统信息，包括操作系统、CPU、内存、主机名、当前用户名等。返回 JSON 格式的所有系统信息。",
         "inputSchema": {"type": "object", "properties": {}},
     },
 ]
@@ -264,12 +282,13 @@ def handle_initialize(params):
             },
             {
                 "name": "search_files",
-                "description": "搜索文件",
+                "description": "在指定目录下搜索文件（按文件名关键字，大小写不敏感）。返回匹配文件的完整路径列表。",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string"},
-                        "path": {"type": "string"},
+                        "query": {"type": "string", "description": "搜索关键字（文件名包含此字符串）"},
+                        "path": {"type": "string", "description": "搜索根目录路径，默认为用户主目录"},
+                        "file_pattern": {"type": "string", "description": "搜索关键字，等同于 query"},
                     },
                 },
             },
@@ -293,7 +312,7 @@ def handle_initialize(params):
             },
             {
                 "name": "get_system_info",
-                "description": "获取系统信息",
+                "description": "获取本地计算机的详细系统信息，包括操作系统、CPU、内存、主机名、当前用户名等。",
                 "inputSchema": {"type": "object", "properties": {}},
             },
         ],
