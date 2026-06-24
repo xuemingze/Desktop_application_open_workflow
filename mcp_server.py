@@ -152,6 +152,81 @@ TOOL_HANDLERS = {
     "get_system_info": get_system_info,
 }
 
+TOOL_DEFINITIONS = [
+    {
+        "name": "list_workflows",
+        "description": "列出桌面自动化助手所有已配置的工作流名称和描述。返回工作流列表，包含每个工作流的名称、描述和触发条件。",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "run_workflow",
+        "description": "按名称运行一个已配置的工作流。工作流会按其定义自动执行一系列桌面操作。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "工作流的完整名称"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "list_shortcuts",
+        "description": "列出桌面自动化助手所有快捷键的名称、按键绑定和功能描述。",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "launch_shortcut",
+        "description": "通过名称或按键绑定启动一个快捷方式，执行其关联的命令或脚本。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "快捷键的名称或按键绑定（如 'ctrl+shift+a'）"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "search_files",
+        "description": "在指定目录（默认用户主目录）下按文件名关键字搜索文件，返回匹配文件的完整路径列表。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "搜索关键字（文件名包含此字符串，不区分大小写）"},
+                "path": {"type": "string", "description": "搜索根目录路径，默认为用户主目录。如：C:\\Users\\Administrator"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "read_file",
+        "description": "读取指定文件的文本内容（默认前100行），支持指定最大行数。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件的完整路径，如：C:\\Users\\Administrator\\Desktop\\test.txt"},
+                "max_lines": {"type": "integer", "description": "最多读取的行数，默认100行，设为0则读取全部"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "execute_command",
+        "description": "在 Windows 系统上执行一条命令行指令（CMD），返回命令的输出内容、返回码和错误信息。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "要执行的 Windows 命令，如：ipconfig、dir C:\\、tasklist"},
+            },
+            "required": ["command"],
+        },
+    },
+    {
+        "name": "get_system_info",
+        "description": "获取本地计算机的系统信息，包括操作系统版本、Python版本、主机名和当前日期时间。",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+]
+
 
 def handle_initialize(params):
     return {
@@ -226,7 +301,7 @@ def handle_initialize(params):
 
 
 def handle_tools_list():
-    return [t for t in TOOL_HANDLERS.keys()]
+    return TOOL_DEFINITIONS
 
 
 def handle_tool_call(name, arguments):
@@ -264,15 +339,8 @@ def main():
             pass
 
         elif method == "tools/list":
-            tool_list = handle_tools_list()
-            print(json.dumps(jsonrpc_success(req_id, {"tools": [
-                {
-                    "name": name,
-                    "description": "",
-                    "inputSchema": {"type": "object", "properties": {}},
-                }
-                for name in tool_list
-            ]})), flush=True)
+            tools = handle_tools_list()
+            print(json.dumps(jsonrpc_success(req_id, {"tools": tools})), flush=True)
 
         elif method == "tools/call":
             name = params.get("name", "")
