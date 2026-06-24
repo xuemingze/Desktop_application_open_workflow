@@ -47,7 +47,12 @@ SYSTEM_PROMPT = """你是一个桌面辅助 AI。用户刚刚在【{window_title
 
 
 def parse_intent_response(raw: str) -> Optional[dict]:
-    """从大模型原始回复中提取 JSON dict。多层剥壳，绝不抛异常。"""
+    """从大模型原始回复中提取 JSON dict。多层剥壳，绝不抛异常。
+
+    宽容模式:
+    - strict=False: 允许 JSON 字符串中包含真实的换行/制表符控制字符
+    - 过滤尾部逗号: 模型常见输出 "...", } 或 ...", ] 形式
+    """
     if not raw:
         return None
     text = raw.strip()
@@ -57,9 +62,9 @@ def parse_intent_response(raw: str) -> Optional[dict]:
     if m:
         text = m.group(1).strip()
 
-    # 第二步：尝试直接解析
+    # 第二步：尝试直接解析 (strict=False 允许控制字符)
     try:
-        return json.loads(text)
+        return json.loads(text, strict=False)
     except json.JSONDecodeError:
         pass
 
@@ -68,8 +73,10 @@ def parse_intent_response(raw: str) -> Optional[dict]:
     end = text.rfind("}")
     if start >= 0 and end > start:
         candidate = text[start : end + 1]
+        # 过滤尾部逗号 (,/] 或 ,/} 之前的多余逗号)
+        candidate = re.sub(r",\s*([\]}])", r"\1", candidate)
         try:
-            return json.loads(candidate)
+            return json.loads(candidate, strict=False)
         except json.JSONDecodeError:
             pass
 

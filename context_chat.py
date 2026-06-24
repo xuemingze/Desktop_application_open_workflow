@@ -441,128 +441,107 @@ def build_chat_system_prompt(web_enabled: Optional[bool] = None) -> str:
 # 后台 Worker (多轮 Agent Loop 核心升级)
 # ---------------------------------------------------------------------------
 class ChatWorker(QThread):
-    """在独立线程跑: 用户消息 → LLM → 解析 → 调工具 → (若需要再调) → 总结"""
+    """在独立线程跑: 用户消息 → AssistantCore → 事件流 → GUI 信号
+
+    重构后:不再自己处理 LLM/工具调用,完全委托给 AssistantCore。
+    保留所有原有信号名以兼容 GUI 绑定。
+    """
 
     thinking = Signal(str)                # "正在思考..." / "正在处理结果..."
     tool_call = Signal(str, dict)          # 调用的工具名 + 参数
     tool_result = Signal(str, dict)        # 工具结果
-    assistant_message = Signal(str)        # 最终回复
+    assistant_message = Signal(str)        # 最终回复(不含表情标签)
+    expression = Signal(str)               # 表情信号 (供 UI/头像绑定)
     error = Signal(str)                    # 错误
     log = Signal(str)                      # 调试日志
 
-    def __init__(self, backend: LLMBackend, history: list[dict], user_msg: str, timeout: float = 30.0, web_enabled: bool = False):
+    def __init__(
+        self,
+        backend: "LLMBackend" = None,       # 向后兼容:旧调用方传 LLMBackend,会自动构造 AssistantCore
+        history: list[dict] = None,
+        user_msg: str = "",
+        timeout: float = 30.0,
+        web_enabled: bool = False,
+        core: "AssistantCore" = None,       # 新调用方直接传 AssistantCore(推荐)
+    ):
         super().__init__()
-        self._backend = backend
-        self._history = history            # [{role, content}, ...]
+        self._backend = backend            # 兼容旧调用
+        self._history = history or []
         self._user_msg = user_msg
         self._timeout = timeout
         self._web_enabled = web_enabled
 
+        # 优先使用显式传入的 core;否则从 backend 构造;再否则用默认
+        if core is not None:
+            self._core = core
+        elif backend is not None:
+            # 从 LLMBackend 构造 AssistantCore(向后兼容)
+            from assistant_core import AssistantCore
+            self._core = AssistantCore(
+                base_url=getattr(backend, "base_url", "http://127.0.0.1:16260/v1"),
+                api_key=getattr(backend, "api_key", "EMPTY"),
+                model=getattr(backend, "model", "desktop-auto-v1"),
+                timeout=timeout,
+                web_enabled=web_enabled,
+            )
+        else:
+            from assistant_core import AssistantCore
+            self._core = AssistantCore(web_enabled=web_enabled)
+
     def run(self):
         try:
             self.thinking.emit("正在思考...")
-            sys_prompt = build_chat_system_prompt(web_enabled=self._web_enabled)
-            messages = [{"role": "system", "content": sys_prompt}] + self._history + [
-                {"role": "user", "content": self._user_msg}
-            ]
+            sys_prompt = self._core.build_chat_system_prompt(web_enabled=self._web_enabled)
+            context = {"chat_history": list(self._history)}
 
-            max_turns = 3  # 最多允许 AI 连续调用 3 次工具
-            for turn in range(max_turns):
-                raw = self._chat(messages)
-                if not raw:
-                    self.error.emit("后端无响应")
-                    return
+            # 累积 assistant_message(可能多个 text 事件拼接)
+            pending_text: list[str] = []
+            turn_count = 0
 
-                data = parse_intent_response(raw) or {}
-                action = data.get("action")
-                reply = data.get("reply", "").strip()
+            for event in self._core.process_chat_request(
+                user_text=self._user_msg,
+                context=context,
+                system_prompt=sys_prompt,
+            ):
+                et = event["type"]
 
-                # 如果 AI 决定不调用工具（action 为 null）或动作非法
-                if not action or action not in TOOL_DISPATCH:
-                    if reply:
-                        self.assistant_message.emit(reply)
-                    else:
-                        self.assistant_message.emit(raw[:500] if raw else "(无回复)")
-                    return
+                if et == "text":
+                    pending_text.append(event["content"])
+                elif et == "tool_start":
+                    # 把累积的 text 先发射出去,避免和工具状态混在一起
+                    if pending_text:
+                        self.thinking.emit("".join(pending_text))
+                        pending_text.clear()
+                    self.tool_call.emit(
+                        event["tool_name"],
+                        event.get("args") or {},
+                    )
+                    turn_count += 1
+                elif et == "tool_finish":
+                    self.tool_result.emit(
+                        event["tool_name"],
+                        event.get("result") or {},
+                    )
+                elif et == "expression":
+                    # 表情信号 - 供给 GUI 头像/动画模块使用
+                    self.expression.emit(event['hint'])
+                elif et == "error":
+                    self.error.emit(event["content"])
+                elif et == "done":
+                    break
 
-                # --- 调用工具阶段 ---
-                args = data.get("args") or {}
-                if reply:
-                    self.thinking.emit(reply)  # 如果 AI 顺带说了句话，更新到状态
-                self.tool_call.emit(action, args if isinstance(args, dict) else {})
-                
-                result = TOOL_DISPATCH[action](args if isinstance(args, dict) else {})
-
-                # 发射工具结果信号
-                result_limit = 6000 if action == "web_search" else 2000
-                result_str = json.dumps(result, ensure_ascii=False, indent=2)[:result_limit]
-                self.tool_result.emit(action, result)
-
-                # --- 准备下一轮交互上下文 ---
-                messages.append({"role": "assistant", "content": raw})
-                
-                if turn < max_turns - 1:
-                    # 还有额度，让 AI 决定是继续调工具还是回复
-                    self.thinking.emit(f"正在处理 {action} 的结果...")
-                    instruction = "请决定下一步操作：如果已找到目标路径并且需要打开，请立即调用 open_system_file ；如果需要其他工具请继续输出 JSON ；如果任务已全部完成，请将 action 设为 null 并回复纯文本给用户。"
-                    messages.append({
-                        "role": "user",
-                        "content": f"工具 {action} 执行完毕。结果:\n```json\n{result_str}\n```\n{instruction}"
-                    })
-                else:
-                    # 最后一轮，强制要求其给出总结，不再允许调用工具
-                    self.thinking.emit("正在做最后总结...")
-                    if action == "web_search":
-                        instruction = (
-                            "执行完毕。这是最后一轮交互。请基于工具结果给用户最终回复（必须用纯文本，action 设为 null，不再调用工具）。\n"
-                            "严格按 results 顺序提炼，合并重复信息，并在结尾附上2-3个来源。"
-                        )
-                    else:
-                        instruction = "执行完毕。这是最后一轮交互。请基于工具结果给用户一个简洁友好的最终回复（必须用纯文本，action 设为 null）。"
-                    messages.append({
-                        "role": "user",
-                        "content": f"工具 {action} 执行完毕。结果:\n```json\n{result_str}\n```\n{instruction}"
-                    })
+            # 最终回复
+            if pending_text:
+                final_text = "".join(pending_text).strip()
+                if final_text:
+                    self.assistant_message.emit(final_text)
+                elif turn_count == 0:
+                    self.assistant_message.emit("(无回复)")
 
         except Exception as e:
             import traceback
             self.error.emit(f"{e}\n{traceback.format_exc()}")
 
-    def _chat(self, messages: list[dict]) -> Optional[str]:
-        """OpenAI 兼容协议的 chat 调用"""
-        try:
-            import urllib.request
-            base_url = getattr(self._backend, "base_url", "http://127.0.0.1:11434/v1").rstrip("/")
-            api_key = getattr(self._backend, "api_key", "EMPTY")
-            model = getattr(self._backend, "model", "qwen2.5:7b")
-
-            payload = {
-                "model": model,
-                "messages": messages,
-                "temperature": 0.3,
-                "stream": False,
-            }
-            req = urllib.request.Request(
-                f"{base_url}/chat/completions",
-                data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}",
-                },
-            )
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            choices = data.get("choices") or []
-            if not choices:
-                return None
-            return choices[0].get("message", {}).get("content")
-        except Exception as e:
-            self.log.emit(f"[chat] 后端调用失败: {e}")
-            return None
-
-
-# ---------------------------------------------------------------------------
-# 聊天面板 UI
 # ---------------------------------------------------------------------------
 class ContextChatTab(QWidget):
     """AI 对话标签页 - 调用 MCP 工具的聊天助手"""
