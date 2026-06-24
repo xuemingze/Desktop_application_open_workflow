@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -335,7 +336,7 @@ class VTuberBackendManager:
             else:
                 # POSIX: 先尝试温和终止，然后强制
                 try:
-                    os.kill(int(pid), subprocess.signal.SIGTERM)
+                    os.kill(int(pid), signal.SIGTERM)
                 except AttributeError:
                     os.kill(int(pid), 15)
                 except ProcessLookupError:
@@ -350,7 +351,7 @@ class VTuberBackendManager:
             # POSIX 下尝试强制 SIGKILL
             if sys.platform != "win32":
                 try:
-                    os.kill(int(pid), subprocess.signal.SIGKILL)
+                    os.kill(int(pid), signal.SIGKILL)
                 except Exception:
                     pass
                 time.sleep(0.4)
