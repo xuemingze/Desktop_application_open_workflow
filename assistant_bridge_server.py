@@ -24,6 +24,8 @@ from typing import Optional
 
 from assistant_core import AssistantCore
 
+from http.server import ThreadingHTTPServer
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,6 +40,7 @@ class OpenAIBridgeHandler(BaseHTTPRequestHandler):
     core: Optional[AssistantCore] = None  # 由外部 AssistantBridgeServer.start() 注入
 
     def do_POST(self):  # noqa: N802 (BaseHTTPRequestHandler 约定)
+        logger.info("[bridge] POST %s from %s", self.path, self.client_address)
         if self.path == "/v1/chat/completions":
             self._handle_chat_completions()
         elif self.path == "/v1/models":
@@ -129,6 +132,8 @@ class OpenAIBridgeHandler(BaseHTTPRequestHandler):
         self.send_header("X-Accel-Buffering", "no")  # 关掉 nginx 缓冲
         self.end_headers()
 
+        logger.info("[bridge] stream start: user=%r", user_text[:60])
+        chunk_count = 0
         try:
             for event in self.core.process_chat_request(
                 user_text, context=context, system_prompt=system_prompt
@@ -164,10 +169,12 @@ class OpenAIBridgeHandler(BaseHTTPRequestHandler):
                         f"data: {json.dumps(response_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
                     )
                     self.wfile.flush()
+                    chunk_count += 1
 
             # 结束
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
+            logger.info("[bridge] stream end: %d chunks sent", chunk_count)
         except (BrokenPipeError, ConnectionResetError):
             # 客户端断开,正常情况
             logger.info("[bridge] client disconnected")
@@ -253,7 +260,8 @@ class AssistantBridgeServer:
             return
 
         OpenAIBridgeHandler.core = self.core
-        self._server = HTTPServer((self.host, self.port), OpenAIBridgeHandler)
+        # ThreadingHTTPServer 让多请求并行处理,避免一个长请求阻塞其他
+        self._server = ThreadingHTTPServer((self.host, self.port), OpenAIBridgeHandler)
         self._thread = Thread(target=self._server.serve_forever, daemon=True, name="assistant-bridge")
         self._thread.start()
         logger.info(
@@ -265,10 +273,14 @@ class AssistantBridgeServer:
         if self._server is None:
             return
         logger.info("VTuber Bridge 停止中...")
-        self._server.shutdown()
-        self._server.server_close()
-        if self._thread:
-            self._thread.join(timeout=3)
+        # shutdown 在后台线程执行,不阻塞主线程退出
+        def _shutdown():
+            try:
+                self._server.shutdown()
+                self._server.server_close()
+            except Exception:
+                pass
+        Thread(target=_shutdown, daemon=True, name="bridge-shutdown").start()
         self._server = None
         self._thread = None
         logger.info("VTuber Bridge 已关闭。")
