@@ -3,10 +3,14 @@ import sys
 
 # ── Hide console windows for all ffmpeg/ffprobe subprocesses on Windows ──
 # pydub calls subprocess.Popen without CREATE_NO_WINDOW, causing windows to
-# flash. We patch the Popen reference inside pydub.audio_segment.
+# flash. pydub has TWO Popen references that both call ffmpeg/ffprobe:
+#   1. pydub.audio_segment.subprocess.Popen (line 616, 766, 963) — most ffmpeg calls
+#   2. pydub.utils.Popen (line 274, 334, 339, 385) — mediainfo_json calls ffprobe
+# We patch BOTH so no console window flashes during mp3 load + volume calc.
 if sys.platform == "win32":
     import subprocess
     import pydub.audio_segment
+    import pydub.utils
 
     _original_popen = pydub.audio_segment.subprocess.Popen
 
@@ -30,6 +34,10 @@ if sys.platform == "win32":
             return self._popen.__exit__(*args)
 
     pydub.audio_segment.subprocess.Popen = _HiddenPopen
+    # pydub.utils does `from subprocess import Popen` at module load, so it has
+    # its own direct binding. Without this patch, mediainfo_json() flashes ffprobe
+    # every time AudioSegment.from_file() is called on an mp3.
+    pydub.utils.Popen = _HiddenPopen
 
 # ── imports that depend on the patch ──
 from pydub import AudioSegment
