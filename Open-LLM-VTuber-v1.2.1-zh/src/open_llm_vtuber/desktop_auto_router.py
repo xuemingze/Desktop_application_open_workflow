@@ -163,18 +163,16 @@ class _RouterAgent(AgentInterface):
         logger.info(f"[Router] ⚡ 命中本地操作 → Bridge: {user_text[:80]}")
 
         # 把 Bridge 流式文本包成 SentenceOutput (BaseOutput 子类)
-        from .agent.output_types import SentenceOutput, DisplayText
+        from .agent.output_types import SentenceOutput, DisplayText, Actions
 
-        accumulated_text = ""
         async for chunk in call_bridge_stream(user_text):
-            accumulated_text += chunk
-            # 按句号/感叹/问号切句, 模拟 VTuber 的 sentence_divider
+            if not chunk.strip():
+                continue
+            # 单个 chunk 独立 yield, 避免累积重放
             yield SentenceOutput(
-                text=accumulated_text,  # 整段累计, 让 TTS 拿到完整一句
-                display_text=DisplayText(
-                    text=accumulated_text,
-                    expression_list=[],  # Bridge 已经把 [xxx] 注入文本, 由 VTuber transformers 处理
-                ),
+                display_text=DisplayText(text=chunk),
+                tts_text=chunk,
+                actions=Actions(),
             )
 
     def handle_interrupt(self, heard_response: str) -> None:
