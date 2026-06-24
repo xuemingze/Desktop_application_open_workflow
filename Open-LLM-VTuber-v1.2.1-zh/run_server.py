@@ -176,6 +176,20 @@ def run(console_log_level: str):
     try:
         asyncio.run(server.initialize())
         logger.info("Server context initialized successfully.")
+
+        # ── Inject Desktop-Auto Router (Dynamic Dual-Brain) ──
+        # 把 agent_engine 包成 RouterAgent:
+        #   命中本地操作关键词 → 转发到本地桌面基座 (127.0.0.1:16299)
+        #   其他 → 保留 VTuber 默认 LLM (情感/闲聊)
+        try:
+            from src.open_llm_vtuber.desktop_auto_router import inject_router
+            inject_router(server.default_context_cache)
+        except ImportError:
+            # 允许旧路径导入 (适用于直接运行 run_server.py 而非作为包)
+            from open_llm_vtuber.desktop_auto_router import inject_router
+            inject_router(server.default_context_cache)
+        except Exception as e:
+            logger.warning(f"[Router] 注入失败 (VTuber 将不会路由到本地基座): {e}")
     except Exception as e:
         logger.error(f"Failed to initialize server context: {e}")
         sys.exit(1)  # Exit if initialization fails

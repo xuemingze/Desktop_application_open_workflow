@@ -278,6 +278,8 @@ class AssistantBridgeServer:
 
 
 if __name__ == "__main__":
+    import signal
+    import time
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -288,10 +290,8 @@ if __name__ == "__main__":
     print("Press Ctrl+C to stop.", flush=True)
     try:
         # 阻塞主线程,直到 Ctrl+C
-        if hasattr(signal, "SIGINT"):
-            signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+        signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
         while True:
-            import time
             time.sleep(86400)
     except KeyboardInterrupt:
         pass
