@@ -1,0 +1,100 @@
+[17:01:38.386] [AI感知] [AI对话] search_local_files 结果: {"count": 0, "ok": true, "results": []}
+[17:01:38.386] [Toast] show_toast: AI 已调用工具: search_local_files -> ()
+[17:01:42.031] [AI感知] [AI对话] 调用工具: list_shortcuts({})
+[17:01:42.234] [AI感知] [AI对话] list_shortcuts 结果: {"count": 25, "items": [{"exists": true, "name": "AiPyPro", "target": "D:\\AiPyPro\\AiPyPro.exe"}, {"exists": true, "name": "FMHY - freemediaheckyeah", "target": "C:\\Program Files (x86)\\Microsoft\\E
+[17:01:42.235] [Toast] show_toast: AI 已调用工具: list_shortcuts -> ()
+[17:01:57.559] [AI感知] [AI对话] 调用工具: search_local_files({'query': 'PDFgear'})
+[17:01:57.691] [AI感知] [AI对话] search_local_files 结果: {"count": 14, "ok": true, "results": [{"date_modified": "", "extension": "", "name": "PDFgear", "path": "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs", "size": 0, "type": "folder"}, {"dat
+[17:01:57.692] [Toast] show_toast: AI 已调用工具: search_local_files -> ()
+[17:02:00.628] [AI感知] [AI对话] 调用工具: open_system_file({'method': 'explorer', 'path': 'D:\\PDFgear'})
+[17:02:00.776] [AI感知] [AI对话] open_system_file 结果: {"method": "explorer", "msg": "已在资源管理器中定位: D:\\PDFgear", "ok": true, "path": "D:\\PDFgear"}
+[17:02:00.777] [Toast] show_toast: AI 已调用工具: open_system_file -> ()
+[17:02:27.415] [AI感知] [AI对话] 调用工具: launch_shortcut({'name': 'PDFgear'})
+[17:02:27.479] [AI感知] [AI对话] launch_shortcut 结果: {"error": "未找到快捷方式: PDFgear", "ok": false}
+[17:02:27.532] [Toast] show_toast: AI 已调用工具: launch_shortcut -> ()
+[17:02:31.161] [AI感知] [AI对话] 调用工具: search_local_files({'query': 'PDFgear'})
+[17:02:31.289] [AI感知] [AI对话] search_local_files 结果: {"count": 14, "ok": true, "results": [{"date_modified": "", "extension": "", "name": "PDFgear", "path": "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs", "size": 0, "type": "folder"}, {"dat
+[17:02:31.289] [Toast] show_toast: AI 已调用工具: search_local_files -> ()
+[17:02:34.768] [AI感知] [AI对话] 调用工具: open_system_file({'method': 'explorer', 'path': 'D:\\PDFgear'})
+[17:02:34.848] [AI感知] [AI对话] open_system_file 结果: {"method": "explorer", "msg": "已在资源管理器中定位: D:\\PDFgear", "ok": true, "path": "D:\\PDFgear"}
+[17:02:34.849] [Toast] show_toast: AI 已调用工具: open_system_file -> ()
+[17:02:51.860] [AI感知] [AI对话] 调用工具: search_local_files({'query': 'zzz日常'})
+[17:02:51.995] [AI感知] [AI对话] search_local_files 结果: {"count": 0, "ok": true, "results": []}
+[17:02:51.995] [Toast] show_toast: AI 已调用工具: search_local_files -> ()
+[17:03:52.370] [AI感知] [AI对话] 调用工具: run_workflow({'name': 'zzz日常'})
+[17:04:12.702] [AI感知] [AI对话] run_workflow 结果: {"ok": true, "success": 3, "total": 3, "workflow": "zzz日常"}
+[17:04:12.758] [Toast] show_toast: AI 已调用工具: run_workflow -> ()
+[17:04:35.141] [AI感知] [系统] 上下文感知已启动，启用模式: {'clipboard': True, 'window': True, 'file': False, 'process': True}
+[17:04:37.001] [AI感知] [主动嗅探] 今日剩余 12 次，时间槽已生成
+[17:04:37.001] [AI感知] [主动嗅探] 已启动，每日 12 次
+[17:04:37.002] [AI感知] [行为触发] 已启用
+[17:04:37.137] [AI感知] [window] 桌面自动化助手 | 内容前30字: ''
+[17:04:37.138] [AI感知] [放行] 命中规则: (非剪贴板事件)
+[17:05:11.218] [Toast] show_toast: 已写入 2026-06-18.md -> open_diary(C:\Users\Administrator\桌面自动化助手\diary\2026-06-18.md)
+[17:05:25.153] [AI感知] [window] LobsterAI | 内容前30字: ''
+[17:05:25.153] [AI感知] [放行] 命中规则: (非剪贴板事件)
+[17:06:51.185] [AI感知] [window] 桌面自动化助手 | 内容前30字: ''
+[17:06:51.185] [AI感知] [放行] 命中规则: (非剪贴板事件)
+[17:06:55.184] [AI感知] [window] LobsterAI | 内容前30字: ''
+[17:06:55.184] [AI感知] [放行] 命中规则: (非剪贴板事件)
+[17:06:59.185] [AI感知] [window] 桌面自动化助手 | 内容前30字: ''
+[17:06:59.185] [AI感知] [放行] 命中规则: (非剪贴板事件)
+[17:07:01.184] [AI感知] [window] LobsterAI | 内容前30字: ''
+[17:07:01.185] [AI感知] [放行] 命中规则: (非剪贴板事件)
+[17:07:11.183] [AI感知] [window] 桌面自动化助手 | 内容前30字: ''
+[17:07:11.184] [AI感知] [放行] 命中规则: (非剪贴板事件)
+[17:07:13.184] [AI感知] [window] 米哈游启动器 | 内容前30字: ''
+[17:07:13.184] [AI感知] [放行] 命中规则: (非剪贴板事件)
+[17:07:15.184] [AI感知] [window] Releases · xuemingze/Desktop_application_open_workflow 和另外 5 个页面 - 个人 - Microsoft​ Edge | 内容前30字: ''
+[17:07:15.184] [AI感知] [放行] 命中规则: (非剪贴板事件)
+[17:07:19.188] [AI感知] [window] C:\Users\Administrator\Desktop\控制电脑\dist | 内容前30字: ''
+[17:07:19.189] [AI感知] [放行] 命中规则: (非剪贴板事件)
+[17:07:23.938] [AI感知] [clipboard] C:\Users\Administrator\Desktop\控制电脑\dist | 内容前30字: 'desktop-auto-v2026.06.18-engin'
+[17:07:23.939] [AI感知] [拦截] 未匹配嗅探规则
+[17:07:28.158] [AI感知] [系统] 关闭中...
+[17:07:28.159] [AI感知] [主动嗅探] 已停止
+[17:14:19.104] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[17:37:49.260] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[17:46:29.158] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[17:48:03.827] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[17:48:43.490] [Toast] show_toast: AI 已调用工具: search_local_files -> ()
+[17:48:46.557] [Toast] show_toast: AI 已调用工具: open_system_file -> ()
+[17:49:27.807] [Toast] show_toast: AI 已调用工具: search_local_files -> ()
+[17:49:30.225] [Toast] show_toast: AI 已调用工具: open_system_file -> ()
+[18:07:16.624] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[20:20:38.734] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[20:24:02.214] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[22:30:02.253] [Toast] show_toast: 2026-06-18 活动已统计，点此生成 Markdown 日记 -> generate_diary(2026-06-18)
+[22:31:02.248] [Toast] show_toast: 2026-06-18 活动已统计，点此生成 Markdown 日记 -> generate_diary(2026-06-18)
+[22:36:19.717] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[22:37:19.717] [Toast] show_toast: 2026-06-18 活动已统计，点此生成 Markdown 日记 -> generate_diary(2026-06-18)
+[22:38:19.711] [Toast] show_toast: 2026-06-18 活动已统计，点此生成 Markdown 日记 -> generate_diary(2026-06-18)
+[23:09:11.222] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[23:10:11.211] [Toast] show_toast: 2026-06-18 活动已统计，点此生成 Markdown 日记 -> generate_diary(2026-06-18)
+[23:11:11.210] [Toast] show_toast: 2026-06-18 活动已统计，点此生成 Markdown 日记 -> generate_diary(2026-06-18)
+[23:16:27.183] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[23:17:27.185] [Toast] show_toast: 2026-06-18 活动已统计，点此生成 Markdown 日记 -> generate_diary(2026-06-18)
+[23:18:27.179] [Toast] show_toast: 2026-06-18 活动已统计，点此生成 Markdown 日记 -> generate_diary(2026-06-18)
+[23:29:17.940] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[23:30:17.932] [Toast] show_toast: 2026-06-18 活动已统计，点此生成 Markdown 日记 -> generate_diary(2026-06-18)
+[23:31:17.939] [Toast] show_toast: 2026-06-18 活动已统计，点此生成 Markdown 日记 -> generate_diary(2026-06-18)
+[23:31:45.306] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[23:32:45.305] [Toast] show_toast: 2026-06-18 活动已统计，点此生成 Markdown 日记 -> generate_diary(2026-06-18)
+[23:33:45.308] [Toast] show_toast: 2026-06-18 活动已统计，点此生成 Markdown 日记 -> generate_diary(2026-06-18)
+[23:47:28.984] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[23:48:28.978] [Toast] show_toast: 2026-06-18 活动已统计，点此生成 Markdown 日记 -> generate_diary(2026-06-18)
+[23:49:28.977] [Toast] show_toast: 2026-06-18 活动已统计，点此生成 Markdown 日记 -> generate_diary(2026-06-18)
+[08:08:12.944] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[08:15:47.886] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[09:34:44.417] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[09:43:20.823] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[09:43:47.381] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[10:04:36.793] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[10:05:26.680] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[10:05:42.372] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[10:06:11.934] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[12:59:09.936] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[13:00:00.861] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[14:01:23.409] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+[14:02:41.044] [全局日志] 已启用,文件: C:\Users\Administrator\桌面自动化助手\desktop_auto.log
+
