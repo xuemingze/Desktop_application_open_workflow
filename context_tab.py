@@ -1131,9 +1131,16 @@ class ContextTab(QWidget):
         self.toast_broadcast.emit(intent)
 
         # VTuber 桥接事件转发（主动嗅探结果）
+        self._append_log(f"[主动嗅探VTuber] category={q.category}, text={q.text[:30]}")
         win = self.window()
-        if hasattr(win, "_vtuber_bridge") and win._vtuber_bridge and win._vtuber_bridge.enabled:
-            win._vtuber_bridge.notify_event(f"主动嗅探 - {q.category}: {q.text}")
+        has_bridge = hasattr(win, "_vtuber_bridge")
+        bridge = getattr(win, "_vtuber_bridge", None) if has_bridge else None
+        self._append_log(f"[主动嗅探VTuber] has_bridge={has_bridge}, bridge={bridge is not None}, enabled={getattr(bridge, 'enabled', 'N/A')}, running={getattr(bridge, '_running', 'N/A')}")
+        if has_bridge and bridge and getattr(bridge, 'enabled', False):
+            ok = bridge.notify_event(f"主动嗅探 - {q.category}: {q.text}")
+            self._append_log(f"[主动嗅探VTuber] notify_event OK={ok}")
+        else:
+            self._append_log("[主动嗅探VTuber] 桥接未就绪，跳过")
 
     def _open_mini_chat(self, intent: ToastIntent | None = None):
         """打开/激活小聊天窗，复用 AI 对话标签页的同一份记录。"""
