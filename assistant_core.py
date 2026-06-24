@@ -182,6 +182,13 @@ class AssistantCore:
                     EXPRESSION_PATTERN.sub("", raw[:1000]).strip() if raw else ""
                 )
 
+                # 最后一轮:强制定稿,禁止再调工具
+                if turn >= self.max_turns - 1 and action and action in self.TOOL_DISPATCH:
+                    logger.info("最后一轮,强制结束 (忽略工具 %s)", action)
+                    final_reply = clean_reply or clean_raw_fallback or "操作已完成。"
+                    yield {"type": "text", "content": final_reply}
+                    return
+
                 # 没工具调用,直接结束
                 if not action or action not in self.TOOL_DISPATCH:
                     if clean_reply:
@@ -214,19 +221,30 @@ class AssistantCore:
                 if len(result_str) > 6000:
                     result_str = result_str[:6000] + "...(输出过长已截断)"
 
+                logger.info(
+                    "--- 循环轮次: %s, 消息数: %s, action: %s ---",
+                    turn, len(messages), action,
+                )
+
                 if turn < self.max_turns - 1:
                     instruction = (
-                        "请决定下一步操作:如果任务已完成,请将 action 设为 null 并回复纯文本;"
-                        "如果需要其他工具请继续输出 JSON。"
+                        "【重要】工具已执行。如果任务尚未完成，请用 action 指定下一个工具。"
+                        "如果任务已完成，请立即将 action 设为 null 并用回复直接告诉用户结果。"
                     )
                 else:
+                    # 最后一轮:强制终止,禁止再调工具
                     instruction = (
-                        "执行完毕。这是最后一轮交互。请基于工具结果给用户一个简洁友好的最终回复"
-                        "(必须用纯文本,action 设为 null,不再调用工具)。"
+                        "【最后一轮,禁止再调用工具】请将 action 设为 null,"
+                        "直接用中文回复用户操作结果,不要再输出 JSON。"
                     )
                 messages.append({
                     "role": "user",
-                    "content": f"工具 {action} 执行完毕。结果:\n```json\n{result_str}\n```\n{instruction}",
+                    "content": (
+                        f"工具 {action} 执行完毕。结果:\n```json\n{result_str}\n```\n"
+                        f"{instruction}\n"
+                        "【格式要求】严格按以下 JSON 格式回复(不要有任何额外文字):\n"
+                        '{"action": null, "reply": "最终回复内容"}'
+                    ),
                 })
 
             yield {"type": "done"}
