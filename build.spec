@@ -30,6 +30,8 @@ hiddenimports = [
     'companion_bridge',  # MetaPact 桌宠桥接
     'vtuber_bridge',       # Open-LLM-VTuber 事件转发桥接
     'vtuber_backend_manager',  # VTuber 后端进程启停管理
+    'assistant_core',          # AssistantCore 纯逻辑层 (供 Bridge 和 ChatWorker 复用)
+    'assistant_bridge_server', # Bridge HTTP 服务 (OpenAI 兼容，供 VTuber 调用)
     'websocket',                # vtuber_bridge 运行时需要 (try/except 无法被 PyInstaller 分析)
     'websocket.Client',         # 同上
     'PySide6.QtCore',
@@ -105,6 +107,8 @@ datas = (
         ('mcp_embedded.py', '.'),
         ('mcp_patch.py', '.'),
         ('autostart.py', '.'),
+        ('assistant_core.py', '.'),  # AssistantCore 纯逻辑层
+        ('assistant_bridge_server.py', '.'),  # Bridge HTTP 服务
         ('samples', 'samples'),
         ('app_icon.ico', '.'),  # 应用图标
         ('app_icon_512_v2.png', '.'),  # README 用图标
