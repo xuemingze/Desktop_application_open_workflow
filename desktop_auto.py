@@ -1732,10 +1732,14 @@ class MainWindow(QMainWindow):
         self._companion_bridge: Optional["companion_bridge.CompanionBridgeThread"] = None
         # ---- 7.3 VTuber 桥接 (Phase E) ----
         self._vtuber_bridge: Optional["vtuber_bridge.VTuberBridge"] = None
+        # ---- 7.4 Assistant Bridge (Step 4+5: VTuber 双脑路由) ----
+        self.assistant_core = None
+        self._assistant_bridge = None
         self._init_memory_engine()
         self._init_reminder_scheduler()
         self._init_companion_bridge()
         self._init_vtuber_bridge()
+        self._init_assistant_bridge()
 
     # ---- 7.1 日志桥接 ----
     def _append_log(self, msg: str) -> None:
@@ -1834,6 +1838,13 @@ class MainWindow(QMainWindow):
         try:
             if hasattr(self, "_companion_bridge") and self._companion_bridge:
                 self._companion_bridge.stop()
+        except Exception:
+            pass
+
+        # 停止 Assistant Bridge (双脑路由)
+        try:
+            if hasattr(self, "_assistant_bridge") and self._assistant_bridge:
+                self._assistant_bridge.stop()
         except Exception:
             pass
 
@@ -1956,6 +1967,59 @@ class MainWindow(QMainWindow):
             self._append_log(f"[VTuber] 桥接已初始化 (enabled={config['vtuber_enabled']})，后端: {config['vtuber_backend_url']}")
         except Exception as e:
             self._append_log(f"[VTuber] 初始化失败: {e}")
+
+    # ---- 7.8 Assistant Bridge (Step 4+5: VTuber 双脑路由) ----
+    def _init_assistant_bridge(self) -> None:
+        """启动 AssistantCore + AssistantBridgeServer，供 VTuber 命中关键词后调用。
+
+        端口: 127.0.0.1:16299 (与 assistant_bridge_server.py 默认一致)
+        复用 companion bridge 已读取的 LLM 配置 (MiniMax URL + model)。
+        """
+        try:
+            print("[DEBUG] 正在尝试强制启动 16299 桥接服务...")
+            self._append_log("[Bridge] 正在初始化 AssistantCore + Bridge @ 16299...")
+            from assistant_core import AssistantCore
+            from assistant_bridge_server import AssistantBridgeServer
+
+            # 读取和 companion bridge 同样的 LLM 配置
+            base_url = "http://127.0.0.1:16260/v1"
+            api_key = "EMPTY"
+            model = "desktop-auto-v1"
+            context_cfg_path = USER_DATA_DIR / "context_aware_config.json"
+            try:
+                import json
+                if context_cfg_path.exists():
+                    context_cfg = json.loads(context_cfg_path.read_text(encoding="utf-8"))
+                    backend_cfg = context_cfg.get("backend", {}) if isinstance(context_cfg, dict) else {}
+                    if int(backend_cfg.get("type", 0) or 0) == 1:
+                        bu = str(backend_cfg.get("base_url") or "").strip()
+                        ak = str(backend_cfg.get("api_key") or "EMPTY").strip() or "EMPTY"
+                        md = str(backend_cfg.get("model") or "").strip()
+                        if bu and md:
+                            base_url = bu
+                            api_key = ak
+                            model = md
+            except Exception:
+                pass
+
+            self._append_log(f"[Bridge] LLM 配置: {base_url}, model={model}")
+            self.assistant_core = AssistantCore(
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+            )
+            self._assistant_bridge = AssistantBridgeServer(
+                port=16299,
+                core=self.assistant_core,
+            )
+            self._assistant_bridge.start()
+            self._append_log("[Bridge] ✓ 16299 桥接服务已启动 (供 VTuber 调用)")
+            print("[DEBUG] 桥接服务启动调用已发出。")
+        except Exception as e:
+            import traceback
+            self._append_log(f"[Bridge] ✗ 启动失败: {e}")
+            print(f"[DEBUG] Bridge 启动失败: {e}")
+            traceback.print_exc()
 
     # ---- 7.9 提醒任务 (Phase D) ----
     def _init_reminder_scheduler(self) -> None:
