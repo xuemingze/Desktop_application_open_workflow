@@ -62,6 +62,21 @@ VTUBER_EXPRESSION_HINT = (
 )
 
 
+# 静音工具清单: 执行耗时 <0.5s 的轻量工具, 不吐 "正在..." 占位文本
+# (避免快速操作产生冗余 TTS 语音, 用户体验更丝滑)
+# 静默原则: 读取类 + SQLite 写入类 (<0.5s) -> 静默
+#           启动类 + 打开文件类 (>1s) -> 必须说 "正在..."
+SILENT_TOOLS = {
+    "read_file_content",
+    "list_directory",
+    "list_shortcuts",
+    "list_workflows",
+    "search_local_files",
+    "create_reminder",
+    "web_search",
+}
+
+
 class AssistantCore:
     """
     复用 context_chat 的工具集和 chat 流程(基于自定义 JSON action 协议)。
@@ -183,7 +198,12 @@ class AssistantCore:
                 )
 
                 # 最后一轮:强制定稿,禁止再调工具
-                if turn >= self.max_turns - 1 and action and action in self.TOOL_DISPATCH:
+                # 【改进 2】双保险: turn 计数 OR messages 长度 任一触发即终止
+                _is_final = (
+                    turn >= self.max_turns - 1
+                    or len(messages) > 6  # 3 轮消息 + system prompt ≈ 7-9
+                )
+                if _is_final and action and action in self.TOOL_DISPATCH:
                     logger.info("最后一轮,强制结束 (忽略工具 %s)", action)
                     final_reply = clean_reply or clean_raw_fallback or "操作已完成。"
                     yield {"type": "text", "content": final_reply}
@@ -200,9 +220,10 @@ class AssistantCore:
                 # 有 reply 先抛一段自然语言
                 if clean_reply:
                     yield {"type": "text", "content": clean_reply}
-                else:
-                    # 【改进 1-B】AI 决定调工具但没给 reply,手动补一句让 VTuber 有话说
+                elif action not in SILENT_TOOLS:
+                    # 【改进 1-B】静默工具不补占位文本 (快速操作不需要 TTS 插话)
                     yield {"type": "text", "content": f"正在为您执行 {action} 操作..."}
+                # else: silent tool + no reply -> 不说话,直接调工具
 
                 yield {"type": "tool_start", "tool_name": action, "args": args}
 
