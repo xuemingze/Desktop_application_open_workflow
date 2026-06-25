@@ -33,6 +33,7 @@ from data_paths import RUNTIME_DIR, USER_DATA_DIR, DEFAULT_USER_DATA_DIR, MIGRAT
 # MCP 只在 --mcp 模式或工具页实际需要时懒加载。
 import backup  # noqa: F401
 from i18n import t  # noqa: F401
+from app_bridges import AppBridges  # Step 1B-1: 桥接状态集中容器
 
 import os
 import sys
@@ -1387,6 +1388,37 @@ class SnippingWindow(QWidget):
 # 7. 主窗口
 # ---------------------------------------------------------------------------
 class MainWindow(QMainWindow):
+    # ---- 桥接状态转发 (Step 1B-4) ----
+    # 目的: context_tab.py 等外部代码通过 self.window().memory_engine_mgr 访问,
+    # 转发到 self.bridges.xxx 保持 API 兼容, 不修改调用方
+    @property
+    def memory_engine_mgr(self):
+        return self.bridges.memory_engine_mgr
+
+    @property
+    def assistant_core(self):
+        return self.bridges.assistant_core
+
+    @property
+    def _companion_bridge(self):
+        return self.bridges._companion_bridge
+
+    @property
+    def _vtuber_bridge(self):
+        return self.bridges._vtuber_bridge
+
+    @property
+    def _assistant_bridge(self):
+        return self.bridges._assistant_bridge
+
+    @property
+    def _reminder_timer(self):
+        return self.bridges._reminder_timer
+
+    @property
+    def _diary_scheduler(self):
+        return self.bridges._diary_scheduler
+
     def __init__(self) -> None:
         super().__init__()
         from i18n import t as _t
@@ -1723,18 +1755,10 @@ class MainWindow(QMainWindow):
         # 加载窗口状态(位置/大小/是否默认后台)
         self._load_window_state()
 
-        # ---- 记忆引擎 (Phase A) ----
-        self.memory_engine_mgr: Optional[memory_engine.MemoryEngineManager] = None
-        self._diary_scheduler: Optional[daily_diary.DiaryScheduler] = None
-        self._reminder_timer: Optional[QTimer] = None
-
-        # ---- 7.2 桌宠桥接 (Phase D) ----
-        self._companion_bridge: Optional["companion_bridge.CompanionBridgeThread"] = None
-        # ---- 7.3 VTuber 桥接 (Phase E) ----
-        self._vtuber_bridge: Optional["vtuber_bridge.VTuberBridge"] = None
+        # ---- 7 个桥接状态已迁移到 AppBridges (Step 1B-2) ----
+        # ---- AppBridges 集中容器 (Step 1B-3) ----
+        self.bridges = AppBridges(self)
         # ---- 7.4 Assistant Bridge (Step 4+5: VTuber 双脑路由) ----
-        self.assistant_core = None
-        self._assistant_bridge = None
         self._init_memory_engine()
         self._init_reminder_scheduler()
         self._init_companion_bridge()
@@ -1829,22 +1853,22 @@ class MainWindow(QMainWindow):
             pass
         # 关闭记忆引擎（Phase A）
         try:
-            if hasattr(self, "memory_engine_mgr") and self.memory_engine_mgr:
-                self.memory_engine_mgr.stop()
+            if hasattr(self.bridges, "memory_engine_mgr") and self.bridges.memory_engine_mgr:
+                self.bridges.memory_engine_mgr.stop()
         except Exception:
             pass
 
         # 停止桌宠桥接（Phase D）
         try:
-            if hasattr(self, "_companion_bridge") and self._companion_bridge:
-                self._companion_bridge.stop()
+            if hasattr(self.bridges, "_companion_bridge") and self.bridges._companion_bridge:
+                self.bridges._companion_bridge.stop()
         except Exception:
             pass
 
         # 停止 Assistant Bridge (双脑路由)
         try:
-            if hasattr(self, "_assistant_bridge") and self._assistant_bridge:
-                self._assistant_bridge.stop()
+            if hasattr(self.bridges, "_assistant_bridge") and self.bridges._assistant_bridge:
+                self.bridges._assistant_bridge.stop()
         except Exception:
             pass
 
@@ -1858,8 +1882,8 @@ class MainWindow(QMainWindow):
     # ---- 7.2 桌宠桥接 (Phase D) ----
     def _update_companion_config(self, config: dict) -> None:
         """更新桥接配置（由 Tools 標签页调用）。"""
-        if hasattr(self, "_companion_bridge") and self._companion_bridge:
-            self._companion_bridge.update_config(config)
+        if hasattr(self.bridges, "_companion_bridge") and self.bridges._companion_bridge:
+            self.bridges._companion_bridge.update_config(config)
 
     def _init_companion_bridge(self) -> None:
         """启动 MetaPact 桌宠桥接（默认禁用）。同时初始化 LLM backend 供 VTuber /v1/chat/completions 调用。"""
@@ -1928,23 +1952,23 @@ class MainWindow(QMainWindow):
                     self._append_log(f"[桥接] 读取配置失败: {e}")
             else:
                 self._append_log(f"[桥接] config.json 不存在，使用默认 config")
-            self._companion_bridge = CompanionBridgeThread(port=16260)
+            self.bridges._companion_bridge = CompanionBridgeThread(port=16260)
             # 桥接日志信号（plain callback，threading 版本不需要 .connect()）
-            self._companion_bridge.log_signal = self._append_log
-            self._companion_bridge.status_signal = lambda running, msg: self._append_log(f"[桥接] {msg}")
+            self.bridges._companion_bridge.log_signal = self._append_log
+            self.bridges._companion_bridge.status_signal = lambda running, msg: self._append_log(f"[桥接] {msg}")
             # 透传配置
-            self._companion_bridge.update_config(config)
-            self._companion_bridge.start()
+            self.bridges._companion_bridge.update_config(config)
+            self.bridges._companion_bridge.start()
         except Exception as e:
             self._append_log(f"[桥接] 初始化失败: {e}")
 
     def _update_vtuber_config(self, config: dict) -> None:
-        if hasattr(self, "_vtuber_bridge") and self._vtuber_bridge:
+        if hasattr(self.bridges, "_vtuber_bridge") and self.bridges._vtuber_bridge:
             enabled = config.get("vtuber_enabled", False)
             url = config.get("vtuber_backend_url", "http://127.0.0.1:12393")
-            self._vtuber_bridge.enabled = enabled
-            self._vtuber_bridge.backend_url = url
-            self._vtuber_bridge._http_url = url
+            self.bridges._vtuber_bridge.enabled = enabled
+            self.bridges._vtuber_bridge.backend_url = url
+            self.bridges._vtuber_bridge._http_url = url
             self._append_log(f"[VTuber] 桥接配置已更新: enabled={enabled}, url={url}")
 
     def _init_vtuber_bridge(self) -> None:
@@ -1960,7 +1984,7 @@ class MainWindow(QMainWindow):
                     config["vtuber_backend_url"] = saved.get("vtuber_backend_url", "http://127.0.0.1:12393")
                 except Exception:
                     pass
-            self._vtuber_bridge = VTuberBridge(
+            self.bridges._vtuber_bridge = VTuberBridge(
                 backend_url=config["vtuber_backend_url"],
                 enabled=config["vtuber_enabled"],
             )
@@ -2003,16 +2027,16 @@ class MainWindow(QMainWindow):
                 pass
 
             self._append_log(f"[Bridge] LLM 配置: {base_url}, model={model}")
-            self.assistant_core = AssistantCore(
+            self.bridges.assistant_core = AssistantCore(
                 base_url=base_url,
                 api_key=api_key,
                 model=model,
             )
-            self._assistant_bridge = AssistantBridgeServer(
+            self.bridges._assistant_bridge = AssistantBridgeServer(
                 port=16299,
-                core=self.assistant_core,
+                core=self.bridges.assistant_core,
             )
-            self._assistant_bridge.start()
+            self.bridges._assistant_bridge.start()
             self._append_log("[Bridge] ✓ 16299 桥接服务已启动 (供 VTuber 调用)")
             print("[DEBUG] 桥接服务启动调用已发出。")
         except Exception as e:
@@ -2027,17 +2051,18 @@ class MainWindow(QMainWindow):
         try:
             from reminders import init_db
             init_db()
-            self._reminder_timer = QTimer(self)
-            self._reminder_timer.setInterval(60_000)
-            self._reminder_timer.timeout.connect(self._check_due_reminders)
-            self._reminder_timer.start()
+            self.bridges._reminder_timer = QTimer(self)
+            self.bridges._reminder_timer.setInterval(60_000)
+            self.bridges._reminder_timer.timeout.connect(self._check_due_reminders)
+            self.bridges._reminder_timer.start()
             QTimer.singleShot(3000, self._check_due_reminders)
             self._append_log("[Reminder] 提醒调度器已启动")
         except Exception as e:
             self._append_log(f"[Reminder] 初始化失败: {e}")
 
-        # 启动 MetaPact 桌宠桥接
-        self._init_companion_bridge()
+        # 注: companion_bridge 已在 __init__ 中调用过 (line 1764), 此处不重复调用
+        # 否则会触发 LLM backend 二次初始化 + CompanionBridgeThread 二次 start,
+        # 日志里会出现 2 遍 [桥接] LLM backend 已初始化 / config_path
 
     def _check_due_reminders(self) -> None:
         try:
@@ -2122,20 +2147,20 @@ class MainWindow(QMainWindow):
                 return
 
             # 2. 创建 Manager (还不 start, 等用户启用)
-            self.memory_engine_mgr = MemoryEngineManager(USER_DATA_DIR)
-            self.memory_engine_mgr.paused_changed.connect(self._on_memory_pause_changed)
-            self.memory_engine_mgr.main_poll.chunk_ready.connect(self._on_memory_chunk_ready)
+            self.bridges.memory_engine_mgr = MemoryEngineManager(USER_DATA_DIR)
+            self.bridges.memory_engine_mgr.paused_changed.connect(self._on_memory_pause_changed)
+            self.bridges.memory_engine_mgr.main_poll.chunk_ready.connect(self._on_memory_chunk_ready)
             self._append_log("[Memory] 记忆引擎已加载 (未启动)")
 
             # 3. 启动每日复盘调度器 (不依檁采样是否运行)
             first_hour = self._get_config_int("diary_first_hour", 22)
             max_prompts = self._get_config_int("diary_max_prompts", 2)
-            self._diary_scheduler = DiaryScheduler(
+            self.bridges._diary_scheduler = DiaryScheduler(
                 parent=self,
                 first_hour=first_hour,
                 max_prompts=max_prompts,
             )
-            self._diary_scheduler.trigger_diary_prompt.connect(self._on_diary_prompt)
+            self.bridges._diary_scheduler.trigger_diary_prompt.connect(self._on_diary_prompt)
             self._append_log(f"[Memory] 复盘调度器已启动 (首次提醒={first_hour}:30)")
 
         except Exception as e:
@@ -2190,36 +2215,36 @@ class MainWindow(QMainWindow):
         """Phase C: 水桶策略触发中期记忆总结。"""
         try:
             self._append_log(f"[Chunk] 触发中期记忆总结: {record_count} 条记录")
-            if not self.memory_engine_mgr:
+            if not self.bridges.memory_engine_mgr:
                 return
             from daily_diary import build_chunk_prompt
-            sys_p, user_p, fallback = build_chunk_prompt(self.memory_engine_mgr.db, start_ts, end_ts)
+            sys_p, user_p, fallback = build_chunk_prompt(self.bridges.memory_engine_mgr.db, start_ts, end_ts)
             self._generate_chunk_async(start_ts, end_ts, sys_p, user_p, fallback)
         except Exception as e:
             self._append_log(f"[Chunk] 启动总结失败: {e}")
 
     def memory_pause(self, seconds: int) -> None:
         """公开 API: 暂停 N 秒"""
-        if self.memory_engine_mgr:
-            self.memory_engine_mgr.pause(seconds)
+        if self.bridges.memory_engine_mgr:
+            self.bridges.memory_engine_mgr.pause(seconds)
 
     def memory_pause_until(self, hour: int) -> None:
         """公开 API: 暂停到指定小时"""
-        if self.memory_engine_mgr:
-            self.memory_engine_mgr.pause_until(hour)
+        if self.bridges.memory_engine_mgr:
+            self.bridges.memory_engine_mgr.pause_until(hour)
 
     def memory_start(self) -> bool:
         """公开 API: 启动采样"""
-        if not self.memory_engine_mgr:
+        if not self.bridges.memory_engine_mgr:
             return False
-        self.memory_engine_mgr.start()
+        self.bridges.memory_engine_mgr.start()
         return True
 
     def memory_status(self) -> dict:
         """公开 API: 供 GUI 显示状态"""
-        if not self.memory_engine_mgr:
+        if not self.bridges.memory_engine_mgr:
             return {"running": False, "error": "not_initialized"}
-        mp = self.memory_engine_mgr.main_poll
+        mp = self.bridges.memory_engine_mgr.main_poll
         return {
             "running": mp._is_running,
             "suspended": mp.is_suspended,
@@ -2378,11 +2403,11 @@ class MainWindow(QMainWindow):
         """托盘：立即生成今日复盘"""
         from datetime import datetime
         from daily_diary import build_diary_prompt
-        if not self.memory_engine_mgr:
+        if not self.bridges.memory_engine_mgr:
             return
         self._show_from_tray()
         try:
-            db = self.memory_engine_mgr.db
+            db = self.bridges.memory_engine_mgr.db
             target = datetime.now()
             sys_p, user_p = build_diary_prompt(db, target)
             # 写一个占位文件 + 调 LLM (使用现有的 LLM 后端)
