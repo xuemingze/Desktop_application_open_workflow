@@ -15,6 +15,33 @@
 
 ---
 
+## 📥 Two Release Versions (Choose by Need)
+
+Visit the [Releases](../../releases) page to download.
+
+### 🛠️ No-VTUBER Edition (Single exe, simplest)
+
+You only need to download **1 file**:
+
+| Filename | Best For | Size |
+|----------|----------|------|
+| `desktop-auto-v2026.06.20-engine-v2.2.7-gb794888.exe` | GUI + MCP + workflows only, no voice companion | ~110 MB |
+
+### 🦊 AI VTUBER Edition ⭐ (Need 2, optional 1)
+
+For voice/text dual-channel PC control, you need **2 required files**, plus **1 optional**:
+
+| Type | Filename | Description |
+|------|----------|-------------|
+| **Required 1** 🧠 | `Open-LLM-VTuber-v1.2.1-zh-适配版.zip` | This project's slimmed VTUBER adapter (with Bridge integrated) |
+| **Required 2** ⚙️ | `desktop-auto-v2026.06.20-AIvtuber-v2.2.13-g238644d.exe` | Desktop Auto Assistant backend, handles actual tool calls |
+| **Optional** 🐾 | `open-llm-vtuber-1.2.1-setup.exe` | Official VTUBER desktop pet client, foreground companion |
+
+> **AI VTUBER Edition architecture**: `VTUBER Adapter` ⇄ HTTP Bridge (127.0.0.1:16299) ⇄ `Desktop Auto Assistant` ⇄ MCP tool calls.
+> LLM can be fully local Ollama, or any cloud API — see "🧠 LLM Backend" section below.
+
+> Want the VTUBER experience? **Read first** 👉 [VTUBER Adapter Guide](VTUBER_GUIDE_EN.md) (with thanks, download, config, FAQ)
+
 ## ✨ Features
 
 - 🚀 **Multiple launch modes**: Direct / Background double-click / Shell / Coordinate-capture click / Image match
@@ -41,15 +68,15 @@
 ┌─────────────────────────────────────────────────────────────┐
 │  [🚀 Quick Launch]  [🔄 Workflows]  [🛠 Tools]  [🧠 AI]   │
 │  ┌─────────────┐  ┌────────────────────────────────────┐  │
-│  │ Shortcut    │  │ Target Info: MiniMax Code          │  │
+│  │ Shortcut    │  │ Target Info: xxx          │  │
 │  │ List        │  │ Launch: [🚀] [🖱️] [⚙️] [📸]      │  │
-│  │ • AiPyPro   │  │ 🔗 Bind Launch: [Bind] [Clear]    │  │
-│  │ • MobaXterm │  │ Template: AiPyPro_1.png           │  │
-│  │ • MiniMax   │  │ 📍 Coords: X:[ 805] Y:[ 160]     │  │
+│  │ • xxxx  │  │ 🔗 Bind Launch: [Bind] [Clear]    │  │
+│  │ • xxxxx │  │ Template: xxx_1.png           │  │
+│  │ • xxx   │  │ 📍 Coords: X:[ 805] Y:[ 160]     │  │
 │  │             │  │   [Capture] [🎯 Run] [⏹ Stop]    │  │
 │  └─────────────┘  └────────────────────────────────────┘  │
 │  Activity Log:                                              │
-│  [14:30] 🖱️ Double-clicking desktop icon: AiPyPro          │
+│  [14:30] 🖱️ Double-clicking desktop icon: xxx          │
 │  [14:30] 📸 Searching for desktop template...              │
 │  [14:30] ✅ OpenCV match: scale=0.8 confidence=0.840       │
 │  [14:30] ✅ Template double-click completed                │
@@ -323,6 +350,29 @@ dist/
 | 9 | Tools tab disorganized | Consolidated into System Settings groups |
 | 10 | Cannot run in tray background | Added system tray icon support |
 | 11 | MCP read stale workflows from project root | Read from user home dir first |
+| 12 | VTUBER original can only chat, not control PC | **Dual-brain routing**: VTUBER adapter + HTTP Bridge + keyword trigger |
+
+---
+
+## 🦊 VTUBER Adapter (Optional Module)
+
+**Why build this?**
+
+[Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber) is an excellent open-source desktop AI companion with Live2D + voice + long-term memory. The original authors **deliberately do not ship any tool-calling capability** that could control your local PC — the LLM can chat but cannot launch apps or run workflows.
+
+I saw the opportunity: VTUBER has already solved the hardest parts (ASR/TTS/Live2D/WebSocket); the remaining work is to add a **safely controlled tool brain**. This project does three things:
+
+1. **Slim core agent** — remove unrelated modules, add "dual-brain routing" architecture
+2. **Localize LLM backend** — defaults to OpenAI-compatible protocol, **fully local Ollama works too**
+3. **Adapt via HTTP Bridge** — tool calls forwarded to Desktop Auto Assistant, **never polluting the original VTUBER process**
+
+**Core features**:
+- 🛡️ **Keyword routing**: casual chat uses VTuber's default LLM; PC actions require **explicit triggering** (`@助手` / action words like "open" / "run"), **never default to acting on every chat**
+- 🧠 **Fully local**: supports local Ollama, zero cost, no privacy leaks
+- 🔌 **9 tools**: launch app / run workflow / search files / read file / create reminder / web search / ...
+- 🌐 **Bilingual UI**: VTUBER frontend supports Chinese/English switching
+
+**👉 Full docs**: [VTUBER_GUIDE_EN.md](VTUBER_GUIDE_EN.md) · [中文](VTUBER_GUIDE.md)
 
 ---
 
@@ -346,3 +396,11 @@ numpy>=1.24
 ## 📄 License
 
 [MIT](LICENSE)
+
+---
+
+## 🙏 Acknowledgements
+
+- **[Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber)** — provides Live2D/ASR/TTS foundation. This project is NOT its official fork, only an independent adapter tool.
+- **Ollama** — makes local LLM inference zero-cost and easy.
+- All developers who contribute to open-source LLM / VTuber / desktop automation.
