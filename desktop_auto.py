@@ -34,6 +34,7 @@ from data_paths import RUNTIME_DIR, USER_DATA_DIR, DEFAULT_USER_DATA_DIR, MIGRAT
 import backup  # noqa: F401
 from i18n import t  # noqa: F401
 from app_bridges import AppBridges  # Step 1B-1: 桥接状态集中容器
+from app_containers import AppContainers, UIState  # Step 1C-1: 持久化容器组
 
 import os
 import sys
@@ -1406,6 +1407,19 @@ class MainWindow(QMainWindow):
     @property
     def _vtuber_bridge(self):
         return self.bridges._vtuber_bridge
+    # ---- Step 1C-2/3/4: 持久化容器转发 (兼容旧 API) ----
+    @property
+    def ipc_server(self):
+        return self.containers.ipc
+    @property
+    def state(self):
+        return self.containers.state
+    @property
+    def worker(self):
+        return self.containers.worker
+    @property
+    def shortcuts(self):
+        return self.containers.shortcuts
 
     @property
     def _assistant_bridge(self):
@@ -1425,10 +1439,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(_t("app_title"))
         self.resize(960, 640)
 
-        self.shortcuts: list[ShortcutInfo] = []
-        self.worker: Optional[LaunchWorker] = None
-        self.ipc_server: Optional[IPCServerThread] = None
-        self.state: dict = self._load_state()  # 记忆上次启动的 PID
+        # Step 1C-1/2/3/4: 持久化容器组 (替代 self.state/self.ipc_server/self.worker/self.shortcuts)
+        self.containers = AppContainers(self)
+        self.containers.state = UIState.load(self.STATE_FILE)  # 记忆上次启动的 PID
 
         # ===== 左侧:快捷方式列表 =====
         self.list_widget = QListWidget(self)
@@ -1785,11 +1798,14 @@ class MainWindow(QMainWindow):
             self._append_log(f"[全局日志] 初始化失败: {e}")
 
     def _start_ipc_server(self) -> None:
-        """启动命名管道 IPC 服务,供后续实例转发任务。"""
-        self.ipc_server = IPCServerThread()
-        self.ipc_server.log_signal.connect(lambda m: self._append_log(f"[IPC] {m}"))
-        self.ipc_server.message_signal.connect(self._handle_ipc_message)
-        self.ipc_server.start()
+        """启动命名管道 IPC 服务,供后续实例转发任务。
+
+        Step 1C-2: 实例移到 self.containers.ipc, 通过 @property ipc_server 保持 API 兼容
+        """
+        self.containers.ipc = IPCServerThread()
+        self.containers.ipc.log_signal.connect(lambda m: self._append_log(f"[IPC] {m}"))
+        self.containers.ipc.message_signal.connect(self._handle_ipc_message)
+        self.containers.ipc.start()
 
     def _handle_ipc_message(self, data: dict) -> None:
         """处理新进程转发来的任务。"""
@@ -1842,9 +1858,9 @@ class MainWindow(QMainWindow):
             return
         # 真正退出:清理资源
         self._save_window_state()
-        if self.ipc_server:
-            self.ipc_server.stop()
-            self.ipc_server.wait(1000)
+        if self.containers.ipc:
+            self.containers.ipc.stop()
+            self.containers.ipc.wait(1000)
         # 关闭 AI 感知标签页（释放 QThread 等资源）
         try:
             if hasattr(self, "context_tab") and self.context_tab:
@@ -2638,30 +2654,25 @@ class MainWindow(QMainWindow):
     STATE_FILE = USER_DATA_DIR / "launch_state.json"
 
     def _load_state(self) -> dict:
-        if self.STATE_FILE.exists():
-            try:
-                return json.loads(self.STATE_FILE.read_text("utf-8"))
-            except Exception:
-                pass
-        return {"pids": [], "names": [], "ts": 0}
+        # Step 1C-1: 委托给 UIState.load, 保留方法以兼容潜在外部调用
+        return UIState.load(self.STATE_FILE).to_dict()
 
     def _save_state(self) -> None:
-        try:
-            self.STATE_FILE.write_text(
-                json.dumps(self.state, ensure_ascii=False, indent=2), "utf-8"
-            )
-        except Exception as e:
-            self._append_log(f"⚠️ 状态保存失败: {e}")
+        # Step 1C-1: 委托给 UIState.save
+        ok = self.containers.state.save(self.STATE_FILE)
+        if not ok:
+            self._append_log(f"⚠️ 状态保存失败")
 
     def refresh_shortcuts(self) -> None:
         self.list_widget.clear()
-        self.shortcuts = scan_desktop_shortcuts()
-        for sc in self.shortcuts:
+        # Step 1C-4: 整体替换, 通过容器 API
+        self.containers.shortcuts.replace(scan_desktop_shortcuts())
+        for sc in self.containers.shortcuts:
             item = QListWidgetItem(f"{sc.name}   →   {sc.target}")
             item.setToolTip(t("ql_item_tooltip"))
             self.list_widget.addItem(item)
-        self._append_log(f"🔍 扫描到 {len(self.shortcuts)} 个快捷方式")
-        if self.shortcuts:
+        self._append_log(f"🔍 扫描到 {len(self.containers.shortcuts)} 个快捷方式")
+        if self.containers.shortcuts:
             self.list_widget.setCurrentRow(0)
         # 同步到工作流面板
         if hasattr(self, 'workflow_editor'):
@@ -2673,9 +2684,8 @@ class MainWindow(QMainWindow):
         if override is not None:
             return override
         row = self.list_widget.currentRow()
-        if 0 <= row < len(self.shortcuts):
-            return self.shortcuts[row]
-        return None
+        # Step 1C-4: 通过容器 API 访问 (边界由 at() 内部处理)
+        return self.containers.shortcuts.at(row)
 
     def _add_custom_app(self) -> None:
         """弹出对话框添加自定义应用"""
@@ -2836,7 +2846,7 @@ class MainWindow(QMainWindow):
         返回 True=已处理, False=未找到对应 sc (由 workflow 走 fallback)。"""
         # 归一化路径
         path_norm = str(Path(path).resolve()) if Path(path).exists() else path
-        for sc in self.shortcuts:
+        for sc in self.containers.shortcuts:  # Step 1C-4: 通过容器迭代
             if sc.target == path or sc.target == path_norm:
                 self._current_override = sc
                 try:
@@ -2931,7 +2941,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "提示", "请先选择一个快捷方式")
             return
         self._append_log(f"[启动] 双击: {sc.name} → {sc.target}")
-        if self.worker and self.worker.isRunning():
+        if self.containers.worker and self.containers.worker.isRunning():
             return
 
         # ---- 文档类快捷方式: 自动打开所在目录 ----
@@ -2971,7 +2981,8 @@ class MainWindow(QMainWindow):
         if not (coord_x > 0 or coord_y > 0):
             coord_x = self.coord_x.value()
             coord_y = self.coord_y.value()
-        self.worker = LaunchWorker(
+        # Step 1C-3: 实例移到 self.containers.worker, 通过 @property worker 保持 API 兼容
+        self.containers.worker = LaunchWorker(
             sc, mode,
             do_notepad=self.chk_notepad.isChecked(),
             extra_args=self.args_edit.text(),
@@ -2982,17 +2993,17 @@ class MainWindow(QMainWindow):
             },
         )
         # (self.scope_all 已被工作流面板取代)
-        self.worker.log_signal.connect(self._on_worker_log)
-        self.worker.finished_signal.connect(self._on_worker_done)
-        self.worker.start()
+        self.containers.worker.log_signal.connect(self._on_worker_log)
+        self.containers.worker.finished_signal.connect(self._on_worker_done)
+        self.containers.worker.start()
         self._append_log(f"▶ 启动任务: {sc.name}  (mode={mode})")
 
     def stop_action(self) -> None:
-        # 先终止 worker 线程
-        if self.worker and self.worker.isRunning():
-            self.worker.cancel()
-            self.worker.quit()
-            self.worker.wait(2000)
+        # 先终止 worker 线程 (Step 1C-3)
+        if self.containers.worker and self.containers.worker.isRunning():
+            self.containers.worker.cancel()
+            self.containers.worker.quit()
+            self.containers.worker.wait(2000)
             self._append_log("⏹ 已请求停止 worker")
 
         # 再杀掉已启动的目标进程
@@ -3030,7 +3041,7 @@ class MainWindow(QMainWindow):
 
         self.btn_run.setEnabled(True)
         self.btn_stop.setEnabled(False)
-        self.worker = None  # 彻底清理,下次 run 从头开始
+        self.containers.worker = None  # Step 1C-3: 彻底清理,下次 run 从头开始
 
     # ---- 7.5a 清理历史残留进程 ----
     def cleanup_residuals(self) -> None:
@@ -3092,7 +3103,7 @@ class MainWindow(QMainWindow):
     def _targets_to_handle(self) -> list[ShortcutInfo]:
         """根据 scope_all 决定作用于全部还是当前选中"""
         if self.scope_all.isChecked():
-            return list(self.shortcuts)
+            return self.containers.shortcuts.items()  # Step 1C-4
         sc = self._current()
         if sc is None:
             QMessageBox.warning(self, "提示", "请先勾选「作用于全部」或在左侧选中一个快捷方式")
@@ -3146,15 +3157,18 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self._append_log("  ❌ {}: {}".format(sc.name, e))
 
-        # 记忆,供一键关闭用
-        self.state = {"pids": pids, "names": names, "ts": int(time.time())}
+        # 记忆,供一键关闭用 (Step 1C-1: UIState 替代裸 dict)
+        self.containers.state.pids = pids
+        self.containers.state.names = names
+        self.containers.state.ts = int(time.time())
         self._save_state()
         self._append_log(f"📝 已记录本次启动 {len(pids)} 个 PID")
         self.btn_onekey_start.setEnabled(True)
 
     def onekey_stop(self) -> None:
-        pids: list[int] = self.state.get("pids", [])
-        names: list[str] = self.state.get("names", [])
+        # Step 1C-1: UIState 字段直接访问 (替代 self.state.get)
+        pids: list[int] = list(self.containers.state.pids)
+        names: list[str] = list(self.containers.state.names)
 
         # 额外补刀:有些进程会派生子进程,这里同时按可执行文件名扫一遍
         all_pids = self._expand_running_pids(pids)
@@ -3185,8 +3199,8 @@ class MainWindow(QMainWindow):
                 self._append_log(f"  ⚠️ PID {pid}: {e}")
 
         self._append_log(f"🛑 已尝试关闭 {killed}/{len(all_pids)} 个进程")
-        # 清理状态
-        self.state = {"pids": [], "names": [], "ts": 0}
+        # 清理状态 (Step 1C-1)
+        self.containers.state.clear()
         self._save_state()
         self.btn_onekey_stop.setEnabled(True)
 
@@ -3202,7 +3216,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         # 2) 对当前所有 target,按可执行文件名匹配同进程
-        for sc in self.shortcuts:
+        for sc in self.containers.shortcuts:  # Step 1C-4
             if not sc.target:
                 continue
             exe_name = Path(sc.target).name.lower()
