@@ -276,8 +276,12 @@ class MemoryEngineManager(QObject):
     def stop(self):
         self.idle_watcher.stop()
         self.main_poll.stop()
-        self.idle_watcher.wait()
-        self.main_poll.wait()
+        # 加超时,避免 MainPollThread 卡在 time.sleep(30) 上时无谓阻塞关闭流程
+        # IdleWatcher sleep 5s, MainPollThread sleep 30s → 最多等 2s 让它们自然退出
+        if not self.idle_watcher.wait(2000):
+            log_bus.emit("[Memory] idle_watcher 停止超时 (2s), 强制退出")
+        if not self.main_poll.wait(2000):
+            log_bus.emit("[Memory] main_poll 停止超时 (2s), 强制退出")
 
     def pause(self, seconds: int):
         self.main_poll.manual_pause(seconds)
