@@ -430,3 +430,87 @@ git status                     # 若 STATUS.md 未提交, 可选 commit
 3. 跑 `pytest tests -q` → 应仍 **112 passed**
 4. `build.spec` hiddenimports + datas 加 `launch_worker`
 5. 重打 EXE + 手动启动验证 4 种 worker 模式
+
+---
+
+## ✅ Step 2-2B 完成: 抽 LaunchWorker/ShortcutInfo 到 launch_worker.py (2026-06-26 07:25, commit `8c4a242`)
+
+### 抽出方案
+**新文件 `launch_worker.py`** (34179 bytes, 768 行) — 与 `app_bridges.py` / `app_containers.py` 模板对称:
+
+| 抽出符号 | 行数 | 说明 |
+|---|---|---|
+| `LaunchWorker` | ~650 | QThread 子类, 4 模式 (direct/shell/image/desktop) |
+| `ShortcutInfo` | ~11 | dataclass (9 字段) |
+| `_get_pyautogui` | 6 | 懒加载 pyautogui (FAILSAFE/PAUSE 配置) |
+| `_resolve_sample_path` | 20 | 模板路径解析, **独立实现**走 `data_paths.resolve_user_data_dir()`, 不依赖 desktop_auto 私有 helper |
+
+**未抽出 (留在 desktop_auto.py)**:
+- `_DiaryWorker` / `_ChunkWorker` — 仍是 `MainWindow._generate_diary_async` / `_generate_chunk_async` 方法内的**嵌套类** (测试护栏要求它们在 desktop_auto.py 源中)
+- `_shortcut_key` / `load_shortcut_meta` / `save_shortcut_meta` — 仍由 desktop_auto 提供, LaunchWorker 通过回调注入使用
+
+### 循环 import 解决方案
+原 `_save_match_coord` 调用 `desktop_auto` 的 `_shortcut_key` / `load_shortcut_meta` / `save_shortcut_meta` —— 如果 `launch_worker.py` 直接 import, 会形成循环。
+**做法**: `LaunchWorker.__init__` 新增第 6 个参数 `coord_saver: Optional[Callable] = None` (回调签名 `(info, cx, cy) -> None`);`run_action` 处注入 `coord_saver=self._save_match_coord`。`_save_match_coord` 实现简化为:
+```python
+def _save_match_coord(self, info, cx, cy):
+    if self.coord_saver is None:
+        return  # 向后兼容: 无回调仅记录日志
+    self.coord_saver(info, cx, cy)
+```
+
+### 改动统计
+- `desktop_auto.py`: **153,501 → 144,167 bytes** (-9,334 bytes / -6%, **-700 行净减**)
+- `launch_worker.py`: 新增 34179 bytes
+- `build.spec`: hiddenimports + datas 加 `launch_worker` (与 `app_bridges` / `app_containers` 对称)
+- `tests/test_launch_worker.py`: `TestDesktopAutoInvariants` 拆为:
+  - `TestLaunchWorkerInvariants` (7 项, 改检查 `launch_worker.py` 源)
+  - `TestDesktopAutoResidualInvariants` (6 项, 检查 re-export + `coord_saver` 注入 + 残留 `_DiaryWorker`/`_ChunkWorker`)
+
+### 测试
+```
+$ pytest tests -q
+........................................................................ [ 61%]
+..............................................                           [100%]
+118 passed in 0.32s
+```
+**112 → 118 项** (+6 项不变量), **零回归**。
+
+### 构建 (2026-06-26 07:23)
+- **EXE**: `dist/desktop-auto-v2026.06.26-0723-g4da790c.exe`
+- **大小**: 121,841,551 bytes (~116 MB, 比上次 `514c5d8` 版 +13,426 bytes, 多打包 `launch_worker.py`)
+- **PyInstaller**: 6.20.0, `--clean --noconfirm` 跑通, exit 0
+- **历史遗留 ERROR (不影响)**: `websocket.Client` / `mcp.server.lowlevel.helper` not found
+- **历史遗留 WARN**: `xxx__mypyc` / `tzdata` hiddenimport 找不到
+- ✅ **无 `launch_worker` 相关报错** (隐式 import 自动解析)
+
+### 运行时验证 (待手动)
+EXE 已构建好但未手动启动验证 4 种 worker 模式 (direct/shell/image/desktop)。
+**下一步**: 双击 `桌面自动化助手.exe` 启动, 跑以下场景:
+1. 扫描快捷方式 → 选 `南卡巡更系统` → 点「执行」(mode=direct) → 进程名 nanka 出现
+2. 选 `AiPyPro` → 点「执行」(mode=desktop) → OpenCV 模板匹配 → 双击桌面图标
+3. 选 `OneDragon-Launcher` → 点「执行」(mode=shell) → cmd /c start 起动
+4. 选有坐标绑定的图标 → 点「执行」(mode=image + coord) → 坐标点击
+
+### 下一步建议 (Step 2-2C 或 路线 C)
+- **Step 2-2C**: 用同样模板抽 `memory_engine.py` 中的 `MemoryEngineManager` / `DiaryScheduler` / `MainPollThread` / `IdleWatcherThread` → `memory_engine/` 子包
+- **路线 C (加速 EXE 启动)**: 当前 EXE 启动 ~4-5s, 大头是 PyInstaller 解压。可考虑:
+  1. `nuitka` 替代 PyInstaller (快 2-3x 启动)
+  2. 拆 EXE 为多个 sub-binary (按需加载 worker 模块)
+  3. 排除 `mcp` / `websocket` (本次会话 build.log 多次提示找不到, 不影响运行)
+
+### 上下文管理总结 (本次会话)
+| 指标 | 值 |
+|---|---|
+| 起始上下文 | 4% |
+| 收尾上下文 | 70% |
+| 轮数 | ~122 |
+| 工作流 | READ STATUS → 侦察 LaunchWorker 依赖图 → PLAN (1 句) → 写 launch_worker.py → 删 4 符号 + 注 coord_saver → 修孤儿 @dataclass → 更新 7 项不变量 → 跑 118 项测试 → 重打 EXE → git commit → 沉淀 |
+| 关键决策 | _DiaryWorker/_ChunkWorker 留嵌套类 (护栏要求) / _save_match_coord 改回调注入 (解循环 import) |
+
+### 下次接手时第一步
+```bash
+git log --oneline -5           # HEAD 应为 8c4a242
+# 手动启动 EXE 验证 4 种 worker 模式
+# 或继续 Step 2-2C (memory_engine 抽出)
+```
