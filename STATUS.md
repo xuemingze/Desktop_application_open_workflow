@@ -212,3 +212,221 @@ pyinstaller build.spec --noconfirm --clean
 - assistant_bridge: AssistantCore + AssistantBridgeServer @ 16299
 
 下一步建议先 build + 启动 EXE, 观察日志确认 5 个 init 都成功, 再开始 Step 1C。
+
+---
+
+## ✅ Step 1C 全部完成 (2026-06-25 21:45, commit `cc2eeff`)
+
+### 容器拆分 (沿用 Step 1B `AppBridges` 模板)
+**新文件** `app_containers.py` (5360 bytes, 161 行) 三件套:
+
+| 类 | 职责 | 关键 API |
+|---|---|---|
+| `UIState` | 一键启动 PID 状态封装 | `load/save/to_dict/from_dict/clear` (与 `launch_state.json` 格式兼容) |
+| `ShortcutsStore` | 桌面快捷方式列表封装 | `replace/items/at/find_by_path` (替代原 10 处 `self.shortcuts` 用法) |
+| `AppContainers(QObject)` | 4 个持久化字段容器 | `state` / `ipc` / `worker` / `shortcuts` 4 槽位 + Qt 父子关系 |
+
+### desktop_auto.py 改造 (4 Phase, 22 处替换)
+- **Phase 1** `self.state` → `UIState` (4 处): `_load_state`/`_save_state` 委托 + `onekey_start` 写入 + `onekey_stop` 读取/清空
+- **Phase 2** `self.ipc_server` → `containers.ipc` (3 处): `_start_ipc_server` + `closeEvent` stop/wait + `@property ipc_server` 转发
+- **Phase 3** `self.worker` → `containers.worker` (5 处): `run_action` 创建/信号/`isRunning` + `stop_action` cancel/quit/wait/清空 + `@property worker` 转发
+- **Phase 4** `self.shortcuts` → `ShortcutsStore` (10 处): `refresh_shortcuts` replace + 迭代 + len + 真值 + at + find_by_path + items + `@property shortcuts` 转发
+
+### 调试坑
+Phase 4 初版把 `for` 循环改成 `find_by_path` 误保留了后续 `if` 块引用, 导致 `IndentationError`。
+**修复**: 保留原 `for` 循环,只换容器访问语义。
+
+### 测试 (新建 `tests/` 目录, 5 文件, 87 项, 0.27s 全过, 无 warning)
+- `test_app_bridges.py` (31 项) — Step 1B 回归
+- `test_containers.py` (18 项) — Phase 1 + AppContainers 容器
+- `test_ipc.py` (8 项) — Phase 2 锁定 + IPCServerThread API 不变量
+- `test_worker.py` (10 项) — Phase 3 锁定 + LaunchWorker API 不变量
+- `test_shortcuts.py` (20 项) — Phase 4 锁定
+
+### 运行时验证 (2026-06-25 21:25)
+- ✅ 5 桥接全部启动 (Memory/Reminder/Companion/VTuber/Bridge@16299)
+- ✅ `[IPC] IPC 命名管道服务已启动` + 接收任务 OK
+- ✅ 3 种 worker 启动模式 (direct/desktop/等待窗口) 全部成功
+- ✅ 扫描 27 → 添加自定义 → 28 个快捷方式 OK
+- ✅ 选中 OneDragon-Launcher / 南卡巡更系统 / AiPyPro 全部正常执行
+
+---
+
+## ✅ Step 2-2A 测试护栏就位 (2026-06-25 22:32, commit `514c5d8`)
+
+**目的**: 在抽出 `launch_worker.py` 之前,先用测试锁定当前 `LaunchWorker` / `ShortcutInfo` / 内部 worker 行为,确保抽出后语义不变。
+
+### 新文件 `tests/test_launch_worker.py` (9308 bytes, 237 行, 25 项)
+**覆盖范围**:
+- `ShortcutInfo` 数据类 (4 项): dataclass 字段 / 默认值 / 完整构造
+- `LaunchWorker` 构造 (7 项): import / QThread 继承 / `log_signal` + `finished_signal` / **4 种启动模式** (direct/shell/image/desktop) / `extra_args` shlex 解析 / `coord` 参数 / `cancel` 初始值
+- `_parse_args` 静态方法 (4 项): 空串/简单/带引号/混合
+- `cancel()` 方法 (1 项): 状态可设
+- 内部 worker 类 (2 项): `_DiaryWorker` / `_ChunkWorker` 存在 + 继承 QThread
+- `desktop_auto.py` 不变量 (7 项): 类/方法/helper/模式/未知模式 raise
+
+### 调试中修正的事实
+- ❌ 之前以为 `LaunchWorker` 支持 `"coord"` 模式 → ✅ 实际只有 4 种 (direct/shell/image/desktop), coord 由 image 模式 + `self.coord` 参数处理
+- ❌ 之前以为 `run()` else 分支文案是 `"未知启动模式"` → ✅ 实际是 `"未知模式"`
+
+**测试护栏已就位,下一步可直接开始 `LaunchWorker` → `launch_worker.py` 抽出** (同时搬 `_get_pyautogui` / `_resolve_sample_path` helpers),抽完后跑这 25 项应仍全过, 语义不变。
+
+**总测试数**: 87 → **112** (+25 项), **0.34s 跑完**, 无 warning。
+
+---
+
+## 📌 现状快照 (2026-06-26 06:49, 本次会话仅做侦察 + 文档,无代码改动)
+
+### 仓库状态
+- 分支: `master` @ `514c5d8`,工作树 clean
+- `desktop_auto.py`: **153,501 bytes** (~4200+ 行, 20993 AST nodes)
+- `app_bridges.py`: 2480 bytes (Step 1B)
+- `app_containers.py`: 5360 bytes (Step 1C)
+- `tests/`: 6 文件 / 34,186 bytes, **112 项测试 0.33s 全过, 无 warning**
+
+### desktop_auto.py 中残余 LaunchWorker 痕迹 (抽出时一并搬走)
+| 符号 | 出现次数 | 状态 |
+|---|---|---|
+| `LaunchWorker` | 2 | `containers.worker = LaunchWorker(...)` + 类型引用 |
+| `ShortcutInfo` | 10 | dataclass 引用 |
+| `_DiaryWorker` | 2 | 内部 QThread 子类 |
+| `_ChunkWorker` | 2 | 内部 QThread 子类 |
+| `def _get_pyautogui` | 1 | helper |
+| `def _resolve_sample_path` | 1 | helper |
+| `def _parse_args` | 1 | static method |
+
+### 验证结果
+- ✅ `pytest tests -q --tb-no` → **112 passed in 0.33s** (`.venv\Scripts\python.exe`)
+- ✅ `desktop_auto.py` AST 解析无语法错误
+- ⚠️ 系统 Python (`C:\Program Files\Python312\python.exe`) 无 pytest,必须用 `.venv\Scripts\python.exe`
+- ⚠️ cmd.exe 在 `python -c "..."` 内会把 `!` 当历史扩展, 复杂内联表达式建议写脚本文件
+
+### 当前未验证项 (下一会话需处理)
+1. **未跑 PyInstaller 构建**: 上一次 EXE 构建在 `bb98a87` (memory_engine 卡顿修复), Step 1C + Step 2-2A 之后未重新打包
+2. **未手动启动 EXE**: 自 `cc2eeff` 后未做 21:25 那种"启动 + 跑 3 种 worker 模式"的端到端验证
+3. **`build.spec` 已含 `app_bridges` 和 `app_containers`**,但若抽出 `launch_worker.py` 需再次更新 hiddenimports/datas
+
+---
+
+## 📋 下一步: Step 2-2B (下一会话)
+
+### 目标
+按 `514c5d8` 护栏, 把 `LaunchWorker` / `ShortcutInfo` / `_DiaryWorker` / `_ChunkWorker` / `_get_pyautogui` / `_resolve_sample_path` 抽出到独立 `launch_worker.py`, 沿用 `app_bridges.py` / `app_containers.py` 模板。
+
+### 预计动作
+1. 新建 `launch_worker.py`,从 `desktop_auto.py` 复制上述 6 类/函数
+2. `desktop_auto.py` 头部加 `from launch_worker import LaunchWorker, ShortcutInfo`
+3. 删除原 6 个定义
+4. 跑 `pytest tests -q --tb=line` → 应仍 **112 passed**
+5. 更新 `build.spec` 加入 `launch_worker` (hiddenimports + datas)
+6. `pyinstaller --clean build.spec` 重打 EXE
+7. 手动启动验证 4 种 worker 模式 (direct/shell/image/desktop) 全 OK
+
+### 风险
+- `LaunchWorker` 内 `from PySide6.QtCore import ...` 依赖若漏 import 会导致 import-time 崩溃
+- 内部 worker 类 (`_DiaryWorker` / `_ChunkWorker`) 引用 `desktop_auto.py` 私有符号时不能直接搬,要先解耦
+- `ShortcutInfo` 是 dataclass,被外部代码 (`shortcuts_panel` 等) 引用,搬出后 import 路径变化需 grep 校验
+
+### 或先 build 验证当前 Step 1C EXE
+```bash
+.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm build.spec
+# 手工启动 EXE, 验证 5 桥接 + IPC + 4 种 worker 模式 + shortcuts 全部 OK
+```
+
+---
+
+## 🏁 收尾 (2026-06-26 06:52)
+
+### 本次会话总结
+- **改动**: 仅 `STATUS.md` (纯文档), 从 214 行扩到 334 行, +17863 bytes
+- **无代码改动**, 无 `desktop_auto.py` / `app_*.py` / `tests/` / `build.spec` 修改
+- **验证全过**:
+  - `STATUS.md` 4 个新章节 (`Step 1C` / `Step 2-2A` / `现状快照` / `下一步 Step 2-2B`) 均就位
+  - `desktop_auto.py` AST 解析 OK (153501 bytes / 20993 nodes)
+  - `pytest tests -q` → **112 passed in 0.31s** (`.venv\Scripts\python.exe`)
+- **临时探针清理**: `_probe.py` / `_v.py` / `_p.py` 全部已删
+- **工作树**: `M STATUS.md` (唯一未提交改动)
+
+### 上下文管理
+| 指标 | 值 |
+|---|---|
+| 起始 | 4% |
+| 收尾 | 13% |
+| 轮数 | 3 轮 |
+| 工具调用 | ~20 次 (侦察 + 1 次 edit + 验证) |
+| 工作流 | READ STATUS → git log → grep/pytest 侦察 → 续写 → 验证 → 收尾 |
+
+### 下次接手时第一步
+```bash
+git log --oneline -5           # 看 HEAD 是否仍为 514c5d8
+git status                     # 若 STATUS.md 未提交, 可选 commit
+# 然后开始 Step 2-2B (LaunchWorker 抽出), 护栏已铺好
+```
+
+---
+
+## ✅ 路线 B 完成: Step 1C EXE 端到端验证 (2026-06-26 07:00)
+
+### Build 结果
+- **EXE**: `dist/desktop-auto-v2026.06.26-0658-g514c5d8.exe`
+- **大小**: 121,828,125 bytes (~116 MB, 比上次 +12,193 bytes, 多打包 `app_containers`)
+- **构建耗时**: 68.2s (`--clean --noconfirm`), exit 0
+- **历史遗留 ERROR (不影响)**: `websocket.Client` / `mcp.server.lowlevel.helper` not found
+
+### 启动日志 (5 桥接 + IPC 全 OK)
+```
+[Memory] 记忆引擎已加载 (未启动)
+[Memory] 复盘调度器已启动 (首次提醒=22:30)
+[Reminder] 提醒调度器已启动
+[桥接] LLM backend 已初始化: OpenAICompatibleBackend(https://api.minimaxi.com/v1, model=MiniMax-M2.1)
+[桥接] config_path: C:\Users\Administrator\桌面自动化助手\config.json, exists=True
+[桥接] raw companion_enabled=True, type=<class 'bool'>
+[VTuber] 桥接已初始化 (enabled=True)，后端: http://127.0.0.1:12393
+[Bridge] 正在初始化 AssistantCore + Bridge @ 16299...
+[Bridge] LLM 配置: https://api.minimaxi.com/v1, model=MiniMax-M2.1
+[Bridge] ✓ 16299 桥接服务已启动 (供 VTuber 调用)
+[IPC] IPC 命名管道服务已启动
+```
+✅ 全部 5 桥接 + IPC 启动正常, **未出现 18:03 的二次初始化重复日志** (修复后确实不重复了)。
+
+### 运行时实测 (07:00-07:02, 4 项场景全过)
+
+| 场景 | 结果 | 关键日志 |
+|---|---|---|
+| 扫描快捷方式 | ✅ 28 个 | `🔍 扫描到 28 个快捷方式` |
+| AI 感知/主动嗅探 | ✅ | `[主动嗅探] 已启动，每日 3 次` + `[行为触发] 已启用` |
+| Toast 提示 | ✅ | `[Toast] show_toast: 早上好！... -> proactive_question` |
+| workflow 调用 | ✅ | `[AI对话] 调用工具: run_workflow({'name': 'zzz日常'})` → `{"ok": true, "success": 2, "total": 2}` |
+| 开机启动切换 | ✅ | `✅ 已禁用开机启动` / `✅ 已启用开机启动` |
+| worker mode=**direct** (南卡巡更系统) | ✅ | `🚀 直接启动 (Popen)` → 1.5s 后 PID=11012, 1.5s 后 PID=21144 |
+| worker mode=**desktop** (AiPyPro) | ✅ | `🖱️ 鼠标双击桌面图标` → OpenCV 置信度 0.992 → PID=9024 |
+| 一键启动绑定清除 | ✅ | `🗑 已清除「南卡巡更系统」的启动方式绑定` |
+
+### 4 种 worker 模式覆盖情况
+- ✅ **direct** (Popen) — `南卡巡更系统` 跑通两次, 启动 1.5s
+- ✅ **desktop** (OpenCV 模板匹配 + 双击) — `AiPyPro` 跑通, 置信度 0.992
+- ⚠️ **shell / image** — 本次会话没显式触发, 但 `tests/test_launch_worker.py` 已锁死 4 种构造路径, 抽出 LaunchWorker 后这两条路径仍走相同代码, 风险低
+
+### 关闭卡顿修复 (Step 1B 后续, commit `bb98a87`)
+- 用户体感: 关闭流畅 (具体秒数未测, 但日志里 4 次切换都没看到 30 秒死等)
+- 下次想做量化: 在 closeEvent 加 `t0 = time.time()` + 打 `[关闭耗时] {t:.2f}s` 验证 ≤ 2s
+
+### 路线 B 结论
+**主分支 (含 Step 1A/1B/1C + 关闭卡顿修复 + LaunchWorker 护栏) 已稳定运行**, EXE 端到端验证通过。可放心进入 Step 2-2B (LaunchWorker 抽出)。
+
+---
+
+## 📋 路线 A (Step 2-2B) 现在可以启动
+
+**前置条件全绿**:
+- ✅ 路线 B 验证 EXE 真能跑
+- ✅ 25 项 LaunchWorker 护栏在 514c5d8 就位
+- ✅ 4 种 worker 模式 (direct/desktop 已实测, shell/image 由护栏锁定)
+- ✅ build.spec 已含 `app_bridges` + `app_containers`, 抽出 `launch_worker` 时只需再加一行
+
+**下一步动作** (下个会话开工):
+1. 新建 `launch_worker.py`, 搬 6 符号 (LaunchWorker / ShortcutInfo / _DiaryWorker / _ChunkWorker / _get_pyautogui / _resolve_sample_path)
+2. `desktop_auto.py` 头部加 import, 删原定义
+3. 跑 `pytest tests -q` → 应仍 **112 passed**
+4. `build.spec` hiddenimports + datas 加 `launch_worker`
+5. 重打 EXE + 手动启动验证 4 种 worker 模式
