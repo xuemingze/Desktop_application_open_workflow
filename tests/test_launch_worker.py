@@ -1,14 +1,13 @@
-"""Step 2 准备: LaunchWorker 行为锁定测试
-
-为 Step 2-2A (LaunchWorker 抽到独立 launch_worker.py) 铺路,先锁定当前行为。
+"""Step 2-2B: LaunchWorker/ShortcutInfo 已抽到 launch_worker.py
 
 覆盖范围:
-- ShortcutInfo 数据类字段
-- LaunchWorker 构造与 _parse_args 静态方法
+- ShortcutInfo 数据类字段 (从 launch_worker.py import)
+- LaunchWorker 构造与 _parse_args 静态方法 (从 launch_worker.py import)
 - 信号签名
 - cancel() 状态
-- _DiaryWorker / _ChunkWorker 内部类存在性
-- desktop_auto.py 不变量 (helper 函数/方法存在)
+- _DiaryWorker / _ChunkWorker 内部类存在性 (仍嵌在 desktop_auto.py)
+- launch_worker.py 不变量 (类已搬过去)
+- desktop_auto.py 不变量 (re-export + 注入 coord_saver)
 
 注意: 测试不实际启动子进程 (LaunchWorker.run() 调用 Popen),
 只测试构造和签名层级。
@@ -185,14 +184,15 @@ class TestInternalWorkers:
         assert chunk_found, '_ChunkWorker not found'
 
 
-# ---------- F. desktop_auto.py 不变量 ----------
+# ---------- F. launch_worker.py 不变量 (Step 2-2B: 类已从 desktop_auto.py 抽出) ----------
 
-class TestDesktopAutoInvariants:
+class TestLaunchWorkerInvariants:
+    """Step 2-2B: 4 个符号 (LaunchWorker / ShortcutInfo / _get_pyautogui / _resolve_sample_path) 已抽到 launch_worker.py"""
     @classmethod
     @pytest.fixture(scope='class')
     def source(cls):
         import pathlib
-        return pathlib.Path(r'D:\项目\控制电脑\desktop_auto.py').read_text(encoding='utf-8')
+        return pathlib.Path(r'D:\项目\控制电脑\launch_worker.py').read_text(encoding='utf-8')
 
     def test_launch_worker_class_present(self, source):
         assert 'class LaunchWorker(QThread):' in source
@@ -235,3 +235,47 @@ class TestDesktopAutoInvariants:
         """coord 不是独立 mode (由 image 模式 + self.coord 处理)"""
         # 不应有 self.mode == "coord" 这种判断
         assert 'self.mode == "coord"' not in source
+
+
+# ---------- G. desktop_auto.py 残留不变量 (Step 2-2B: re-export + 内部 worker) ----------
+
+class TestDesktopAutoResidualInvariants:
+    """Step 2-2B: desktop_auto.py 必须:
+       1. re-export LaunchWorker/ShortcutInfo (让 from desktop_auto import X 仍可用)
+       2. 在 run_action 处注入 coord_saver=self._save_match_coord
+       3. 保留 _DiaryWorker / _ChunkWorker 嵌套类 (它们的护栏要求仍 in desktop_auto.py)
+       4. 不再含 LaunchWorker / ShortcutInfo / _get_pyautogui / _resolve_sample_path 定义
+    """
+    @classmethod
+    @pytest.fixture(scope='class')
+    def source(cls):
+        import pathlib
+        return pathlib.Path(r'D:\项目\控制电脑\desktop_auto.py').read_text(encoding='utf-8')
+
+    def test_re_export_present(self, source):
+        """launch_worker 4 符号必须在 desktop_auto 头部 re-export"""
+        assert 'from launch_worker import' in source
+        assert 'LaunchWorker' in source
+        assert 'ShortcutInfo' in source
+
+    def test_coord_saver_injection_present(self, source):
+        """run_action 处 LaunchWorker 调用必须注入 coord_saver 回调"""
+        assert 'coord_saver=self._save_match_coord' in source
+
+    def test_internal_workers_still_nested(self, source):
+        """_DiaryWorker / _ChunkWorker 必须仍在 desktop_auto.py 源中"""
+        assert 'class _DiaryWorker' in source
+        assert 'class _ChunkWorker' in source
+
+    def test_launch_worker_class_not_in_desktop_auto(self, source):
+        """Step 2-2B 抽出后, LaunchWorker 不应在 desktop_auto.py 源中定义"""
+        assert 'class LaunchWorker(QThread):' not in source
+
+    def test_shortcut_info_class_not_in_desktop_auto(self, source):
+        """Step 2-2B 抽出后, ShortcutInfo 不应在 desktop_auto.py 源中定义"""
+        assert 'class ShortcutInfo:' not in source
+
+    def test_helpers_not_in_desktop_auto(self, source):
+        """Step 2-2B 抽出后, 2 个 helper 不应在 desktop_auto.py 源中定义"""
+        assert 'def _get_pyautogui():' not in source
+        assert 'def _resolve_sample_path(' not in source
