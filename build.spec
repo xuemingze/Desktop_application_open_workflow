@@ -25,6 +25,7 @@ hiddenimports = [
     'mcp_file_tools',
     'activity_log',
     'app_categorizer',
+    'app_bridges',  # Step 1B: MainWindow 桥接状态容器
     'memory_engine',
     'daily_diary',
     'companion_bridge',  # MetaPact 桌宠桥接
@@ -109,6 +110,7 @@ datas = (
         ('autostart.py', '.'),
         ('assistant_core.py', '.'),  # AssistantCore 纯逻辑层
         ('assistant_bridge_server.py', '.'),  # Bridge HTTP 服务
+        ('app_bridges.py', '.'),  # Step 1B: 桥接状态容器
         ('samples', 'samples'),
         ('app_icon.ico', '.'),  # 应用图标
         ('app_icon_512_v2.png', '.'),  # README 用图标
