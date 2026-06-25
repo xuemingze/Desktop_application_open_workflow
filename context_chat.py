@@ -798,7 +798,11 @@ class ContextChatTab(QWidget):
         try:
             append_chat_log(self._pending_user_msg or "", msg, tools_used=self._pending_tools)
         except Exception as e:
-            self.log_signal.emit(f"[AI对话] 写入聊天流水失败: {e}")
+            # 业务路径异常: 写聊天流水是 local IO,失败需要可追溯
+            import traceback as _tb
+            self.log_signal.emit(
+                f"[AI对话] 写入聊天流水失败: {e}\n{_tb.format_exc()}"
+            )
 
     @Slot(str)
     def _on_error(self, msg: str):

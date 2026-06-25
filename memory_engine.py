@@ -50,12 +50,16 @@ def get_foreground_info_safe() -> tuple[str, str]:
             app_name = "System_Process"
         except psutil.NoSuchProcess:
             app_name = "Transient_Process"
-        except Exception:
+        except Exception as e:
+            # 业务路径异常: 记录 traceback 到 log_bus,但不打断采样循环
+            import traceback as _tb
+            log_bus.emit(f"[MemoryEngine] 获取进程名失败 (pid={pid.value}): {e}\n{_tb.format_exc()}")
             app_name = "Unknown_Process"
 
         return title, app_name
     except Exception as e:
-        log_bus.emit(f"[MemoryEngine] 前台窗口采样异常: {e}")
+        import traceback as _tb
+        log_bus.emit(f"[MemoryEngine] 前台窗口采样异常: {e}\n{_tb.format_exc()}")
         return "", ""
 
 
@@ -80,8 +84,9 @@ class IdleWatcherThread(QThread):
                     if idle < 1.0:
                         self.woke_from_suspend.emit()
             except Exception as e:
-                log_bus.emit(f"[IdleWatcher] Error: {e}")
-            
+                import traceback as _tb
+                log_bus.emit(f"[IdleWatcher] Error: {e}\n{_tb.format_exc()}")
+
             time.sleep(5)  # 极低开销轮询
 
 
@@ -198,8 +203,9 @@ class MainPollThread(QThread):
                             self._cur_app = app
                             
             except Exception as e:
-                log_bus.emit(f"[MainPoll] Error: {e}")
-                
+                import traceback as _tb
+                log_bus.emit(f"[MainPoll] Error: {e}\n{_tb.format_exc()}")
+
             time.sleep(self.interval)
 
     def _close_current_if_any(self, ts):
