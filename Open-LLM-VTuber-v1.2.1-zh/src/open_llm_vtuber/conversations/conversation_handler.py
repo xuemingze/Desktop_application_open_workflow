@@ -75,10 +75,22 @@ async def handle_conversation_trigger(
             f"has_history_uid={bool(context.history_uid)} "
             f"client_uid={client_uid}"
         )
-        if assistant_text and context.history_uid:
+        # 回退 history_uid: 当前 context 没有就借用 client_contexts 里任意一个
+        target_history_uid = context.history_uid
+        target_conf_uid = context.character_config.conf_uid
+        if not target_history_uid:
+            for uid, ctx in client_contexts.items():
+                if ctx.history_uid:
+                    target_history_uid = ctx.history_uid
+                    target_conf_uid = ctx.character_config.conf_uid
+                    logger.warning(
+                        f"[assistant-message] 借用其他客户端的 history_uid={target_history_uid} (client_uid={uid})"
+                    )
+                    break
+        if assistant_text and target_history_uid:
             store_message(
-                conf_uid=context.character_config.conf_uid,
-                history_uid=context.history_uid,
+                conf_uid=target_conf_uid,
+                history_uid=target_history_uid,
                 role="ai",
                 content=assistant_text,
                 name=context.character_config.character_name,
@@ -89,7 +101,7 @@ async def handle_conversation_trigger(
             )
         else:
             logger.warning(
-                f"[assistant-message] 跳过: text 为空或缺少 history_uid (client_uid={client_uid})"
+                f"[assistant-message] 跳过: text 为空或所有 client 都没有 history_uid (client_uid={client_uid})"
             )
         return
     else:  # mic-audio-end
