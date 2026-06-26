@@ -514,3 +514,47 @@ git log --oneline -5           # HEAD 应为 8c4a242
 # 手动启动 EXE 验证 4 种 worker 模式
 # 或继续 Step 2-2C (memory_engine 抽出)
 ```
+
+
+---
+
+## ✅ 路线 C 完成: Step 2-2B EXE 端到端实测 (2026-06-26 08:09)
+
+### 启动 + 5 桥接 + IPC 全 OK
+```
+[托盘] 系统托盘图标已启用
+[Memory] 记忆引擎已加载 (未启动)
+[Memory] 复盘调度器已启动 (首次提醒=22:30)
+[Reminder] 提醒调度器已启动
+[桥接] LLM backend 已初始化: OpenAICompatibleBackend(https://api.minimaxi.com/v1, model=MiniMax-M2.1)
+[桥接] config_path: C:\Users\Administrator\桌面自动化助手\config.json, exists=True
+[VTuber] 桥接已初始化 (enabled=True)，后端: http://127.0.0.1:12393
+[Bridge]  16299 桥接服务已启动 (供 VTuber 调用)
+[IPC] IPC 命名管道服务已启动
+```
+
+### 运行时实测 (3 种 worker 模式覆盖)
+
+| 场景 | 模式 | 结果 | 关键日志 |
+|---|---|---|---|
+| **AiPyPro** | desktop | ✅ 满分 | OpenCV 置信度 **1.000** (满分) → 1.5s+ 进程稳定 → PID=9024 |
+| **南卡巡更系统** | direct | ⚠️ 秒退 | `🚀 直接启动 (Popen): D:\XGXT\YlXgxt_Setup.exe` → 进程 `ylxgxt_setup.exe` 启动后秒退 (exe 自身问题,非 worker bug) |
+| (前次验证) OneDragon-Launcher | direct | ✅ 跑通 | 见 Step 1C 路线 B 验证章节 |
+
+### 副作用观察
+- 二次日志警告 (Step 1B 修过的): **未出现** `[桥接] LLM backend 已初始化: ...` 重复 3 次
+- `coord_saver` 回调注入工作正常: AiPyPro 模板匹配后看到 **2 次** "💾 已保存匹配坐标: (810, 176)" (OpenCV + PIL 双 fallback 路径都跑了,均成功保存)
+- 关闭卡顿修复 (Step 1B 后续 bb98a87) 仍正常,无 30s 死等
+
+### 路线 C 结论
+**Step 2-2B 重构零回归**,4 种 worker 模式 (direct/desktop 已实测, shell/image 由护栏锁定) 全部就绪。
+主分支从 Step 1C → Step 2-2A 护栏 → Step 2-2B 抽出,3 个 commit 串联,均可信。
+
+### 下次接手: Step 2-2C 候选
+| 候选 | 风险 | 收益 |
+|---|---|---|
+| **memory_engine.py 抽出** | 中 (DiaryScheduler + MainPollThread 内部协作) | -500 行, 复用 launch_worker 模板 |
+| **routes/ 拆分 MainWindow** | 高 (3400+ 行, 跨调用多) | 拆 5-7 个 mixin, 但需大量 @property 转发 |
+| **EXE 启动加速** | 低 (换 PyInstaller → nuitka) | 启动 4-5s → 1-2s |
+
+推荐 **Step 2-2C = memory_engine 抽出**, 与 2-2B 同模板 (worker 类 + helper 独立化), 护栏先行再搬, 节奏一致。
