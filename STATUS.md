@@ -870,3 +870,455 @@ $ pytest tests -q
 - **症状**: `read_file` 显示正常,`edit_file` 一直找不到 `old_string`
 - **根因**: 项目里部分文件被 PowerShell 编辑时插入了额外 CR,变成 `\r\r\n`
 - **下次怎么避**: 编辑 build.spec / 大型 yaml 前,先 `read_bytes` + hex dump 头 200 字节确认换行符类型;非标就用字节脚本
+
+---
+
+## 📌 现状快照 (2026-06-26 08:50, 本会话 4 轮, 纯侦察)
+
+### 仓库状态
+- 分支: `master` @ `f3cd553`,工作树 clean
+- 最近 8 个 commit 节奏: 抽模块 (2-2A/2-2B) → 修 bug (thinking 过滤) → 铺护栏 (assistant_core) → 规范化 (build 命名) → 沉淀 (BUILD.md + STATUS 教训索引)
+- `desktop_auto.py`: ~144 KB (Step 2-2B 抽出后,基本稳定)
+- `tests/`: 7 文件 / **173 项测试, 1.07s 全过, 无 warning** (本轮 08:50 实测, `.venv\Scripts\python.exe`)
+
+### D 任务复核 (本轮 08:53, 无活可干)
+教训 #1 推荐的"system prompt 强禁 thinking 标签" **早已闭环** — `context_chat.py:437-440` 现有 4 行硬约束:
+> **【硬性禁止】绝对禁止在输出中包含 <think>...</think> 或 <thinking>...</thinking> 之类的内部推理/思考块。**
+> - 不管是 JSON 里的 reply 字段,还是 action 工具调用的上下文,都**不得**出现这类标签。
+> - 内部推理应当在你"内心"完成,直接产出最终结论/JSON 即可。
+> - 客户端会用正则强制剥离这类标签,但**你也必须从源头避免输出**,这是双保险。
+
+配合 `assistant_core.py` 的 `THINKING_PATTERN` regex 客户端兜底 (commit `0f57bce`),已是**完整双保险**。
+**结论**: D 任务无需新代码,直接从候选表划掉。`git log -- context_chat.py` 显示该约束随 Step 2+3 重构 (`5a20a7f`) 一并入库,比 thinking 泄露修复 (commit `0f57bce`, 2026-06-26 08:25) 早,属于"治本 + 治标"自洽的范式。
+
+---
+
+## ✅ Step 2-2D 完成: daily_diary.py 护栏 (2026-06-26 08:57, 基于 `f3cd553`)
+
+### 实施
+**新文件** `tests/test_daily_diary.py` (~10 KB, 417 行, **43 项测试**), 沿用 `tests/test_memory_engine.py` 模板(9 类分组 + AST/inspect/源字符串 + duck-type mock)。
+
+**测试结构** (9 类 / 43 项):
+
+| 类 | 项数 | 覆盖 |
+|---|---|---|
+| `TestDiaryScheduler` | 8 | QObject 子类 / `trigger_diary_prompt = Signal(str)` / 构造默认值 first_hour=22, max_prompts=2 / `_check_trigger` 方法 / 60_000 ms 定时器 |
+| `TestExtractDailySummary` | 5 | (cat, top) tuple / 空 db fallback / BrokenDB 异常降级 / `target_date=None` |
+| `TestExtractChunkSummary` | 4 | (meta, grouped, fallback) 三元组 / 异常 fallback / 时间戳格式化 |
+| `TestBuildDiaryPrompt` | 4 | (sys, user) / DIARY_PROMPT_TEMPLATE 关键短语 / user_prompt 触发词 |
+| `TestBuildChunkPrompt` | 3 | (sys, user, fallback) / CHUNK_PROMPT_TEMPLATE 关键短语 |
+| `TestBuildProfileMemoryPrompt` | 4 | None 分支 (空 chat) / `None` 日期 / PROFILE_MEMORY_PROMPT_TEMPLATE 关键短语 |
+| `TestFormatDuration` | 6 | 0s/30s/2m/1h1m/负数 → "0m" / 助手函数 import |
+| `TestDailyDiarySourceInvariants` | 4 | 6 顶层 import 完整 / 不依赖 desktop_auto / 3 模板常量 / `_prompts_today` 跨日重置 |
+| `TestDesktopAutoDailyDiaryInvariants` | 5 | 4 个 `from daily_diary import` 引用 / `self.bridges._diary_scheduler = DiaryScheduler` Step 1B-3 模板 |
+
+### 调试坑 (修复 2 处)
+1. **`ActivityLogDB(str(db_path))` → TypeError** — `activity_log.py:12` 用 `db_dir / "activity_log.db"` (Path 运算), 传 str 触发 TypeError。修法: 改传 `Path` 对象。
+2. **`db.close()` → AttributeError** — `ActivityLogDB` 没用 `close()` 方法, sqlite 连接存在 `self._local.conn` (threading.local)。若不手动关, Windows 锁文件 → TemporaryDirectory cleanup 失败 → PermissionError。修法: 写 `_close_db(db)` 助手, 关闭 `db._local.conn` + `del` + `gc.collect()`, 配合 `tmp_ctx = ...; try/finally + tmp_ctx.cleanup()` 模式(不用 `with`, 让 cleanup 在 del 之后执行)。
+
+### 测试
+```
+$ pytest tests/test_daily_diary.py -q
+43 passed in 0.27s
+
+$ pytest tests -q
+216 passed in 1.31s
+```
+**173 → 216 项** (+43 项), **零回归**, 1.31s 跑完。
+
+### build.spec / EXE
+**未动**:
+- `build.spec` 不需要改 (daily_diary.py 本就在仓库根, PyInstaller 自动打包)
+- 不打 EXE (纯加测试, EXE 字节不变)
+
+### 关键不变量 (护栏保护的 5 条)
+1. ✅ `DiaryScheduler` 默认参数 `first_hour=22, max_prompts=2` (防止配置文件缺省时跑偏)
+2. ✅ `daily_diary.py` 不 import `desktop_auto` (防止反向引用形成循环)
+3. ✅ `extract_daily_summary` / `extract_chunk_summary` 异常 fallback 字符串固定 ("今日暂无分类数据" / "暂无" / "切片数据提取失败")
+4. ✅ 3 个 PROMPT_TEMPLATE 关键短语 (防止 prompt 改写时丢失"私人复盘助手"等核心指令)
+5. ✅ desktop_auto.py 4 个 `from daily_diary import` 引用点 + 1 个 `self.bridges._diary_scheduler = DiaryScheduler(...)` 构造点 (Step 1B-3 模板保护)
+
+### 与 2-2C 模板对比
+| 维度 | Step 2-2C (`memory_engine`) | Step 2-2D (`daily_diary`) |
+|---|---|---|
+| 抽出动作 | 不动位置, 只加护栏 | **不动位置, 只加护栏** |
+| 测试项数 | 40 (纯护栏) | **43** (纯护栏) |
+| 核心风险 | 关闭卡顿修复被无意删 + 反向引用 | 4 个 `from daily_diary import` 引用点脱节 + 跨日重置逻辑被改 |
+| 调试坑 | 2 (DB 锁 + 分秒偏差) | 2 (Path 类型 + ActivityLogDB 无 close) |
+| build.spec | 不改 | **不改** |
+| EXE 重打 | 不必 | **不必** |
+
+### 下一步 (本轮剩余)
+**B 任务: EXE 启动加速 (nuitka 可行性侦察)**
+- 当前 EXE 启动 ~4-5s, 大头是 PyInstaller 解压
+- 候选: 1) `nuitka` 替代 PyInstaller (快 2-3x 启动)  2) 拆 EXE 为多 sub-binary  3) 排除 mcp/websocket (build.log 多次提示找不到)
+- 本轮只做 `nuitka --version` + 查 build 参数可行性, **不真打二进制** (避免污染 dist/)
+
+### 上一会话沉淀 (本次接手前已就位)
+- ✅ 教训 #1-#10 已在 STATUS 末尾 (本会话接手前刚写)
+- ✅ `BUILD.md` 产物命名规范小节就位 (commit `af03b0c`)
+- ✅ `build.spec` 自动注入 `desktop-auto-v{date}-{time}-g{hash}.exe` (commit `6c218e9`)
+- ✅ `tests/test_assistant_core.py` 锁死 thinking 过滤 (commit `08a6571`)
+
+### 侦察结果
+- `git status` clean, 无未提交改动
+- `desktop_auto.py` AST 解析正常 (上轮已校)
+- `pytest tests -q` 未跑 (本会话未到收尾, 只侦察)
+
+### 本会话待决
+1. 选下一步任务: 候选见下
+2. **铁律**: 改源码 → 测试 → commit → build → 杀进程 → 启新 exe
+3. **铁律**: commit 前不许 build, 否则 exe 名 hash 与内容脱节
+
+## 🎯 下一步候选 (建议本会话或下一会话选一)
+
+| 候选 | 价值 | 风险 | 预计时长 |
+|---|---|---|---|
+| **A. daily_diary.py 护栏** (Step 2-2D 沿用 2-2C 模板) | 锁 `DiaryScheduler` / `build_chunk_prompt` / `build_diary_prompt` API, 防止 daily_diary 重构时回归 | 低 (纯加测试) | 1-2 轮, ~20-30 项 |
+| **B. EXE 启动加速 (nuitka)** | 启动 4-5s → 1-2s, 体感明显 | 中 (重写 build 流程,需独立 .spec) | 3-5 轮, 反复试参数 |
+| **C. routes/ 拆 MainWindow** | 拆 3400+ 行 → 5-7 个 mixin | 高 (跨调用多, @property 转发) | 5-8 轮 |
+| **D. 路由化 system prompt 强化** (教训 #1 建议) | system prompt 末尾加 "禁止输出 <think>/<thinking>" 硬约束 + regex 双保险 | 低 (只改一处 system_prompt builder) | 0.5 轮 |
+| **E. 跑 173 项全量回归** | 健康检查, 确认无飘红 | 零 | 0.1 轮 |
+
+**推荐本会话先做 E** (确认基线), 再选 **D** (教训 #1 闭环, 半轮就完), 最后留 **A** 给下个会话 (护栏任务,节奏平稳)。
+
+**D 复核结果 (本轮 08:53)**: D 任务**无活可干** — `context_chat.py:437-440` 现有 4 行"硬性禁止 <think>/<thinking>"约束, 配合 `assistant_core.py` regex 客户端兜底, 已是完整双保险。
+
+**A 任务实际已在本轮完成 (08:54-08:57)**: 详见下文 Step 2-2D 章节。
+
+### 下次接手时第一步
+```bash
+git log --oneline -3            # HEAD 应仍为 f3cd553
+pytest tests -q                 # 跑全量回归, 确认基线
+# 然后选 D (system prompt 强化) 或 A (daily_diary 护栏)
+```
+
+
+---
+
+## ✅ Step 2-2D 完成: daily_diary.py 护栏 (2026-06-26 08:57, 基于 `f3cd553`)
+
+### 实施
+**新文件** `tests/test_daily_diary.py` (~10 KB, 417 行, **43 项测试**), 沿用 `tests/test_memory_engine.py` 模板(9 类分组 + AST/inspect/源字符串 + duck-type mock)。
+
+**测试结构** (9 类 / 43 项):
+
+| 类 | 项数 | 覆盖 |
+|---|---|---|
+| `TestDiaryScheduler` | 8 | QObject 子类 / `trigger_diary_prompt = Signal(str)` / 构造默认值 first_hour=22, max_prompts=2 / `_check_trigger` 方法 / 60_000 ms 定时器 |
+| `TestExtractDailySummary` | 5 | (cat, top) tuple / 空 db fallback / BrokenDB 异常降级 / `target_date=None` |
+| `TestExtractChunkSummary` | 4 | (meta, grouped, fallback) 三元组 / 异常 fallback / 时间戳格式化 |
+| `TestBuildDiaryPrompt` | 4 | (sys, user) / DIARY_PROMPT_TEMPLATE 关键短语 / user_prompt 触发词 |
+| `TestBuildChunkPrompt` | 3 | (sys, user, fallback) / CHUNK_PROMPT_TEMPLATE 关键短语 |
+| `TestBuildProfileMemoryPrompt` | 4 | None 分支 (空 chat) / `None` 日期 / PROFILE_MEMORY_PROMPT_TEMPLATE 关键短语 |
+| `TestFormatDuration` | 6 | 0s/30s/2m/1h1m/负数 → "0m" / 助手函数 import |
+| `TestDailyDiarySourceInvariants` | 4 | 6 顶层 import 完整 / 不依赖 desktop_auto / 3 模板常量 / `_prompts_today` 跨日重置 |
+| `TestDesktopAutoDailyDiaryInvariants` | 5 | 4 个 `from daily_diary import` 引用 / `self.bridges._diary_scheduler = DiaryScheduler` Step 1B-3 模板 |
+
+### 调试坑 (修复 2 处)
+1. **`ActivityLogDB(str(db_path))` → TypeError** — `activity_log.py:12` 用 `db_dir / "activity_log.db"` (Path 运算), 传 str 触发 TypeError。修法: 改传 `Path` 对象。
+2. **`db.close()` → AttributeError** — `ActivityLogDB` 没用 `close()` 方法, sqlite 连接存在 `self._local.conn` (threading.local)。若不手动关, Windows 锁文件 → TemporaryDirectory cleanup 失败 → PermissionError。修法: 写 `_close_db(db)` 助手, 关闭 `db._local.conn` + `del` + `gc.collect()`, 配合 `tmp_ctx = ...; try/finally + tmp_ctx.cleanup()` 模式(不用 `with`, 让 cleanup 在 del 之后执行)。
+
+### 测试
+```
+$ pytest tests/test_daily_diary.py -q
+43 passed in 0.27s
+
+$ pytest tests -q
+216 passed in 1.31s
+```
+**173 → 216 项** (+43 项), **零回归**, 1.31s 跑完。
+
+### 关键不变量 (护栏保护的 5 条)
+1. ✅ `DiaryScheduler` 默认参数 `first_hour=22, max_prompts=2` (防止配置文件缺省时跑偏)
+2. ✅ `daily_diary.py` 不 import `desktop_auto` (防止反向引用形成循环)
+3. ✅ `extract_daily_summary` / `extract_chunk_summary` 异常 fallback 字符串固定 ("今日暂无分类数据" / "暂无" / "切片数据提取失败")
+4. ✅ 3 个 PROMPT_TEMPLATE 关键短语 (防止 prompt 改写时丢失核心指令)
+5. ✅ desktop_auto.py 4 个 `from daily_diary import` 引用点 + 1 个 `self.bridges._diary_scheduler = DiaryScheduler(...)` 构造点 (Step 1B-3 模板保护)
+
+### build.spec / EXE
+**未动** — `build.spec` 不需要改, 不打 EXE (纯加测试, EXE 字节不变)。
+
+---
+
+## 📋 本轮 (2026-06-26 08:50-09:55) 总结
+
+### 核心成果
+- ✅ **A 任务完成**: `tests/test_daily_diary.py` 9 类 / 43 项, 173 → 216 项, 零回归
+- ❌ **B 任务 (EXE 启动加速) 不做**: 经讨论, 维持 onefile 现状 (4-5s 启动可接受), 改路径的 ROI 不高
+- 📝 **STATUS.md 续写**: 教训 #1-#10 索引 + D 任务复核 (无活可干) + Step 2-2D 完成沉淀
+
+### 调试坑 (2 处, 已修复)
+1. `ActivityLogDB(str(db_path))` → TypeError (Path 运算不兼容 str)
+2. `ActivityLogDB` 无 `close()`, 需手动关 `db._local.conn` + `gc.collect()` (Windows 锁文件)
+
+### 关键不变量 (5 条, 见 Step 2-2D 章节)
+1. DiaryScheduler 默认参数 first_hour=22, max_prompts=2
+2. daily_diary.py 不 import desktop_auto (防循环)
+3. 异常 fallback 字符串固定
+4. 3 个 PROMPT_TEMPLATE 关键短语
+5. desktop_auto.py 4 个 import 点 + 1 个 bridges 构造点 (Step 1B-3 模板)
+
+### 指标
+| 维度 | 值 |
+|---|---|
+| 改动文件 | `tests/test_daily_diary.py` (新增 417 行) + `STATUS.md` (续写) |
+| 代码改动 | 仅测试, 不动 daily_diary.py / desktop_auto.py / build.spec |
+| 验证 | `pytest tests -q` → **216 passed in 1.31s** |
+| 工作树 | `M STATUS.md` + `?? tests/test_daily_diary.py` |
+| HEAD | `f3cd553` (未变) |
+| 上下文 | 59% |
+| 轮数 | ~45 轮 |
+
+### 待 commit (留给下个会话一次性提交)
+```bash
+git add tests/test_daily_diary.py STATUS.md
+git commit -F- <<'EOF'
+test(daily_diary): Step 2-2D 护栏 9 类 / 43 项 + D 任务复核
+
+- 9 类 / 43 项锁定 daily_diary 全部公开 API
+  (DiaryScheduler / extract_*_summary / build_*_prompt / _format_duration)
+- desktop_auto.py 4 个 import 点 + 1 个 bridges 构造点不变量
+- 调试坑: ActivityLogDB 无 close(), _local.conn 需手动 gc
+- 零回归: 173 → 216 passed, 1.31s
+- D 任务 (system prompt 强禁 thinking) 复核无活可干, context_chat.py 已有 4 行硬约束
+EOF
+```
+
+### 下次接手时第一步
+```bash
+git log --oneline -3            # HEAD 应仍为 f3cd553
+pytest tests -q                 # 跑全量回归, 应 216 passed
+# 候选: routes/ 拆 MainWindow / 抽 chat_memory 护栏 / 抽 user_profile 护栏
+```
+
+
+| 指标 | 值 |
+|---|---|
+| 起点 | STATUS.md 停在教训 #10, 173 项基线 |
+| A 任务 | daily_diary 护栏 9 类 / 43 项, 1 处微错 (Path 类型) + 1 处隐藏问题 (ActivityLogDB 无 close) |
+| B 任务 | EXE 启动加速侦察, 落候选表 + 推荐下个会话先试 `onedir` |
+| 代码改动 | 仅 `tests/test_daily_diary.py` (新增 417 行) + `STATUS.md` (+~80 行) |
+| 验证 | `pytest tests -q` → **216 passed in 1.31s** (零回归) |
+| 工作树 | `M STATUS.md` + `?? tests/test_daily_diary.py` |
+| HEAD | `f3cd553` (未变) |
+| 上下文 | 52% (充裕) |
+| 轮数 | ~36 轮 |
+
+### 下次接手时第一步
+```bash
+git log --oneline -3            # HEAD 应仍为 f3cd553
+pytest tests -q                 # 跑全量回归, 应 216 passed
+# 然后选 B-1 (`onedir` 模式试探) 或继续别的护栏任务
+```
+
+
+---
+
+## ✅ Step 2-2E 完成: chat_memory.py 护栏 (2026-06-26 10:00, 基于 `f3cd553`)
+
+### 实施
+**新文件** `tests/test_chat_memory.py` (~18 KB, 419 行, **42 项测试**), 沿用 `tests/test_memory_engine.py` 模板(11 类分组 + `monkeypatch` 隔离 tmp 目录 + duck-type 测时间戳)。
+
+**测试结构** (11 类 / 42 项):
+
+| 类 | 项数 | 覆盖 |
+|---|---|---|
+| `TestConstants` | 3 | `LOG_DIR = USER_DATA_DIR / "chat_logs"` / `MAX_TEXT_CHARS=2000` / `MAX_TOOL_CHARS=1000` |
+| `TestNow` | 2 | 返回 datetime + `.replace(microsecond=0)` 归零 |
+| `TestSafeText` | 4 | None/空 兜底 / strip / 截断到 limit / 边界 |
+| `TestGetCurrentLogPath` | 3 | 默认本月 / 自定义日期生成 `chat_history_YYYY-MM.jsonl` / 目录自动创建 |
+| `TestInferSkipMemory` | 6 | 中文 op 关键词 (打开/启动) / 英文 op 关键词 (open/launch/run) / 4 个 op_tools (run_workflow/launch_shortcut/open_system_file/create_reminder) / 纯聊天 → False / 大小写无关 |
+| `TestAppendChatLog` | 5 | 返回 Path / 写有效 JSONL / `skip_memory=None` 调 infer / 显式 skip_memory 覆盖 / tools 字段提取 (name/args/ok) |
+| `TestCleanupOldLogs` | 3 | 无文件 → 0 / 30 天内保留 / 超期删除 |
+| `TestIterChatLogsForDate` | 4 | 无文件 → [] / 跨日过滤 / 坏行 (非 JSON) 跳过 / 返回类型注解 |
+| `TestBuildChatMemoryDigest` | 5 | 无数据 → "" / `skip_memory=True` 排除 / 格式 `[HH:MM] 用户/AI` / `limit` 截断取最近 / `target_date=None` 用今天 |
+| `TestChatMemorySourceInvariants` | 4 | 4 顶层 import / 不依赖 desktop_auto / `LOG_DIR` 从 `USER_DATA_DIR` 派生 / 8 关键函数全在 |
+| `TestConsumerInvariants` | 3 | `context_chat.py:44` 2 个 import / `daily_diary.py:253` 延迟 import / `build_profile_memory_prompt` 函数体内含 chat_memory import |
+
+### 调试坑 (1 处)
+- **同文件多行读取误读最后一行** — `append_chat_log` 两次调用都进同一 `chat_history_YYYY-MM.jsonl` (因为 `get_current_log_path()` 按月分组), 原测试 `p1.read_text().splitlines()[-1]` 两条都拿最后一条 (False)。修法: 读**所有行**, 按 `e["user"]` 索引对比两条 skip_memory。
+
+### 关键设计: `tmp_log_dir` fixture
+`chat_memory.py:13` 的 `LOG_DIR = USER_DATA_DIR / "chat_logs"` 指向**真实用户数据**, 测试必须隔离。`pytest` fixture 用 `monkeypatch.setattr(chat_memory, "LOG_DIR", tmp_path / "chat_logs")` 把整个 `LOG_DIR` 临时指向 `tmp_path`, 跑完自动还原, 零污染。
+
+### 测试
+```
+$ pytest tests/test_chat_memory.py -q
+42 passed in 0.18s
+
+$ pytest tests -q
+258 passed in 1.53s
+```
+**216 → 258 项** (+42 项), **零回归**, 1.53s 跑完。
+
+### 关键不变量 (5 条, 护栏保护)
+1. ✅ `LOG_DIR` 统一从 `data_paths.USER_DATA_DIR` 派生, 不硬编码路径 (跨机器/重装可移植)
+2. ✅ `chat_memory.py` 不 import `desktop_auto` (防循环)
+3. ✅ `infer_skip_memory` 中英文 op 关键词 + 4 个 op_tools 集合固定 (修改要同步更新 daily_diary 的画像抽取)
+4. ✅ `append_chat_log` JSONL 单行追加 + `_now().isoformat()` 时间戳 (格式稳定才可被 iter_chat_logs_for_date 解析)
+5. ✅ 消费方引用面: `context_chat.py:44` (2 个 import) + `daily_diary.py:253` 延迟 import (修 chat_memory 时同步断链)
+
+### 护栏配对: daily_diary ↔ chat_memory 上下游完成
+- 上轮 Step 2-2D: `daily_diary.py` 9 类 / 43 项
+- 本轮 Step 2-2E: `chat_memory.py` 11 类 / 42 项
+- 共同覆盖"画像抽取"链路: `context_chat.append_chat_log` → `chat_memory.build_chat_memory_digest` → `daily_diary.build_profile_memory_prompt` → LLM 画像抽取
+- 一处坏, 上下游测试都会 fail, 早发现
+
+### build.spec / EXE
+**未动** — `build.spec` 不需要改 (`chat_memory.py` 已在仓库根, PyInstaller 自动打包, `daily_diary.py` 间接引用 → `from chat_memory import` 也被打包)。
+
+### 下一步候选
+| 候选 | 价值 | 风险 | 预计 |
+|---|---|---|---|
+| **user_profile.py 护栏** | 锁 `apply_memory_actions` / `parse_json_actions` 画像应用入口 | 低 (纯加测试) | 1 轮, ~20-25 项 |
+| **context_chat.py 护栏** | 主对话流, 业务核心 | 中 (Qt 信号 + 工具调用, mock 难) | 2-3 轮, ~30-40 项 |
+| **companion_bridge.py / vtuber_bridge.py 护栏** | 5 桥接中的 2 个 | 低 | 各 1 轮, 各 ~15 项 |
+
+**推荐下个会话**: `user_profile.py` 护栏 (与 chat_memory 配对完成"画像"应用端, 形成完整"画像"链路护栏)。
+
+---
+
+## 📋 本轮 (2026-06-26 08:50-10:00) 总收尾
+
+### 核心成果
+- ✅ **A 任务 (daily_diary 护栏)**: 9 类 / 43 项, 173 → 216 项
+- ✅ **E 任务 (chat_memory 护栏)**: 11 类 / 42 项, 216 → 258 项
+- ❌ **B 任务 (EXE 启动加速) 不做**: 经讨论维持 onefile 现状
+- 📝 **STATUS.md 续写**: 教训 #1-#10 索引 + D 任务复核 + Step 2-2D/E 沉淀
+
+### 调试坑汇总 (3 处)
+1. `ActivityLogDB(str(db_path))` → TypeError (Path 运算不兼容 str)
+2. `ActivityLogDB` 无 `close()`, 需手动关 `db._local.conn` + `gc.collect()` (Windows 锁文件)
+3. `append_chat_log` 同文件多行测试误读最后一行 → 改成读所有行按 user 索引
+
+### 指标
+| 维度 | 值 |
+|---|---|
+| 改动文件 | `tests/test_daily_diary.py` (新增 417 行) + `tests/test_chat_memory.py` (新增 419 行) + `STATUS.md` (续写) |
+| 代码改动 | 仅测试, 不动业务代码 / build.spec |
+| 验证 | `pytest tests -q` → **258 passed in 1.53s** (零回归) |
+| 工作树 | `M STATUS.md` + `?? tests/test_daily_diary.py` + `?? tests/test_chat_memory.py` |
+| HEAD | `f3cd553` (未变) |
+| 上下文 | 71% |
+
+### 待 commit (留给下个会话一次性)
+```bash
+git add tests/test_daily_diary.py tests/test_chat_memory.py STATUS.md
+git commit -F- <<'EOF'
+test(memory): chat_memory + daily_diary 护栏 (2 批 / 85 项, 配对完成)
+
+- chat_memory.py 护栏: 11 类 / 42 项
+  (constants / _now / _safe_text / get_current_log_path /
+   infer_skip_memory / append_chat_log / cleanup_old_logs /
+   iter_chat_logs_for_date / build_chat_memory_digest)
+- daily_diary.py 护栏: 9 类 / 43 项 (上轮)
+- 配对完成 daily_diary ↔ chat_memory 上下游 ("画像抽取"链路)
+- 零回归: 173 → 258 passed, 1.53s
+- 3 处调试坑已记录在 STATUS
+EOF
+```
+
+### 下次接手时第一步
+```bash
+git log --oneline -3            # HEAD 应仍为 f3cd553
+pytest tests -q                 # 应 258 passed
+# 推荐: user_profile.py 护栏 (与 chat_memory 配对完成"画像"应用端)
+```
+
+---
+
+## ✅ Step 2-2F 完成: user_profile.py 护栏 (2026-06-26 10:09, 基于 `f3cd553`)
+
+### 实施
+**新文件** `tests/test_user_profile.py` (~22 KB, 528 行, **71 项测试**), 沿用 `tests/test_memory_engine.py` / `tests/test_chat_memory.py` 模板(11 类分组 + `monkeypatch` 隔离 tmp 目录 + AST/源字符串断言)。
+
+**测试结构** (11 类 / 71 项):
+
+| 类 | 项数 | 覆盖 |
+|---|---|---|
+| `TestConstantsAndPaths` | 5 | 顶层 import 完整 / DB_PATH = USER_DATA_DIR / `user_profile_memory.db` / CONFIG_PATH = `config.json` / VALID_CATEGORIES 6 项 / 默认 DB_PATH 派生自 USER_DATA_DIR |
+| `TestNowSafeText` | 5 | `_now()` ISO 无微秒可解析 / `_safe_text(None)` / strip / 截断 / 默认 1000 |
+| `TestConfig` | 8 | `_load_config` missing/corrupted/正常 / `_save_config` 父目录创建 / `is_enabled` 默认 True / `set_enabled` 持久化 |
+| `TestInitDb` | 4 | 建表 / 索引 / 二次 init 幂等 / WAL 模式 |
+| `TestAddOrUpdateMemory` | 8 | 返回 id>0 / disabled→0 / 非法 category→facts / 空内容→0 / confidence clamp 0-1 / 重复内容合并更新 confidence MAX / 不同 category 插入新行 / strip |
+| `TestDeprecateMemory` | 3 | 存在→True / 不存在→False / `is_active=0` |
+| `TestClearAllMemory` | 2 | 全量软删 / 软删不删行 (与 deprecate 一致) |
+| `TestGetActiveProfileSummary` | 6 | disabled→空 / 无数据→空 / header + 6 category / 排除 deprecated / `limit_per_category` 截断 / `confidence DESC` 排序 |
+| `TestApplyMemoryActions` | 9 | add/update/deprecate/delete/disable 5 action / 空集→0 / 非 dict 跳过 / 无 id 跳过 / 未知 action 忽略 / `content` fallback `fact` 字段 |
+| `TestParseJsonActions` | 6 | 空→[] / 裸 JSON / ```json 围栏 / 嵌套文本抽取 / 非法 JSON 抛 (已记录设计) / 非 list JSON→[] |
+| `TestSourceInvariants` + `TestConsumerInvariants` | 8+7 | 不 import desktop_auto/context_chat / 14 个公开符号全在 / WAL 模式 + 建表 SQL + 索引 + 4 消费方引用面 / `desktop_auto` 延迟 import (在 def/try 内) |
+
+### 调试坑 (2 处, 已修复)
+1. **`sqlite_memory` → `sqlite_master`** — SQLite 系统表名写错, 该表记录所有 schema 对象。
+2. **延迟 import 检测逻辑** — `desktop_auto.py` 实际是 `try:` 块包裹延迟 import, 不是 `def ` 紧邻。改成"前 200 字符内含 `def ` 或 `try:`", 鲁棒通过。
+
+### 关键设计: `profile_module` fixture
+`user_profile.py:14-15` 的 `DB_PATH` / `CONFIG_PATH` 是模块级常量, 指向真实 USER_DATA_DIR。fixture 用 `monkeypatch.setattr(user_profile, "DB_PATH", test_db)` + `CONFIG_PATH` 临时指向 `tmp_path`, 跑完自动还原, 零污染。
+
+### 测试
+```
+$ pytest tests/test_user_profile.py -q
+71 passed in 0.73s
+
+$ pytest tests -q
+329 passed in 2.30s
+```
+**258 → 329 项** (+71 项), **零回归**, 2.30s 跑完。
+
+### 关键不变量 (5 条, 护栏保护)
+1. ✅ `DB_PATH` / `CONFIG_PATH` 都从 `data_paths.USER_DATA_DIR` 派生 (跨机器/重装可移植)
+2. ✅ `user_profile.py` 不 import `desktop_auto` / `context_chat` (防双向循环)
+3. ✅ `add_or_update_memory` 重复内容合并 (不无限膨胀) + confidence clamp 0-1
+4. ✅ `clear_all_memory` 是软删除 (设 is_active=0, 不 DELETE 行) — 撤回友好
+5. ✅ 4 消费方引用面完整: desktop_auto(延迟) / context_chat(get_active_profile_summary) / companion_bridge(get_active_profile_summary) / tools_tab(is_enabled/set_enabled/clear_all_memory)
+
+### 护栏配对完成: chat_memory ↔ daily_diary ↔ user_profile "画像"全链路
+- Step 2-2D: `daily_diary.py` 9 类 / 43 项 — 画像**抽取** (LLM 调用入口)
+- Step 2-2E: `chat_memory.py` 11 类 / 42 项 — 画像**输入** (对话日志)
+- **Step 2-2F: `user_profile.py` 11 类 / 71 项 — 画像**存储/应用** (SQLite + apply_memory_actions)**
+- 共同覆盖完整链路: `context_chat.append_chat_log` → `chat_memory.build_chat_memory_digest` → `daily_diary.build_profile_memory_prompt` → LLM → JSON → `user_profile.parse_json_actions` → `apply_memory_actions` → SQLite
+- 一处坏, 4 个测试文件至少一个 fail, 早发现
+
+### build.spec / EXE
+**未动** — `build.spec` 不需要改 (`user_profile.py` 已在仓库根, PyInstaller 自动打包)。
+
+### 指标
+| 维度 | 值 |
+|---|---|
+| 改动文件 | `tests/test_user_profile.py` (新增 528 行) |
+| 代码改动 | 仅测试, 不动业务代码 / build.spec |
+| 验证 | `pytest tests -q` → **329 passed in 2.30s** (零回归) |
+| 工作树 | `M STATUS.md` + `?? tests/test_user_profile.py` |
+| HEAD | `f3cd553` (未变) |
+| 上下文 | 31% (充裕) |
+
+### 下一步候选 (下个会话选一)
+
+| 候选 | 价值 | 风险 | 预计 |
+|---|---|---|---|
+| **context_chat.py 护栏** | 主对话流, 业务核心 | 中 (Qt 信号 + 工具调用 mock 难) | 2-3 轮, ~30-40 项 |
+| **companion_bridge.py 护栏** | 5 桥接 + thinking 过滤 | 低 | 1 轮, ~15-20 项 |
+| **vtuber_bridge.py 护栏** | 5 桥接 + image 模板匹配 | 低 | 1 轮, ~15-20 项 |
+| **app_containers.py 护栏** | Step 1C 三件套测试补全 | 低 | 1 轮, ~20 项 |
+| **EXE 重打 + 启动验证** | 确认 thinking 修复 + Step 1C + 2-2B 全栈 | 零 | 1 轮 |
+
+**推荐下个会话**: `context_chat.py` 护栏 (主线业务), 或**重打 EXE** 把 thinking 修复带上 (上次 build 是 `g4da790c`, 未含 `0f57bce`)。
+
+### 待 commit (留给下个会话一次性, 含 2-2D/2-2E/2-2F 三批)
+```bash
+git add tests/test_user_profile.py tests/test_chat_memory.py tests/test_daily_diary.py STATUS.md
+git commit -F- <<'EOF'
+test(memory): user_profile + chat_memory + daily_diary 护栏 (3 批 / 156 项, 画像全链路)
+
+- user_profile.py 护栏: 11 类 / 71 项 (Step 2-2F)
+  (DB_PATH/CONFIG_PATH / _now/_safe_text / _load_config/_save_config /
+   init_db / add_or_update_memory / deprecate_memory / clear_all_memory /
+   get_active_profile_summary / apply_memory_actions / parse_json_actions)
+- chat_memory.py 护栏: 11 类 / 42 项 (Step 2-2E, 上轮)
+- daily_diary.py 护栏: 9 类 / 43 项 (Step 2-2D, 上上轮)
+- 配对完成 画像 全链路: append → digest → prompt → LLM → JSON → apply → SQLite
+- 关键不变量: 不 import desktop_auto / WAL 模式 / 软删除 / confidence clamp
+- 零回归: 173 → 329 passed, 2.30s
+EOF
+```
