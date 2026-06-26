@@ -144,12 +144,22 @@ class VTuberBridge:
         return ok
 
     def send_user_message(self, text: str) -> bool:
-        """BUG FIX: send user text-input to VTuber backend (enters chat history).
+        """DEPRECATED: 此方法把文本伪装成 user 输入,会污染 AI 上下文。
 
-        Different from notify_event: notify_event sends bubble-event (TTS only, no chat context),
-        send_user_message sends text-input (triggers AI reply + enters chat history).
-        Use both together so VTuber can have real dialogue based on pushed events.
+        替代方案:
+          - notify_event():广播气泡(纯显示,不写 VTuber 后端 history)
+          - speak():触发后端 LLM 主动生成发言(走 ai-speak-signal)
+          - acknowledge_ai_message():把指定文本以 AI 身份写入 history(举手发言用)
+
+        此方法保留一个版本以提示迁移,后续版本删除。
         """
+        import warnings
+        warnings.warn(
+            "send_user_message 已弃用 —— 会把文本伪装成 user 输入污染 AI 上下文。"
+            "请改用 notify_event / speak / acknowledge_ai_message。",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if not self._ensure_connected():
             return False
         ok = self._send({
@@ -158,6 +168,30 @@ class VTuberBridge:
         })
         if ok:
             log.debug(f"[VTuberBridge] text-input sent: {text[:50]}")
+        return ok
+
+    def acknowledge_ai_message(self, text: str) -> bool:
+        """举手发言:把指定文本以 AI 身份写入 VTuber 后端 chat history。
+
+        适用场景:用户点击主动嗅探推送的气泡 = "举手" = 把气泡文案作为
+        AI 已说过的话写入历史,让后续 LLM 推理能引用"我刚才问了这个问题"。
+
+        关键契约:
+          - 发 type='assistant-message'(对应后端 assistant-message 协议)
+          - 不触发新一轮 LLM(否则用户没说话 AI 也会续说)
+          - 不调 notify_event / send_user_message(避免污染或重复广播)
+          - 失败时返回 False,不抛异常(降级不影响主流程)
+        """
+        if not text:
+            return False
+        if not self._ensure_connected():
+            return False
+        ok = self._send({
+            "type": "assistant-message",
+            "text": text,
+        })
+        if ok:
+            log.debug(f"[VTuberBridge] assistant-message sent: {text[:50]}")
         return ok
 
     def speak(self, text: str) -> bool:
