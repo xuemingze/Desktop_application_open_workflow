@@ -108,11 +108,14 @@ class VTuberBridge:
         if not self._running or not self._ws:
             return False
         try:
+            payload = json.dumps(data, ensure_ascii=False)
+            # 诊断日志:暴露实际发送的 payload,排查 assistant-message text 为空
+            log.warning(f"[VTuberBridge SENT] type={data.get('type')!r} keys={list(data.keys())} text={data.get('text','')!r} (len={len(data.get('text','') or '')})")
             with self._lock:
-                self._ws.send(json.dumps(data, ensure_ascii=False))
+                self._ws.send(payload)
             return True
         except Exception as e:
-            log.debug(f"[VTuberBridge] 发送失败: {e}")
+            log.warning(f"[VTuberBridge] 发送失败: {e}")
             return False
 
     def _ensure_connected(self) -> bool:
