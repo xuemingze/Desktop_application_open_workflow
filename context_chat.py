@@ -858,6 +858,17 @@ class ContextChatTab(QWidget):
             sug = getattr(intent, "suggested_action", "") or ""
             param = getattr(intent, "action_param", "") or ""
             self._append_user(f"👆 点击了气泡 [操作: {sug}{' / ' + param if param else ''}]\n原消息: {msg}")
+            # 举手:把气泡文案以 AI 身份写进 VTuber 后端 chat history(B+A 方案)
+            # 取主窗口的 _vtuber_bridge(由 MainWindow._init_vtuber_bridge 初始化)
+            win = self.window()
+            bridge = getattr(win, "_vtuber_bridge", None) if win else None
+            if bridge and getattr(bridge, "enabled", False):
+                ok = bridge.acknowledge_ai_message(intent.message)
+                self._append_log(f"[举手] acknowledge_ai_message OK={ok}")
+            else:
+                self._append_log("[举手] 桥接未就绪,跳过 ack")
+            # UI 反馈:本地 chat 标记已举手
+            self._append_assistant(f"✅ 已举手 ✓ {intent.message}")
         except Exception as e:
             self._append_system(f"❌ on_toast_clicked 出错: {e}")
 

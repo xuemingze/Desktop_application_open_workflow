@@ -1139,10 +1139,8 @@ class ContextTab(QWidget):
         if has_bridge and bridge and getattr(bridge, 'enabled', False):
             ok = bridge.notify_event(f"主动嗅探 - {q.category}: {q.text}")
             self._append_log(f"[主动嗅探VTuber] notify_event OK={ok}")
-            # BUG FIX: notify_event only sends bubble-event (TTS), does NOT enter VTuber chat context
-            # Also send text-input so VTuber next inference sees this history, forming real dialogue
-            ok2 = bridge.send_user_message(f"主动嗅探 - {q.category}: {q.text}")
-            self._append_log(f"[主动嗅探VTuber] send_user_message OK={ok2}")
+            # 修复:主动嗅探只发 notify_event(bubble-event/TTS),不污染 VTuber chat context
+            # (举手由用户在气泡点击时通过 acknowledge_ai_message 单独写入 assistant 角色)
         else:
             self._append_log("[主动嗅探VTuber] 桥接未就绪，跳过")
 

@@ -39,7 +39,7 @@ class MessageType(Enum):
         "create-new-history",
         "delete-history",
     ]
-    CONVERSATION = ["mic-audio-end", "text-input", "ai-speak-signal"]
+    CONVERSATION = ["mic-audio-end", "text-input", "ai-speak-signal", "assistant-message"]
     CONFIG = ["fetch-configs", "switch-config"]
     CONTROL = ["interrupt-signal", "audio-play-start"]
     DATA = ["mic-audio-data"]
@@ -89,6 +89,7 @@ class WebSocketHandler:
             "raw-audio-data": self._handle_raw_audio_data,
             "text-input": self._handle_conversation_trigger,
             "ai-speak-signal": self._handle_conversation_trigger,
+            "assistant-message": self._handle_conversation_trigger,
             "bubble-event": self._handle_bubble_event,
             "fetch-configs": self._handle_fetch_configs,
             "switch-config": self._handle_config_switch,
