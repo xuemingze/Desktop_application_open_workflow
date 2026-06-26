@@ -143,6 +143,23 @@ class VTuberBridge:
             log.debug(f"[VTuberBridge] 已发送: {message[:50]}")
         return ok
 
+    def send_user_message(self, text: str) -> bool:
+        """BUG FIX: send user text-input to VTuber backend (enters chat history).
+
+        Different from notify_event: notify_event sends bubble-event (TTS only, no chat context),
+        send_user_message sends text-input (triggers AI reply + enters chat history).
+        Use both together so VTuber can have real dialogue based on pushed events.
+        """
+        if not self._ensure_connected():
+            return False
+        ok = self._send({
+            "type": "text-input",
+            "text": text,
+        })
+        if ok:
+            log.debug(f"[VTuberBridge] text-input sent: {text[:50]}")
+        return ok
+
     def speak(self, text: str) -> bool:
         """直接让桌宠说一段话"""
         if not self._ensure_connected():
