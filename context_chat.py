@@ -859,9 +859,9 @@ class ContextChatTab(QWidget):
             bridge = getattr(win, "_vtuber_bridge", None) if win else None
             if bridge and getattr(bridge, "enabled", False):
                 ok = bridge.acknowledge_ai_message(intent.message)
-                self._append_log(f"[举手] acknowledge_ai_message OK={ok}")
+                self.log_signal.emit(f"[举手] acknowledge_ai_message OK={ok}")
             else:
-                self._append_log("[举手] 桥接未就绪,跳过 ack")
+                self.log_signal.emit("[举手] 桥接未就绪,跳过 ack")
             # UI 反馈:本地 chat 标记已举手(也始终执行,与 checkbox 解耦)
             self._append_assistant(f"✅ 已举手 ✓ {intent.message}")
 
