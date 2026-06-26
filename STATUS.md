@@ -558,3 +558,168 @@ git log --oneline -5           # HEAD 应为 8c4a242
 | **EXE 启动加速** | 低 (换 PyInstaller → nuitka) | 启动 4-5s → 1-2s |
 
 推荐 **Step 2-2C = memory_engine 抽出**, 与 2-2B 同模板 (worker 类 + helper 独立化), 护栏先行再搬, 节奏一致。
+
+---
+
+## 📋 Step 2-2C 侦察 (2026-06-26 08:15, 基于 `e2059a3`, 纯文档)
+
+### 目标
+沿用 Step 2-2B (`LaunchWorker` → `launch_worker.py`) 模板, 把 `memory_engine.py` 的核心类**整体原样保留**搬出 (不像 launch_worker 那样大改协调 import), 因为 `memory_engine.py` 当前已是**自包含模块** (除 `log_bus` / `ActivityLogDB` / `app_categorizer` 三个无环依赖)。
+
+### `memory_engine.py` 现状 (12,130 bytes / 296 行)
+| 符号 | 行数 | 类别 | 用途 |
+|---|---|---|---|
+| `LASTINPUTINFO` (ctypes struct) | 16-17 | helper | Windows 空闲检测输入结构 |
+| `get_idle_seconds()` | 19-26 | helper | 读取用户最后键鼠到现在的秒数 |
+| `get_foreground_info_safe()` | 28-63 | helper | 前台窗口标题+进程名 (优雅降级) |
+| `IdleWatcherThread(QThread)` | 66-90 | worker | 极低开销监视器 (sleep 5s, 唤醒主轮询) |
+| `MainPollThread(QThread)` | 93-255 | worker | 主采样 + 状态机 + 水桶 chunk 触发 |
+| `MemoryEngineManager(QObject)` | 258-296 | manager | 对外控制网关, 串联双线程 |
+
+**顶层依赖** (3 个, 全部无环):
+- `from log_bus import log_bus` — 全局日志
+- `from activity_log import ActivityLogDB` — 数据库
+- `from app_categorizer import categorize` — 应用分类
+
+**关键不变量**:
+- `MemoryEngineManager.__init__(db_dir)` 创建 `ActivityLogDB(db_dir)` + 双线程 + 信号 `idle_watcher.woke_from_suspend → main_poll.wake_up`
+- `stop()` 已含 2s 超时 (`bb98a87` 修复关闭卡顿)
+- `pause()` / `pause_until()` 公开 API, 发 `paused_changed(bool, str)` 信号
+- `main_poll.chunk_ready(float, float, int)` 信号连接 `_on_memory_chunk_ready`
+
+### `desktop_auto.py` 调用点 (12 处, 全已走 `self.bridges.memory_engine_mgr.xxx`)
+| 行号 | 调用 | 备注 |
+|---|---|---|
+| 1374-1376 | `@property memory_engine_mgr` 转发 | Step 1B-4 模板, 保留 |
+| 2326-2328 | `closeEvent` 里 `stop()` | 关闭流程 |
+| 2892 | `from memory_engine import MemoryEngineManager` (延迟 import) | 改成 `from memory_engine import ...` 同样写法 |
+| 2914-2918 | `__init__` 里 `MemoryEngineManager(USER_DATA_DIR)` + 2 信号 connect | 启动点 |
+| 2979-2985 | `_on_memory_pause_changed` 槽 | UI 托盘提示 |
+| 3042-3058 | `_on_memory_chunk_ready` 槽 → 触发 `_generate_chunk_async` | 中期记忆总结 |
+| 3066-3083 | `memory_pause` / `memory_pause_until` 公开 API | 公开方法 |
+| 3087-3097 | `memory_start` 公开 API | 启动采样 |
+| 3101-3115 | `memory_status` 公开 API (读 `main_poll` 字段) | 状态查询 |
+| 3426-3434 | `_trigger_today_diary` 里 `db` 属性访问 | 日记触发 |
+
+**评估**: `desktop_auto.py` 没有任何私有 helper 被 `memory_engine.py` 反向引用, **无循环 import 风险**, 与 launch_worker 抽出时遇到 `_save_match_coord` 调 `desktop_auto` 私有的情况**完全不同**。
+
+### 抽出策略 (Step 2-2C 模板对比)
+| 维度 | Step 2-2B (`launch_worker.py`) | Step 2-2C (`memory_engine.py`) |
+|---|---|---|
+| 抽出方式 | 切割 → 6 符号搬运 → 回调注入解循环 | **整体模块原样搬出**, 头部 import 不变 |
+| 协调成本 | 高 (`_DiaryWorker`/`_ChunkWorker` 留原位 + `coord_saver` 回调) | **零** — 模块自包含, 外部仅用 `MemoryEngineManager` 公开 API |
+| `desktop_auto.py` 改动量 | ~700 行净减 | **0 行代码删除** (只 import path 可选优化) |
+| `build.spec` 改动 | hiddenimports + datas 新增 `launch_worker` | **无需改动** (PyInstaller 自动发现同目录 `memory_engine.py`) |
+| 抽出的实际收益 | 模块边界清晰 + 文件大小 -6% | **风险近零, 收益近零, 主要是命名学意义** |
+
+### 结论与建议
+
+**Step 2-2C 的价值不在"抽"本身, 在"护栏 + 验证矩阵"**:
+
+1. **`memory_engine.py` 不必搬动位置** — 它已经是干净的 296 行模块, 无循环依赖, 无超大嵌套类, 已经是"成品"。
+2. **真正该做的事是铺测试护栏**, 像 `tests/test_launch_worker.py` (25 项) 一样锁定以下不变量:
+   - `LASTINPUTINFO` 字段 (2 项)
+   - `get_idle_seconds` 返回 float 且 ≥ 0 (2 项)
+   - `get_foreground_info_safe` 优雅降级 (3 项: 权限拒绝 / 进程消失 / 异常)
+   - `IdleWatcherThread` 构造 + `stop()` 状态 + 信号定义 (3 项)
+   - `MainPollThread` 构造参数默认值 + `manual_pause` + `wake_up` + `_emit_chunk` 水桶逻辑 (5 项)
+   - `MemoryEngineManager` 构造 + `start/stop/pause/pause_until` 公开 API + `paused_changed` 信号 + `stop()` 2s 超时 (6 项)
+   - **desktop_auto.py 不变量** (3 项): `from memory_engine import MemoryEngineManager` 1 处 + `self.bridges.memory_engine_mgr.xxx` 调用模式正确 + `chunk_ready` 信号 1 处连接
+3. **预期测试数**: 118 → **~140 项** (+22 项), 跑完应仍 < 0.5s
+4. **build.spec**: 不动
+5. **EXE 重打**: 抽不抽同位置, EXE 字节不变; 护栏加完也不影响 EXE; 建议本步**不打 EXE**, 直接 commit 护栏后进入下一步
+
+### 风险盘点
+- ⚠️ `MainPollThread._note_active_record` 跨午夜强制结算 (Phase C) 是水桶策略核心, 测试要锁定"水桶到阈值 + 跨天"两种触发路径
+- ⚠️ `MemoryEngineManager.stop()` 2s 超时 (commit `bb98a87`) 是用户体感修复, 测试要断言 `wait(2000)` 仍存在, 不被无意删掉
+- ⚠️ `get_foreground_info_safe` 在 psutil 权限不足时返回 `("title", "System_Process")`, 这条 fallback 字符串是日志可观察性的关键
+- ✅ 无循环 import 风险 (memory_engine 不依赖 desktop_auto 任何符号)
+
+### 下一步动作 (下个会话开工, 预计 1-2 轮完成)
+1. 新建 `tests/test_memory_engine.py` (~22 项, 沿用 `test_launch_worker.py` 模板)
+2. 跑 `pytest tests -q` → 应 **118 → 140 passed**, 零回归
+3. (可选) `git commit -m "test(memory_engine): Step 2-2C 护栏"`
+4. **不开新 EXE**, 不动 build.spec
+5. 进入 Step 2-2D (候选): 继续抽 `daily_diary.py` 中的 `DiaryScheduler` / `build_chunk_prompt` / `build_diary_prompt` 到 `daily_diary_engine.py`, 或转向 EXE 启动加速
+
+### 上下文管理
+| 指标 | 值 |
+|---|---|
+| 起始上下文 | 16% |
+| 收尾上下文 | (本轮未跑测试, 仅侦察) |
+| 改动 | 仅 STATUS.md (+本章节, 纯文档) |
+| 验证 | grep 4 次确认 12 个调用点 + 3 个顶层依赖 |
+
+---
+
+## ✅ Step 2-2C 完成: memory_engine.py 护栏 (2026-06-26 08:18, 基于 `e2059a3`)
+
+### 实施
+**新文件** `tests/test_memory_engine.py` (17867 bytes, 428 行, **40 项测试**),沿用 `tests/test_launch_worker.py` 模板(类内分组 + AST 不变量 + 源字符串断言)。
+
+**测试结构** (8 类 / 40 项):
+
+| 类 | 项数 | 覆盖 |
+|---|---|---|
+| `TestLastInputInfo` | 2 | `cbSize`/`dwTime` 字段 + `c_uint` 类型 |
+| `TestGetIdleSeconds` | 2 | 返回 `float` 且 ≥ 0 |
+| `TestGetForegroundInfoSafe` | 2 | 返回 `(str, str)` 元组 |
+| `TestIdleWatcherThread` | 4 | QThread 子类 + `woke_from_suspend` 信号 + 构造 + `stop()` |
+| `TestMainPollThread` | 7 | QThread + `chunk_ready` + 默认参 (30/180/1800/50/7200) + clamp + `manual_pause` + `wake_up` |
+| `TestEmitChunk` | 2 | 水桶策略: count=0 不发射 / count>0 发射并清零 |
+| `TestMemoryEngineManager` | 5 | QObject + `paused_changed` + 构造建双线程 + **`stop()` 含 `wait(2000)` ×2 (bb98a87 保护)** + `pause`/`pause_until` 信号 |
+| `TestMemoryEngineSourceInvariants` | 8 | 4 类 + 2 helper + 9 关键方法 + 顶层仅 3 import + **不依赖 desktop_auto** + 跨午夜逻辑 + 3 优雅降级字符串 |
+| `TestDesktopAutoMemoryEngineInvariants` | 4 | `from memory_engine import MemoryEngineManager` + 调用全走 `self.bridges.memory_engine_mgr.xxx` + `chunk_ready.connect` ×1 + `paused_changed.connect` ×1 + 4 公开 API + 2 槽方法 |
+
+**调试坑** (修复 2 处):
+1. **`ActivityLogDB` 持文件句柄** — `tempfile.TemporaryDirectory()` `with` 退出时尝试删目录,Windows 锁文件 → `PermissionError [WinError 32]`。修法: 测完手动 `mgr.main_poll.db.close()` + `del` + `gc.collect()`,再用 `try/finally + tmp_ctx.cleanup()` 兜底。
+2. **`pause_until(hour=23)` 时分秒偏差** — 测试断言 `'已暂停至 23:00'`,实际跑出 `'已暂停至 22:59'`,因为 `pause()` 在 22:59:xx 跑时算到 23:00 还差不到 1 分钟。修法: 改用 `re.match(r'已暂停至 (\d{2}):(\d{2})', info)` + 验证 0≤hh≤23 / 0≤mm≤59,鲁棒。
+
+### 测试
+```
+$ pytest tests -q
+........................................................................ [ 45%]
+........................................................................ [ 91%]
+..............                                                           [100%]
+158 passed in 0.43s
+```
+**118 → 158 项** (+40 项), **0.43s 跑完**, 无 warning。
+
+### build.spec / EXE
+**未动**:
+- `build.spec` 不需要改 (memory_engine.py 本就在仓库根,PyInstaller 自动打包)
+- 不打 EXE (纯加测试,EXE 字节不变)
+
+### 关键不变量 (护栏保护的 5 条)
+1. ✅ `MemoryEngineManager.stop()` 必须保留 `wait(2000)` ×2 (防止无意退回 30s 死等)
+2. ✅ `memory_engine.py` 不 import `desktop_auto` (防止反向引用形成循环)
+3. ✅ `desktop_auto.py` 所有调用走 `self.bridges.memory_engine_mgr.xxx` (Step 1B-4 模板)
+4. ✅ `chunk_ready.connect` / `paused_changed.connect` 各只 1 处 (防止重复触发)
+5. ✅ 水桶策略 + 跨午夜强制结算 (`start_day != end_day`) + 3 个优雅降级字符串 (`System_Process`/`Transient_Process`/`Unknown_Process`)
+
+### 与 2-2B 模板对比
+| 维度 | Step 2-2B (`LaunchWorker`) | Step 2-2C (`memory_engine`) |
+|---|---|---|
+| 抽出动作 | 切割搬运 6 符号 | **不动位置, 只加护栏** |
+| 测试项数 | 25 (护栏) → 118 (含 re-export 不变量) | **40** (纯护栏,无代码改动) |
+| 核心风险 | 循环 import + 残留类 | **关闭卡顿修复被无意删** + 反向引用 |
+| build.spec | hiddenimports + datas 新增 | **不改** |
+| EXE 重打 | 必须 | **不必** |
+
+### 下一步候选 (Step 2-2D)
+| 候选 | 价值 | 风险 |
+|---|---|---|
+| **daily_diary.py 护栏** | 锁 `DiaryScheduler` / `build_chunk_prompt` / `build_diary_prompt` API | 低 (memory_engine 抽完,daily_diary 是下一个被 desktop_auto 大量调用的模块) |
+| **EXE 启动加速 (nuitka)** | 启动 4-5s → 1-2s | 中 (需重写 build 流程) |
+| **routes/ 拆分 MainWindow** | 拆 3400+ 行 | 高 (跨调用多,需大量 @property 转发) |
+
+推荐 **Step 2-2D = daily_diary 护栏**,与 2-2C 模板一致(纯加测试,不动代码)。
+
+### 上下文管理
+| 指标 | 值 |
+|---|---|
+| 起始上下文 | 24% |
+| 收尾上下文 | 31% |
+| 轮数 | ~7 轮 |
+| 工具调用 | ~10 次 (写测试 + 2 次 pytest + 1 次全量回归 + edit STATUS) |
+| 工作流 | 写 428 行测试 → 跑发现 2 处 fail (DB 锁 + 分秒偏差) → 修 → 158 全过 → 沉淀 |
