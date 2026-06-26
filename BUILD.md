@@ -24,11 +24,26 @@ pyinstaller --clean build_mcp.spec
 
 产物: `dist/workflow-mcp-server.exe` (约 70 MB)
 
+### 产物命名规范(必须遵守)
+
+dist 目录下所有 exe **必须**使用以下格式:
+
+```
+desktop-auto-v{YYYY.MM.DD-HHMM}-g{short_hash}.exe
+```
+
+例: `desktop-auto-v2026.06.26-0837-g08a6571.exe`
+
+- 命名由 `build.spec` 自动生成(`_git_short_hash()` + `datetime.now()`)
+- `BUILD_EXE_NAME` 环境变量可显式覆盖(CI/手动发布场景)
+- **前提**: build 前必须先 commit,否则 short hash 与 exe 实际内容会脱节
+- 旧硬编码名 `桌面自动化助手.exe` 已废弃(2026-06-26 commit 6c218e9)
+
 ## 输出文件
 
 | 文件 | 大小 | 用途 |
 |------|------|------|
-| `桌面自动化助手.exe` | 64 MB | GUI 客户端,双击直接运行 |
+| `desktop-auto-v{date}-{time}-g{hash}.exe` | 121 MB | GUI 客户端,双击直接运行 |
 | `workflow-mcp-server.exe` | 70 MB | MCP Server,给 AI 客户端调用 |
 
 ## 分发
