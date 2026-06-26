@@ -33,6 +33,15 @@ THINKING_PATTERN = re.compile(
 )
 
 
+def strip_thinking(text: str) -> str:
+    """从 LLM 输出中剥掉 <think>...</think> / <thinking>...</thinking> 块。
+    双保险: 客户端正则过滤, 不依赖模型自觉。
+    """
+    if not text:
+        return ""
+    return THINKING_PATTERN.sub("", text).strip()
+
+
 def _parse_intent_lenient(raw: str) -> Optional[dict]:
     """双保险解析: 如果上游 parse_intent_response 仍返回 None, 本函数在
     assistant_core 内部再试一次宽容解析 (控制字符 + 尾部逗号)。"""
@@ -192,14 +201,15 @@ class AssistantCore:
                 reply = (parsed.get("reply") or "").strip()
                 args = parsed.get("args") or {}
 
+                # 过滤内部推理 (LLM 输出 <think>...</think> / <thinking>...</thinking>),
+                # 与 companion_bridge.py:367 同模板;先 strip 再去表情标签,避免 TTS 念出 [smile]
+                reply_no_think = strip_thinking(reply or "")
+                raw_no_think = strip_thinking(raw or "")
+
                 # 表情识别 (从 reply 和 raw 中提取;strip thinking 后再扫)
                 for m in EXPRESSION_PATTERN.findall(reply_no_think or raw_no_think or ""):
                     yield {"type": "expression", "hint": f"[{m}]"}
 
-                # 过滤内部推理 (LLM 输出 <think>...</think> / <thinking>...</thinking>),
-                # 与 companion_bridge.py:367 同模板;先 strip 再去表情标签,避免 TTS 念出 [smile]
-                reply_no_think = THINKING_PATTERN.sub("", reply or "").strip()
-                raw_no_think = THINKING_PATTERN.sub("", raw or "").strip()
                 clean_reply = EXPRESSION_PATTERN.sub("", reply_no_think).strip()
                 clean_raw_fallback = (
                     EXPRESSION_PATTERN.sub("", raw_no_think[:1000]).strip() if raw_no_think else ""

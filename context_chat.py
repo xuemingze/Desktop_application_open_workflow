@@ -434,6 +434,10 @@ def build_chat_system_prompt(web_enabled: Optional[bool] = None) -> str:
   1. 优先选择不在 backups 文件夹里的路径。
   2. 如果都有/都没有 backups，优先选 date_modified 最近的那条。
   3. 绝对不要列出所有结果让用户选，你必须自主做决定。
+- **【硬性禁止】绝对禁止在输出中包含 <think>...</think> 或 <thinking>...</thinking> 之类的内部推理/思考块。**
+  - 不管是 JSON 里的 reply 字段,还是 action 工具调用的上下文,都**不得**出现这类标签。
+  - 内部推理应当在你"内心"完成,直接产出最终结论/JSON 即可。
+  - 客户端会用正则强制剥离这类标签,但**你也必须从源头避免输出**,这是双保险。
 """
 
 
