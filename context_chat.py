@@ -852,13 +852,8 @@ class ContextChatTab(QWidget):
 
     def on_toast_clicked(self, intent):
         try:
-            if not getattr(self, "chk_log_toast_actions", None) or not self.chk_log_toast_actions.isChecked():
-                return
-            msg = getattr(intent, "message", "") or ""
-            sug = getattr(intent, "suggested_action", "") or ""
-            param = getattr(intent, "action_param", "") or ""
-            self._append_user(f"👆 点击了气泡 [操作: {sug}{' / ' + param if param else ''}]\n原消息: {msg}")
-            # 举手:把气泡文案以 AI 身份写进 VTuber 后端 chat history(B+A 方案)
+            # 举手(把气泡文案以 AI 身份写进 VTuber 后端 chat history)放在门控之前
+            # —— 举手是核心交互,不应被"是否在 AI 对话页显示动作"的 checkbox 门控
             # 取主窗口的 _vtuber_bridge(由 MainWindow._init_vtuber_bridge 初始化)
             win = self.window()
             bridge = getattr(win, "_vtuber_bridge", None) if win else None
@@ -867,8 +862,16 @@ class ContextChatTab(QWidget):
                 self._append_log(f"[举手] acknowledge_ai_message OK={ok}")
             else:
                 self._append_log("[举手] 桥接未就绪,跳过 ack")
-            # UI 反馈:本地 chat 标记已举手
+            # UI 反馈:本地 chat 标记已举手(也始终执行,与 checkbox 解耦)
             self._append_assistant(f"✅ 已举手 ✓ {intent.message}")
+
+            # 以下是受 chk_log_toast_actions 门控的"在 AI 对话页显示动作记录"逻辑
+            if not getattr(self, "chk_log_toast_actions", None) or not self.chk_log_toast_actions.isChecked():
+                return
+            msg = getattr(intent, "message", "") or ""
+            sug = getattr(intent, "suggested_action", "") or ""
+            param = getattr(intent, "action_param", "") or ""
+            self._append_user(f"👆 点击了气泡 [操作: {sug}{' / ' + param if param else ''}]\n原消息: {msg}")
         except Exception as e:
             self._append_system(f"❌ on_toast_clicked 出错: {e}")
 
