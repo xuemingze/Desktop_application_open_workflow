@@ -723,3 +723,81 @@ $ pytest tests -q
 | 轮数 | ~7 轮 |
 | 工具调用 | ~10 次 (写测试 + 2 次 pytest + 1 次全量回归 + edit STATUS) |
 | 工作流 | 写 428 行测试 → 跑发现 2 处 fail (DB 锁 + 分秒偏差) → 修 → 158 全过 → 沉淀 |
+
+---
+
+## 🐛 Bug 修复: VTuber 对话泄露 `<thinking>` 块 (2026-06-26 08:25, 基于 `dadcd0c`)
+
+### 症状 (用户截图)
+用户与 VTuber 对话时, LLM 输出流被原样显示, 包含一整段 `<thinking>...</thinking>` 推理内容, 体感差。例:
+```
+<thinking>
+用户说"哈哈 那我给你一个小目标..."
+我应该:1. 友好地回应...
+</thinking>
+
+{
+  "action": null,
+  "reply": "哈哈,太有意思了!..."
+}
+```
+**用户期望**: `<thinking>` 块**不输出**, 只保留最终的 reply。
+
+### 根因分析
+读 `assistant_core.py:150-275` (`process_chat_request`):
+
+| 位置 | 问题 |
+|---|---|
+| `assistant_core.py:180` | `_call_llm(messages)` 返回原文 `raw` (含 `<thinking>` 块) |
+| `assistant_core.py:185-187` | `parsed.get("reply")` 优先来自 LLM 输出, **没过滤 `<thinking>`** |
+| `assistant_core.py:194-198` | 只过滤 `[smile]` 表情标签, **没过滤 `<thinking>` 块** |
+| `assistant_core.py:215-218` | `clean_reply` / `clean_raw_fallback` 直接 yield 给 context_chat |
+| `context_chat.py:512-513` | `pending_text` 经 `thinking` 信号**原文**输出到 UI |
+
+**对比已有方案**: `companion_bridge.py:367-369` 已有过滤 `<think>...</think>` 的代码 (正则 `r'<think>[\s\S]*?</think>'`), 但只在 VTuber bridge 入口处过滤。**assistant_core 的 chat 路径未走 bridge, 所以绕过了这层防护**。
+
+### 修复
+**最小改动方案** (沿用 companion_bridge 模板, 不引入新依赖):
+
+1. **`assistant_core.py:29-32`** 新增 `THINKING_PATTERN` (CRLF 后):
+   ```python
+   THINKING_PATTERN = re.compile(
+       r"<think(?:ing)?>[\s\S]*?</think(?:ing)?>"
+   )
+   ```
+   (用 `(?:ing)?` 同时覆盖 `<think>` 和 `<thinking>` 两种标签)
+
+2. **`assistant_core.py:194-201`** 在表情过滤前先 strip thinking 块:
+   ```python
+   reply_no_think = THINKING_PATTERN.sub("", reply or "").strip()
+   raw_no_think = THINKING_PATTERN.sub("", raw or "").strip()
+   clean_reply = EXPRESSION_PATTERN.sub("", reply_no_think).strip()
+   ```
+
+3. **`assistant_core.py:191`** 表情识别行也用 strip 后的变量, 避免误把 think 块里的 `[smile]` 当表情。
+
+### 验证
+- ✅ `assistant_core.py` AST 语法通过 (13737 bytes, +534 bytes)
+- ✅ `pytest tests -q` → **158 passed in 0.42s**, 零回归
+- ✅ 手测用户截图原样输入 → `<thinking>` 块完整 strip, `{"action": null, ...}` JSON 保留
+- ✅ `<think>...</think>` 也覆盖 (与 companion_bridge 行为一致)
+- ✅ 普通文本无 think 块 → 原样保留 (无副作用)
+
+### 改动统计
+- `assistant_core.py`: 13,203 → **13,737 bytes** (+534 / +4%)
+- 新增 1 个 `THINKING_PATTERN` 常量 + 2 个 strip 变量 (`reply_no_think` / `raw_no_think`)
+- 0 个测试改动 (无 `tests/test_assistant_core.py`, 由 context_chat 现有测试覆盖)
+
+### 未做的事 (下个会话可考虑)
+- ⚠️ 现有 `tests/` 没有针对 `assistant_core` 的独立测试 (`tests/test_app_bridges.py` 等测的是桥接层), 这条 thinking 过滤路径目前**只有手测覆盖**, 可加 5-8 项 `tests/test_assistant_core.py` 锁死行为
+- ⚠️ system prompt 没明确禁止 `<thinking>` 标签, 若模型继续输出, 修复仍依赖本层 regex。建议在 system prompt 加 "**禁止输出 <think>...</think> / <thinking>...</thinking> 内部推理**" 强约束, 配合 regex 双保险
+- ⚠️ 未重打 EXE (单文件代码改动, 沿用 `desktop-auto-v2026.06.26-0723-g4da790c.exe` 仍可热修补丁, 但建议下次 build 时带上)
+
+### 上下文管理
+| 指标 | 值 |
+|---|---|
+| 起始上下文 | 38% |
+| 收尾上下文 | 42% |
+| 轮数 | ~15 轮 |
+| 工具调用 | ~25 次 (诊断 grep + 3 次字节脚本尝试 + AST/pytest 验证 + 手测) |
+| 工作流 | REPRODUCE (grep 定位泄露路径) → 字节脚本绕开 edit_file CRLF 坑 → 字符串级 replace → AST 验证 → 158 项回归 → 手测用户截图输入 → 沉淀 |
