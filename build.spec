@@ -4,9 +4,31 @@ PyInstaller spec for desktop_auto.py
 打包成单文件 exe,体积小、启动快
 """
 import os
+import subprocess
+from datetime import datetime
 from pathlib import Path
 
 block_cipher = None
+
+
+def _git_short_hash() -> str:
+    """读取 HEAD 的 7 位 short hash (build 时必须先 commit, 否则 exe 名会显示旧 hash)。"""
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+        ).decode("utf-8").strip()
+    except Exception:
+        return "unknown"
+
+
+# 默认 exe 命名: desktop-auto-v{date}-{time}-g{hash}.exe
+# 例: desktop-auto-v2026.06.26-0835-g08a6571.exe
+# 优先级: BUILD_EXE_NAME 环境变量 > 默认生成
+_DEFAULT_TAG = datetime.now().strftime("%Y.%m.%d-%H%M")
+_DEFAULT_HASH = _git_short_hash()
+_DEFAULT_EXE_NAME = f"desktop-auto-v{_DEFAULT_TAG}-g{_DEFAULT_HASH}.exe"
+
 
 # 收集 PySide6 的所有子模块,避免运行时 ImportError
 hiddenimports = [
@@ -176,9 +198,11 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    # 默认名 = 桌面自动化助手; build.bat/build.ps1 会重命名为 -vYYYY.MM.DD[-HHMM].exe
-    # 也可直接指定环境变量 BUILD_TAG=YYYY.MM.DD-HHMM 来一次性生成带 tag 的 EXE
-    name=os.environ.get('BUILD_EXE_NAME', '桌面自动化助手'),
+    # 默认名 = desktop-auto-v{date}-{time}-g{hash}.exe
+    # 例: desktop-auto-v2026.06.26-0835-g08a6571.exe
+    # 也可 export BUILD_EXE_NAME=... 覆盖 (CI/手动发布场景)
+    # 前提: build 前必须先 commit, 否则 short hash 与 exe 实际内容会脱节
+    name=os.environ.get('BUILD_EXE_NAME', _DEFAULT_EXE_NAME),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
