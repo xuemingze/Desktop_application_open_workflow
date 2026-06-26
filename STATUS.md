@@ -801,3 +801,72 @@ $ pytest tests -q
 | 轮数 | ~15 轮 |
 | 工具调用 | ~25 次 (诊断 grep + 3 次字节脚本尝试 + AST/pytest 验证 + 手测) |
 | 工作流 | REPRODUCE (grep 定位泄露路径) → 字节脚本绕开 edit_file CRLF 坑 → 字符串级 replace → AST 验证 → 158 项回归 → 手测用户截图输入 → 沉淀 |
+
+---
+
+## 📚 工程教训汇总 (来自 `/learn`, 持续沉淀)
+
+> 本章节按"症状 → 根因 → 解法 → 下次怎么避"格式,聚合多轮工程教训。
+> 新会话第一步先扫这一节,可避免 80% 的已知坑。
+
+### 教训 #1 — LLM thinking 块泄露到 UI/TTS
+- **症状**: 用户反馈 "模型把内部推理念出来了"
+- **根因**: Qwen/部分模型默认输出 `<think>...</think>` 或 `<thinking>...</thinking>` 块,assistant_core 只 strip 了 JSON 里的 `reply` 字段,没在事件流 yield 之前过滤
+- **解法 (双保险)**: 
+  - LLM 端: `build_chat_system_prompt` 规则块末尾追加「禁止输出 <think>/<thinking>」硬约束
+  - 客户端: `THINKING_PATTERN = re.compile(r"<think(?:ing)?>[\s\S]*?</think(?:ing)?>")` + 导出 `strip_thinking()` 函数
+- **下次怎么避**: 任何处理 LLM 输出的地方,先 `strip_thinking()` 再扫表情/JSON 解析;`assistant_core.process_chat_request` 流水线必须是 "先 strip → 再扫表情 → 再去表情标签"
+- **坑**: 原代码在 `for m in EXPRESSION_PATTERN.findall(reply_no_think...)` 时 `reply_no_think` 尚未定义,触发 `UnboundLocalError` —— 写新流水线时**严格按使用顺序**声明变量
+
+### 教训 #2 — exe 命名必须用 `desktop-auto-v{date}-{time}-g{hash}.exe` 格式
+- **症状**: 4 个历史产物都用规范名,1 个新产物用硬编码 `桌面自动化助手.exe`,`dist/` 目录命名风格割裂,无法一眼看出 exe 对应哪个 commit
+- **根因**: `build.spec:181` 写死 `name='桌面自动化助手'`,且只支持 `BUILD_EXE_NAME` 覆盖,无自动生成
+- **解法**: `build.spec` 头部新增 `_git_short_hash()` + `_DEFAULT_EXE_NAME`,默认按 `desktop-auto-v{YYYY.MM.DD-HHMM}-g{short_hash}.exe` 自动生成,`BUILD_EXE_NAME` 可覆盖
+- **下次怎么避**: 任何 PyInstaller spec 的 `EXE.name` **必须**自动注入版本号,绝不写死硬编码名;`build.spec` 顶部预留 `_DEFAULT_EXE_NAME` 模板
+- **铁律**: build 前必须先 commit,否则 short hash 与 exe 实际内容脱节
+- **测试锁死**: `tests/test_assistant_core.py` 含 7 类 15 项断言保护 thinking 行为;exe 命名规范目前靠 `BUILD.md`「产物命名规范」小节 + code review
+
+### 教训 #3 — `edit_file` 工具的换行符陷阱
+- **症状**: `edit_file` 报 "old_string not found",但 `read_file` 明明能看到
+- **根因**: `build.spec` 实际用 `\r\r\n` (双 CR + LF) 换行;PowerShell/某些编辑器在编辑过程中会插入额外 CR;`read_file` 工具显示的 `\n` 是逻辑换行,不是实际字节
+- **解法**: 用 Python 一次性 `pathlib.Path('build.spec').read_bytes()` + bytes 替换,绕开换行符歧义
+- **下次怎么避**: 涉及"非标换行 / 混合编码"文件(如本项目某些 .spec/.yaml),**优先**用 Python 字节级脚本替换;`edit_file` 只在标准 LF/CRLF 文件上用
+- **标志**: 如果一次 `edit_file` 失败 + `read_file` 能看到内容 + 文件含中文 → **立刻**切字节级脚本,别再试 `edit_file` 第 2 次
+
+### 教训 #4 — commit → build 的铁律顺序
+- **症状**: 改了源码后先 build 再 commit,导致 `build.bat` 用 git short hash 命名 exe 时,exe 名显示新 hash 但里面装的是旧代码 (因为 working tree 未 commit 时 hash 是 HEAD 的)
+- **解法**: 严格顺序 `改源码 → 测试 → commit → build → 杀进程 → 启新 exe`,**任何**顺序错乱都视为事故
+- **下次怎么避**: 写 `/work` 任务的最后一步必须是 `git commit`,再 `pyinstaller`;`build.spec` 顶部加注释提醒
+
+### 教训 #5 — `git commit -m "..."` 中文 + cmd 嵌套的坑
+- **症状**: 在 cmd.exe 里 `git commit -m "中文带 2>&1"` 失败,git 把 `2>&1` 后的字串当成 pathspec
+- **解法**: 用临时文件 + `git commit -F __commit_msg.txt`,或者在 PowerShell 里跑
+- **下次怎么避**: 中文 commit message + 复杂 shell 重定向 → 走临时文件流,别直接 `-m`
+
+### 教训 #6 — diagnose "AI 输出不对" 先看 tool_call 参数
+- **症状**: 用户报 "模型返回假数据"
+- **根因**: 不是模型幻觉,是工具调用参数错 (如路径 `/root/Desktop` 不存在于 Windows)
+- **下次怎么避**: 诊断 AI 输出异常时,**第一步**看 tool_call 的 args 是否合理 (路径/参数/编码),再考虑模型本身
+
+### 教训 #7 — 子进程 patch 必须在入口脚本顶部
+- **症状**: "TTS 闪屏回归" — `CREATE_NO_WINDOW` patch 没生效
+- **根因**: 多个 Python 环境 (`.venv` 3.11 + UV Python 3.12) 混用,`vtuber_backend_manager._get_venv_python()` 返回错路径,启动的子进程没在 patch 所在脚本
+- **下次怎么避**: 改子进程行为 (CREATE_NO_WINDOW / 进程优先级 / 环境变量) 前,先 `which python` / `sys.executable` 确认入口解释器与生产一致
+
+### 教训 #8 — retry 装饰器的正确设计
+- **症状**: "工具调用 retry 装饰器" 实现失败回滚 (commit 229ac76)
+- **三个根因**:
+  1. tool 名字写错 "read_file" 应为 "read_file_content"
+  2. 默认 2 retries 太激进,应该默认 0 (opt-in)
+  3. `time.sleep(0.3)` 阻塞 event loop
+- **下次怎么避**: 加 retry 装饰器必须 — 用 `TOOL_DISPATCH.keys()` 自动探测工具名;默认 `retries=0`;只覆盖幂等操作 (SQLite 写);用 `concurrent.futures` + `future.result(timeout=5)`
+
+### 教训 #9 — 字节级批量替换比逐次 `edit_file` 高效
+- **症状**: 12+ 次 `edit_file` 失败 + 反复 read 上下文,30+ 轮才改完一个文件
+- **解法**: 写一个一次性 Python 脚本,`read_bytes` → 内存替换 → `write_bytes`,1 次 tool call 搞定
+- **下次怎么避**: 当需要做 ≥3 次相似 edit 时,优先写字节级脚本;`edit_file` 留给"小而明确"的微调
+
+### 教训 #10 — 双 CR (\r\r\n) 是 Windows 中文项目的隐藏地雷
+- **症状**: `read_file` 显示正常,`edit_file` 一直找不到 `old_string`
+- **根因**: 项目里部分文件被 PowerShell 编辑时插入了额外 CR,变成 `\r\r\n`
+- **下次怎么避**: 编辑 build.spec / 大型 yaml 前,先 `read_bytes` + hex dump 头 200 字节确认换行符类型;非标就用字节脚本
