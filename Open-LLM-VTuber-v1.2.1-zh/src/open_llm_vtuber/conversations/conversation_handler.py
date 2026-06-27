@@ -68,13 +68,6 @@ async def handle_conversation_trigger(
         # 客户端举手/确认 AI 已说过的话 —— 只写 chat history,不触发新一轮 LLM
         # (避免用户在没说话的情况下被强制收到 AI 续说)
         assistant_text = data.get("text", "") or ""
-        # 诊断日志:暴露 raw payload,便于排查 text 为空的根因
-        logger.warning(
-            f"[assistant-message DEBUG] raw keys={list(data.keys())} "
-            f"text={assistant_text!r} (len={len(assistant_text)}) "
-            f"has_history_uid={bool(context.history_uid)} "
-            f"client_uid={client_uid}"
-        )
         # 回退 history_uid: 当前 context 没有就借用 client_contexts 里任意一个
         target_history_uid = context.history_uid
         target_conf_uid = context.character_config.conf_uid
@@ -83,9 +76,6 @@ async def handle_conversation_trigger(
                 if ctx.history_uid:
                     target_history_uid = ctx.history_uid
                     target_conf_uid = ctx.character_config.conf_uid
-                    logger.warning(
-                        f"[assistant-message] 借用其他客户端的 history_uid={target_history_uid} (client_uid={uid})"
-                    )
                     break
         if assistant_text and target_history_uid:
             store_message(
