@@ -1132,7 +1132,8 @@ class ContextTab(QWidget):
             suggested_action="open_chat",
             action_param=q.category,
         )
-        self._toast_manager.show_toast(intent)
+        if self._should_show_local_toast():
+            self._toast_manager.show_toast(intent)
         self.toast_broadcast.emit(intent)
 
         # VTuber 桥接事件转发（主动嗅探结果 — 助理模式）
@@ -1362,6 +1363,19 @@ class ContextTab(QWidget):
                 self._append_log(f"[VTuber] push_notification 失败: {text[:30]}")
             return ok
         return False
+
+    def _should_show_local_toast(self) -> bool:
+        """检查配置:是否显示桌面端气泡(与 VTuber 前端弹窗重复时可关闭)"""
+        try:
+            from data_paths import USER_DATA_DIR
+            cfg_path = USER_DATA_DIR / "config.json"
+            if cfg_path.exists():
+                import json as _json
+                cfg = _json.loads(cfg_path.read_text(encoding="utf-8"))
+                return bool(cfg.get("vtuber_show_local_toast", True))
+        except Exception:
+            pass
+        return True
 
     # ---- 路径管理 ----
     def _on_add_path(self):

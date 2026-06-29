@@ -82,6 +82,9 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
     _backend = None
     _backend_model = "desktop-auto-v1"  # 实际模型名，由 desktop_auto 注入
 
+    # 桌面气泡点击回调（由 desktop_auto 设置,收到浏览器通知点击时调用）
+    toast_click_callback = None
+
     def _send_json(self, status_code: int, data: dict) -> None:
         self.send_response(status_code)
         self.send_header("Content-type", "application/json; charset=utf-8")
@@ -170,6 +173,8 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
                 self._send_json(401, {"ok": False, "error": "Unauthorized"})
                 return
             self._handle_run_workflow()
+        elif self.path == "/api/toast_click":
+            self._handle_toast_click()
         elif self.path == "/v1/chat/completions":
             self._handle_chat_completions()
         else:
@@ -293,6 +298,22 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "model": model, "message": f"后端已重载: {model}"})
         else:
             self._send_json(200, {"ok": False, "model": model, "message": "配置未变化或读取失败"})
+
+    def _handle_toast_click(self) -> None:
+        """浏览器通知弹窗被点击 → 触发桌面助手的 AI 小对话"""
+        cb = CompanionAPIHandler.toast_click_callback
+        if cb:
+            try:
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("utf-8")
+                import json as _json
+                data = _json.loads(body) if body.strip() else {}
+                text = data.get("text", "")
+            except Exception:
+                text = ""
+            cb(text)
+            self._send_json(200, {"ok": True})
+        else:
+            self._send_json(200, {"ok": False, "error": "toast_click_callback not set"})
 
     def _handle_chat_completions(self) -> None:
         """处理 OpenAI 兼容的 /v1/chat/completions 请求"""

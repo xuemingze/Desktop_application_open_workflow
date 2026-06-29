@@ -338,6 +338,13 @@ class ToolsTab(QWidget):
         self.chk_vtuber_enabled.toggled.connect(self._on_vtuber_enabled_toggle)
         vtuber_v.addWidget(self.chk_vtuber_enabled)
 
+        # 隐藏桌面气泡开关（VTuber 弹窗和桌面气泡同时存在显重复）
+        self.chk_vtuber_local_toast = QCheckBox("显示桌面气泡")
+        self.chk_vtuber_local_toast.setToolTip("关闭后,VTuber 推送将不再弹出桌面气泡,仅显示 VTuber 网页端弹窗。")
+        self.chk_vtuber_local_toast.setChecked(True)
+        self.chk_vtuber_local_toast.toggled.connect(self._on_vtuber_local_toast_toggle)
+        vtuber_v.addWidget(self.chk_vtuber_local_toast)
+
         url_row = QHBoxLayout()
         url_row.addWidget(QLabel("后端地址"))
         self.edit_vtuber_url = QLineEdit()
@@ -1389,6 +1396,11 @@ exit /b 0
             main_win._update_vtuber_config(cfg)
         self._refresh_vtuber_status()
 
+    def _on_vtuber_local_toast_toggle(self, checked: bool) -> None:
+        cfg = self._load_global_config()
+        cfg["vtuber_show_local_toast"] = bool(checked)
+        self._save_global_config(cfg)
+
     def _on_vtuber_url_changed(self, text: str) -> None:
         cfg = self._load_global_config()
         cfg["vtuber_backend_url"] = text.strip()
@@ -1522,4 +1534,9 @@ exit /b 0
             self.lbl_vtuber_status.setStyleSheet("color: #16a34a; font-size: 11px;")
         else:
             self.lbl_vtuber_status.setText("状态: 已禁用")
+
+        # 恢复桌面气泡开关状态
+        show_local = cfg.get("vtuber_show_local_toast", True)
+        if hasattr(self, "chk_vtuber_local_toast"):
+            self.chk_vtuber_local_toast.setChecked(bool(show_local))
             self.lbl_vtuber_status.setStyleSheet("color: #666; font-size: 11px;")

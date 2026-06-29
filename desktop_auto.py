@@ -1,2590 +1,2605 @@
-"""
-
-桌面自动化助手 (PySide6)
-
-
-
-功能:
-
-1. 扫描桌面所有 .lnk 快捷方式
-
-2. 选中后:既支持「直接启动」(稳定),也支持「图像识别点击」(通用)
-
-3. 图像识别支持多模板(普通/悬停/选中),Win10 高 DPI / 多屏兼容
-
-4. 程序启动后用 pywinauto 等窗口就绪,不再硬 sleep
-
-5. 自带截图框选工具,可以直接把桌面图标保存为模板
-
-6. 操作日志实时显示在 UI 中
-
-
-
-依赖:
-
-    pip install PySide6 pyautogui pillow pyperclip pywinauto opencv-python pywin32
-
-"""
-
-
-
-from __future__ import annotations
-
-
-
-import os
-
-import sys
-
-import json
-
-from pathlib import Path
-
-
-
-# 确保脚本所在目录在 sys.path 首位 (便携 Python/无 GUI CLI 模式也需要)。
-
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-if _SCRIPT_DIR not in sys.path:
-
-    sys.path.insert(0, _SCRIPT_DIR)
-
-
-
-# 数据目录必须在任何自定义模块 import 前解析，否则子模块会先读到旧默认路径。
-
-from data_paths import RUNTIME_DIR, USER_DATA_DIR, DEFAULT_USER_DATA_DIR, MIGRATION_PENDING_FILE, normalize_data_dir_target, resolve_user_data_dir
-
-
-
-# 提前 import 非 GUI 辅助模块；GUI 面板必须懒加载，避免打包启动阶段崩溃。
-
-# PyInstaller 依赖收集由 build.spec hiddenimports 负责。
-
-# MCP 只在 --mcp 模式或工具页实际需要时懒加载。
-
-import backup  # noqa: F401
-
-from i18n import t  # noqa: F401
-
-from app_bridges import AppBridges  # Step 1B-1: 桥接状态集中容器
-
-from app_containers import AppContainers, UIState  # Step 1C-1: 持久化容器组
-# Step 2-2B: 启动 worker 类与数据模型抽到 launch_worker.py, 保持 re-export 让 from desktop_auto import LaunchWorker 仍可用
-from launch_worker import LaunchWorker, ShortcutInfo, _get_pyautogui, _resolve_sample_path
-
-
-
-import os
-
-import sys
-
-import time
-
-import ctypes
-
-import logging
-
-import json
-
-import subprocess
-
-import threading
-
-from pathlib import Path
-
-from dataclasses import dataclass, field
-
-from typing import Optional
-
-
-
-_SINGLE_INSTANCE_MEMORY = None
-
-_IPC_PIPE_NAME = r"\\.\pipe\desktop_auto_assistant_ipc"
-
-
-
-# 0. 环境自检: 缺包时用当前 python 自动装,避免 ModuleNotFoundError
-
-# 打包后 (PyInstaller) 不需要这个检查,直接跳过
-
-def _ensure_dependencies() -> None:
-
-    # 打包后冻结环境跳过: 没有 pip / 不能安装依赖
-
-    if getattr(sys, 'frozen', False):
-
-        return
-
-    import importlib.util
-
-    missing = []
-
-    for mod, pkg in [
-
-        ("pyautogui", "pyautogui"),
-
-        ("pyperclip", "pyperclip"),
-
-        ("win32com", "pywin32"),
-
-        ("PIL", "Pillow"),
-
-        ("PySide6", "PySide6"),
-
-        ("psutil", "psutil"),
-
-    ]:
-
-        if importlib.util.find_spec(mod) is None:
-
-            missing.append(pkg)
-
-    if missing:
-
-        print(f"[env] 缺依赖,自动安装: {missing}", flush=True)
-
-        try:
-
-            subprocess.check_call(
-
-                [sys.executable, "-m", "pip", "install", *missing],
-
-            )
-
-        except Exception as e:
-
-            print(f"[env] 自动安装失败: {e}\n请手动: pip install {' '.join(missing)}", flush=True)
-
-            sys.exit(1)
-
-
-
-_ensure_dependencies()
-
-# ============================================================
-
-# CLI 参数路由网关 (必须在任何 GUI 初始化之前执行)
-
-# ============================================================
-
-def _cli_router() -> None:
-
-    """
-
-    命令行参数路由网关
-
-
-
-    处理 --install-shortcut / --remove-shortcut 等无头任务,
-
-    执行完毕后直接 sys.exit(), 不加载 GUI。
-
-    """
-
-    args = [a.lower() for a in sys.argv[1:]]
-
-
-
-    if not args:
-
-        return
-
-
-
-    if any(a in args for a in ('--install-shortcut', '--install')):
-
-        _do_install_shortcut()
-
-        sys.exit(0)
-
-
-
-    if any(a in args for a in ('--remove-shortcut', '--uninstall')):
-
-        _do_remove_shortcut()
-
-        sys.exit(0)
-
-
-
-    if args and args[0] == '--write-data-dir-pointer':
-
-        target = sys.argv[2] if len(sys.argv) >= 3 else ""
-
-        source = sys.argv[3] if len(sys.argv) >= 4 else ""
-
-        _do_write_data_dir_pointer(target, source)
-
-        sys.exit(0)
-
-
-
-    if '--mcp' in args:
-
-        return
-
-
-
-    # --replace 是桌面快捷方式入口: 先关闭旧实例,再启动新 GUI。
-
-
-
-    # 如果没有实例在运行,正常打开 GUI;如果已有实例,先关闭旧窗口再开新窗口。
-
-
-
-def _do_install_shortcut() -> None:
-
-    """在桌面创建快捷方式, 目标指向当前 EXE 并携带 --replace 参数"""
-
-    try:
-
-        import win32com.client
-
-        desktop = Path.home() / "Desktop"
-
-        exe_path = sys.executable
-
-        icon_path = Path(__file__).parent / "app_icon.ico"
-
-
-
-        shell = win32com.client.Dispatch("WScript.Shell")
-
-
-
-        shortcut_path = desktop / "桌面助手.lnk"
-
-        sc = shell.CreateShortCut(str(shortcut_path))
-
-        sc.TargetPath = str(exe_path)
-
-        sc.Arguments = "--replace"
-
-        sc.WorkingDirectory = str(Path(exe_path).parent)
-
-        if icon_path.exists():
-
-            sc.IconLocation = str(icon_path)
-
-        sc.Description = "桌面自动化助手"
-
-        sc.WindowStyle = 1
-
-        sc.save()
-
-        print(f"[CLI] 桌面快捷方式已创建: {shortcut_path}")
-
-    except Exception as e:
-
-        print(f"[CLI] 创建快捷方式失败: {e}")
-
-def _do_write_data_dir_pointer(target: str, source: str = "") -> None:
-
-    """无 GUI 写入迁移指针；由 BAT 调用，确保 UTF-8 JSON 不被 cmd 编码破坏。"""
-
-    if not target:
-
-        raise SystemExit(2)
-
-    target_path = normalize_data_dir_target(target)
-
-    source_path = Path(source).expanduser().resolve() if source else DEFAULT_USER_DATA_DIR
-
-    payload = json.dumps({"path": str(target_path)}, ensure_ascii=False, indent=2)
-
-    for d in [DEFAULT_USER_DATA_DIR, target_path, source_path]:
-
-        try:
-
-            d.mkdir(parents=True, exist_ok=True)
-
-            (d / "data_dir.json").write_text(payload, encoding="utf-8")
-
-            (d / ".moved_to").write_text(str(target_path), encoding="utf-8")
-
-        except Exception as e:
-
-            print(f"[CLI] 写指针失败 {d}: {e}", flush=True)
-
-    try:
-
-        pending = target_path / MIGRATION_PENDING_FILE
-
-        if pending.exists():
-
-            pending.unlink()
-
-    except Exception:
-
-        pass
-
-    print(f"[CLI] data dir pointer => {target_path}", flush=True)
-
-
-
-
-
-def _do_remove_shortcut() -> None:
-
-    """删除桌面快捷方式"""
-
-    desktop = Path.home() / "Desktop"
-
-    shortcut_path = desktop / "桌面助手.lnk"
-
-    if shortcut_path.exists():
-
-        shortcut_path.unlink()
-
-        print(f"[CLI] 已删除: {shortcut_path}")
-
-    else:
-
-        print(f"[CLI] 快捷方式不存在: {shortcut_path}")
-
-def _do_silent_task(args: list[str]) -> None:
-
-    """静默执行任务模式 (预留)。当前作为桌面快捷方式启动入口。"""
-
-    print("[CLI] 静默任务模式启动")
-
-    print("[CLI] 静默任务完成")
-
-
-
-
-
-def _forward_to_running_instance(argv: list[str]) -> bool:
-
-    """已有实例运行时,通过命名管道把任务发送给主实例。"""
-
-    payload = {
-
-        "argv": argv,
-
-        "cwd": os.getcwd(),
-
-        "pid": os.getpid(),
-
-        "time": time.time(),
-
-    }
-
-    data = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
-
-    try:
-
-        import win32file
-
-        import win32pipe
-
-
-
-        # 等待主实例管道就绪,最多 1.5s
-
-        try:
-
-            win32pipe.WaitNamedPipe(_IPC_PIPE_NAME, 1500)
-
-        except Exception:
-
-            pass
-
-        handle = win32file.CreateFile(
-
-            _IPC_PIPE_NAME,
-
-            win32file.GENERIC_WRITE,
-
-            0,
-
-            None,
-
-            win32file.OPEN_EXISTING,
-
-            0,
-
-            None,
-
-        )
-
-        try:
-
-            win32file.WriteFile(handle, data)
-
-        finally:
-
-            win32file.CloseHandle(handle)
-
-        print("[单实例] 已通过命名管道转发任务")
-
-        return True
-
-    except Exception as e:
-
-        print(f"[单实例] 命名管道转发失败,回退到前台激活: {e}")
-
-        return _activate_existing_window()
-
-
-
-
-
-def _activate_existing_window() -> bool:
-
-    """回退方案: 找到主窗口并切到前台。"""
-
-    try:
-
-        import win32con
-
-        import win32gui
-
-
-
-        title_keyword = "桌面自动化助手"
-
-        matches = []
-
-
-
-        def enum_handler(hwnd, _):
-
-            if not win32gui.IsWindowVisible(hwnd):
-
-                return
-
-            title = win32gui.GetWindowText(hwnd)
-
-            if title_keyword in title:
-
-                matches.append(hwnd)
-
-
-
-        win32gui.EnumWindows(enum_handler, None)
-
-        if not matches:
-
-            print("[单实例] 未找到已运行窗口")
-
-            return False
-
-
-
-        hwnd = matches[0]
-
-        try:
-
-            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-
-        except Exception:
-
-            pass
-
-        try:
-
-            win32gui.SetForegroundWindow(hwnd)
-
-        except Exception:
-
-            pass
-
-        print(f"[单实例] 已切换到窗口: {win32gui.GetWindowText(hwnd)}")
-
-        return True
-
-    except Exception as e:
-
-        print(f"[单实例] 前台激活失败: {e}")
-
-        return False
-
-
-
-
-
-# ============================================================
-
-# 单实例锁 (QSharedMemory)
-
-# ============================================================
-
-def _try_acquire_single_instance() -> bool:
-
-    """
-
-    尝试获取单实例锁。
-
-    返回 True 表示当前进程是主实例, 可以继续加载 GUI。
-
-    返回 False 表示已有主实例在运行, 当前进程应退出。
-
-    """
-
-    try:
-
-        from PySide6.QtCore import QSharedMemory, QSystemSemaphore
-
-
-
-        semaphore = QSystemSemaphore("desktop_auto_semaphore", 1)
-
-        semaphore.acquire()
-
-
-
-        shared_mem = QSharedMemory("desktop_auto_single_instance")
-
-        if shared_mem.attach():
-
-            semaphore.release()
-
-            return False
-
-
-
-        if not shared_mem.create(1):
-
-            # 极少数情况下 create 失败但并非已有实例,保守允许启动,避免锁异常导致打不开。
-
-            semaphore.release()
-
-            return True
-
-        # 必须挂到模块全局变量上,否则 QSharedMemory 对象被回收后锁会释放。
-
-        global _SINGLE_INSTANCE_MEMORY
-
-        _SINGLE_INSTANCE_MEMORY = shared_mem
-
-        semaphore.release()
-
-        return True
-
-    except Exception:
-
-        return True
-
-_cli_router()
-
-import pyperclip
-
-import win32com.client
-
-from PIL import Image
-
-from PySide6.QtCore import Qt, QRect, QPoint, QThread, Signal, QTimer
-
-from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QGuiApplication, QAction, QIcon
-
-from PySide6.QtWidgets import (
-
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-
-    QPushButton, QListWidget, QListWidgetItem, QLabel, QTextEdit,
-
-    QFileDialog, QMessageBox, QStatusBar, QGroupBox, QRadioButton,
-
-    QButtonGroup, QCheckBox, QSpinBox, QLineEdit, QComboBox, QInputDialog,
-
-    QSystemTrayIcon, QMenu, QProgressDialog, QSizePolicy, QScrollArea, QFrame,
-
-)
-
-
-
-# ---------------------------------------------------------------------------
-
-# 1. Windows DPI / 多屏 初始化(必须在 QApplication 之前)
-
-# ---------------------------------------------------------------------------
-
-# PySide6 6.x 默认自动管理 DPI awareness,不需要手动调 SetProcessDpiAwareness。
-
-# 手动调反而会与 Qt 内部冲突,报 "SetProcessDpiAwarenessContext() failed: 拒绝访问"。
-
-# 如果需要高 DPI 缩放策略,在 QApplication 创建后用 Qt.AA_EnableHighDpiScaling 即可
-
-# (PySide6 6.x 默认就开启)。这里仅在环境变量不存在时才做兑底。
-
-def _setup_dpi() -> None:
-
-    try:
-
-        import os as _os
-
-        # PySide6 自带高 DPI 缩放, 6.0+ 是默认的。不需要手动调 shcore/user32。
-
-        # 如果是反复重启 (该进程已被 set 过), 调用 SetProcessDpiAwareness 会 拒绝访问, 直接跳过。
-
-        pass
-
-    except Exception:
-
-        pass
-
-
-
-_setup_dpi()
-
-
-# ---------------------------------------------------------------------------
-
-# 2. 日志
-
-# ---------------------------------------------------------------------------
-
-logging.basicConfig(
-
-    level=logging.INFO,
-
-    format="%(asctime)s [%(levelname)s] %(message)s",
-
-    datefmt="%H:%M:%S",
-
-)
-
-log = logging.getLogger("desktop_auto")
-
-
-
-
-
-# ---------------------------------------------------------------------------
-
-# 3. 数据模型
-
-# ---------------------------------------------------------------------------
-
-# 4. 桌面快捷方式扫描
-
-# ---------------------------------------------------------------------------
-
-def get_real_desktop() -> Path:
-
-    """通过注册表取真实桌面路径(支持 OneDrive 重定向 / 多用户)"""
-
-    try:
-
-        from winreg import HKEY_CURRENT_USER, OpenKey, QueryValueEx
-
-        with OpenKey(
-
-            HKEY_CURRENT_USER,
-
-            r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
-
-        ) as k:
-
-            return Path(QueryValueEx(k, "Desktop")[0])
-
-    except Exception:
-
-        return Path(os.environ["USERPROFILE"]) / "Desktop"
-
-
-
-
-
-def scan_desktop_shortcuts() -> list[ShortcutInfo]:
-
-    """扫描桌面所有 .lnk 快捷方式,容错处理每个文件
-
-    + 追加自定义应用 (custom_apps.json)"""
-
-    desktop = get_real_desktop()
-
-    if not desktop.exists():
-
-        log.warning(f"桌面路径不存在: {desktop}")
-
-        return []
-
-
-
-    try:
-
-        shell = win32com.client.Dispatch("WScript.Shell")
-
-    except Exception as e:
-
-        log.error(f"WScript.Shell 初始化失败: {e}")
-
-        return []
-
-
-
-    out: list[ShortcutInfo] = []
-
-    for lnk in desktop.glob("*.lnk"):
-
-        try:
-
-            sc = shell.CreateShortCut(str(lnk))
-
-            info = ShortcutInfo(
-
-                name=lnk.stem,
-
-                target=sc.TargetPath or "",
-
-                lnk_path=str(lnk),
-
-                work_dir=sc.WorkingDirectory or "",
-
-            )
-
-            out.append(info)
-
-        except Exception as e:
-
-            log.warning(f"跳过 {lnk.name}: {e}")
-
-
-
-    # 追加用户自定义应用
-
-    for custom in load_custom_apps():
-
-        out.append(ShortcutInfo(
-
-            name=custom.get("name", Path(custom["target"]).stem),
-
-            target=custom.get("target", ""),
-
-            lnk_path="",  # 自定义不是快捷方式
-
-            work_dir=custom.get("work_dir", ""),
-
-        ))
-
-
-
-    # 加载快捷方式绑定元数据(launch_mode 等)
-
-    meta = load_shortcut_meta()
-
-    for sc in out:
-
-        key = _shortcut_key(sc)
-
-        item = meta.get(key) or {}
-
-        sc.launch_mode = item.get("launch_mode", "")
-
-        # 加载绑定坐标 (后续可在 run_action 里采用)
-
-        sc._coord_x = int(item.get("coord_x", 0) or 0)
-
-        sc._coord_y = int(item.get("coord_y", 0) or 0)
-
-        sc._click_type = item.get("click_type", "left_double")
-
-    return out
-
-
-
-
-
-# 迁移旧文件到新目录：只在显式调用时执行，禁止模块 import 时自动搬文件。
-
-def _migrate_old_file(old_path: Path) -> None:
-
-    if old_path.exists():
-
-        new_path = USER_DATA_DIR / old_path.name
-
-        if not new_path.exists():
-
-            try:
-
-                import shutil
-
-                shutil.copy2(old_path, new_path)
-
-                log.info(f"[迁移] {old_path.name} -> {USER_DATA_DIR}")
-
-            except Exception:
-
-                pass
-
-
-
-
-
-def migrate_legacy_runtime_files_once() -> None:
-
-    if USER_DATA_DIR.exists():
-
-        # 只兼容非常早期写在用户主目录的配置；不再从 exe/源码同级目录导入运行时文件，
-
-        # 避免迁移后又把旧 workflows/config/log 当成默认数据源。
-
-        _migrate_old_file(Path.home() / "context_aware_config.json")
-
-
-
-
-
-# 自定义应用管理
-
-CUSTOM_APPS_FILE = USER_DATA_DIR / "custom_apps.json"
-
-SAMPLES_DIR = USER_DATA_DIR / "samples"
-
-
-
-
-
-def _current_user_data_dir() -> Path:
-
-    """运行时动态读取当前数据目录，避免迁移后继续使用启动时缓存路径。"""
-
-    return resolve_user_data_dir()
-
-
-
-
-
-def _samples_dir() -> Path:
-
-    return _current_user_data_dir() / "samples"
-
-
-
-# 快捷方式绑定元数据: 存 launch_mode 等
-
-SHORTCUT_META_FILE = USER_DATA_DIR / "shortcut_meta.json"
-
-
-
-
-
-def _shortcut_key(sc) -> str:
-
-    """生成快捷方式的唯一键。优先用 lnk_path，其次 target，最后 name。"""
-
-    if sc.lnk_path:
-
-        return sc.lnk_path
-
-    if sc.target:
-
-        return f"target::{sc.target}"
-
-    return f"name::{sc.name}"
-
-
-
-
-
-def load_shortcut_meta() -> dict:
-
-    """加载 shortcut_meta.json, 返回 {key: {launch_mode}}"""
-
-    if not SHORTCUT_META_FILE.exists():
-
-        return {}
-
-    try:
-
-        data = json.loads(SHORTCUT_META_FILE.read_text(encoding="utf-8"))
-
-        return data if isinstance(data, dict) else {}
-
-    except Exception as e:
-
-        log.warning(f"shortcut_meta.json 读取失败: {e}")
-
-        return {}
-
-
-
-
-
-def save_shortcut_meta(meta: dict) -> None:
-
-    """保存到 shortcut_meta.json"""
-
-    try:
-
-        SHORTCUT_META_FILE.write_text(
-
-            json.dumps(meta, ensure_ascii=False, indent=2),
-
-            encoding="utf-8"
-
-        )
-
-    except Exception as e:
-
-        log.warning(f"shortcut_meta.json 保存失败: {e}")
-
-
-
-
-
-def load_custom_apps() -> list[dict]:
-
-    """加载 custom_apps.json"""
-
-    if not CUSTOM_APPS_FILE.exists():
-
-        return []
-
-    try:
-
-        return json.loads(CUSTOM_APPS_FILE.read_text(encoding="utf-8"))
-
-    except Exception as e:
-
-        log.warning(f"custom_apps.json 读取失败: {e}")
-
-        return []
-
-
-
-
-
-def save_custom_apps(apps: list[dict]) -> None:
-
-    """保存到 custom_apps.json"""
-
-    CUSTOM_APPS_FILE.write_text(
-
-        json.dumps(apps, ensure_ascii=False, indent=2),
-
-        encoding="utf-8"
-
-    )
-
-
-
-
-
-def add_custom_app(name: str, target: str, work_dir: str = "") -> dict:
-
-    """添加一个自定义应用(同名/同 target 视为重复,返回已有)"""
-
-    if not target or not Path(target).exists():
-
-        raise FileNotFoundError(f"目标不存在: {target}")
-
-    apps = load_custom_apps()
-
-    # 去重: 同 target (不区分大小写) 不重复
-
-    for a in apps:
-
-        if a["target"].lower() == target.lower():
-
-            return a
-
-    app = {
-
-        "name": name.strip() or Path(target).stem,
-
-        "target": target,
-
-        "work_dir": work_dir or str(Path(target).parent),
-
-    }
-
-    apps.append(app)
-
-    save_custom_apps(apps)
-
-    return app
-
-
-
-
-
-def remove_custom_app(target: str) -> bool:
-
-    """删除指定 target 的自定义应用"""
-
-    apps = load_custom_apps()
-
-    new_apps = [a for a in apps if a["target"].lower() != target.lower()]
-
-    if len(new_apps) < len(apps):
-
-        save_custom_apps(new_apps)
-
-        return True
-
-    return False
-
-
-
-
-
-# ---------------------------------------------------------------------------
-
-# 5. 启动程序(后台线程跑,UI 不卡)
-
-# ---------------------------------------------------------------------------
-
-class IPCServerThread(QThread):
-
-    """主实例命名管道 IPC 服务线程。"""
-
-
-
-    message_signal = Signal(dict)
-
-    log_signal = Signal(str)
-
-
-
-    def __init__(self) -> None:
-
-        super().__init__()
-
-        self._stop_event = threading.Event()
-
-
-
-    def stop(self) -> None:
-
-        self._stop_event.set()
-
-        # 连接一次管道,唤醒阻塞中的 ConnectNamedPipe
-
-        try:
-
-            _forward_to_running_instance([sys.executable, "--ipc-stop"])
-
-        except Exception:
-
-            pass
-
-
-
-    def run(self) -> None:
-
-        try:
-
-            import pywintypes
-
-            import win32file
-
-            import win32pipe
-
-        except Exception as e:
-
-            self.log_signal.emit(f"IPC 服务不可用: {e}")
-
-            return
-
-
-
-        self.log_signal.emit("IPC 命名管道服务已启动")
-
-        while not self._stop_event.is_set():
-
-            pipe = None
-
-            try:
-
-                pipe = win32pipe.CreateNamedPipe(
-
-                    _IPC_PIPE_NAME,
-
-                    win32pipe.PIPE_ACCESS_INBOUND,
-
-                    win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
-
-                    1,
-
-                    65536,
-
-                    65536,
-
-                    0,
-
-                    None,
-
-                )
-
-                try:
-
-                    win32pipe.ConnectNamedPipe(pipe, None)
-
-                except pywintypes.error as e:
-
-                    # 535 = ERROR_PIPE_CONNECTED,客户端已先连上,可继续读
-
-                    if getattr(e, "winerror", None) != 535:
-
-                        raise
-
-
-
-                chunks = []
-
-                while True:
-
-                    try:
-
-                        _hr, chunk = win32file.ReadFile(pipe, 65536)
-
-                        if chunk:
-
-                            chunks.append(chunk)
-
-                        if not chunk or chunk.endswith(b"\n"):
-
-                            break
-
-                    except pywintypes.error as e:
-
-                        # 109 = ERROR_BROKEN_PIPE
-
-                        if getattr(e, "winerror", None) == 109:
-
-                            break
-
-                        raise
-
-
-
-                raw = b"".join(chunks).decode("utf-8", errors="replace").strip()
-
-                if raw:
-
-                    data = json.loads(raw)
-
-                    argv = [str(a).lower() for a in data.get("argv", [])]
-
-                    if "--ipc-stop" not in argv:
-
-                        self.message_signal.emit(data)
-
-            except Exception as e:
-
-                if not self._stop_event.is_set():
-
-                    self.log_signal.emit(f"IPC 服务异常: {e}")
-
-            finally:
-
-                if pipe is not None:
-
-                    try:
-
-                        win32file.CloseHandle(pipe)
-
-                    except Exception:
-
-                        pass
-
-        self.log_signal.emit("IPC 命名管道服务已停止")
-
-
-
-
-
-# ---------------------------------------------------------------------------
-
-# 6. 全屏截图 + 框选(手动做模板)
-
-# ---------------------------------------------------------------------------
-
-class SnippingWindow(QWidget):
-
-    """全屏覆盖窗口,鼠标拖拽框选一块区域并保存为 PNG。
-
-
-
-    关键: 统一使用"逻辑坐标" (DPI-缩放后),避免在 125%/150% 屏幕上坐标偏移。
-
-    截图时拿真实物理像素,但画到 widget 上时按 devicePixelRatio 缩放。
-
-    保存时使用选中区在物理像素图中的子区域(坐标*ratio)。
-
-    """
-
-
-
-    captured = Signal(QRect)
-
-
-
-    def __init__(self) -> None:
-
-        super().__init__()
-
-        self.setWindowFlags(
-
-            Qt.FramelessWindowHint
-
-            | Qt.WindowStaysOnTopHint
-
-            | Qt.Tool
-
-        )
-
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-
-        self.setCursor(Qt.CrossCursor)
-
-
-
-        screen = QGuiApplication.primaryScreen()
-
-        # 物理像素图 (高 DPI 下分辨率会高)
-
-        self._full_pixmap: QPixmap = screen.grabWindow(0)
-
-        self._dpr: float = screen.devicePixelRatio()
-
-        # widget 覆盖整个屏幕(逻辑坐标)
-
-        self.setGeometry(screen.geometry())
-
-
-
-        self._start: Optional[QPoint] = None
-
-        self._end: Optional[QPoint] = None
-
-
-
-    def paintEvent(self, _event) -> None:
-
-        p = QPainter(self)
-
-        # 画原图,但拉伸到 widget 逻辑尺寸 (画出来跟屏幕一样)
-
-        p.drawPixmap(self.rect(), self._full_pixmap)
-
-        # 画一个半透明黑色遮罩
-
-        p.fillRect(self.rect(), QColor(0, 0, 0, 80))
-
-        if self._start and self._end:
-
-            rect = QRect(self._start, self._end).normalized()
-
-            # 逻辑坐标下的选区 → 物理像素子区域
-
-            phys_rect = QRect(
-
-                int(rect.left() * self._dpr),
-
-                int(rect.top() * self._dpr),
-
-                int(rect.width() * self._dpr),
-
-                int(rect.height() * self._dpr),
-
-            )
-
-            cropped = self._full_pixmap.copy(phys_rect)
-
-            p.drawPixmap(rect.topLeft(), cropped)
-
-            pen = QPen(QColor(0, 200, 255), 2, Qt.SolidLine)
-
-            p.setPen(pen)
-
-            p.drawRect(rect)
-
-
-
-    def mousePressEvent(self, ev) -> None:
-
-        # ev.position() 已经是逻辑坐标,转 QPoint 即可
-
-        self._start = ev.position().toPoint()
-
-        self._end = self._start
-
-        self.update()
-
-
-
-    def mouseMoveEvent(self, ev) -> None:
-
-        self._end = ev.position().toPoint()
-
-        self.update()
-
-
-
-    def mouseReleaseEvent(self, ev) -> None:
-
-        self._end = ev.position().toPoint()
-
-        rect = QRect(self._start, self._end).normalized()
-
-        # 发射物理像素坐标,让调用者直接用 .copy(rect)
-
-        phys_rect = QRect(
-
-            int(rect.left() * self._dpr),
-
-            int(rect.top() * self._dpr),
-
-            int(rect.width() * self._dpr),
-
-            int(rect.height() * self._dpr),
-
-        )
-
-        self.captured.emit(phys_rect)
-
-        self.close()
-
-
-
-    def keyPressEvent(self, ev) -> None:
-
-        if ev.key() == Qt.Key_Escape:
-
-            self.close()
-
-
-
-
-
-# ---------------------------------------------------------------------------
-
-# 7. 主窗口
-
-# ---------------------------------------------------------------------------
-
-class MainWindow(QMainWindow):
-
-    # ---- 桥接状态转发 (Step 1B-4) ----
-
-    # 目的: context_tab.py 等外部代码通过 self.window().memory_engine_mgr 访问,
-
-    # 转发到 self.bridges.xxx 保持 API 兼容, 不修改调用方
-
-    @property
-
-    def memory_engine_mgr(self):
-
-        return self.bridges.memory_engine_mgr
-
-
-
-    @property
-
-    def assistant_core(self):
-
-        return self.bridges.assistant_core
-
-
-
-    @property
-
-    def _companion_bridge(self):
-
-        return self.bridges._companion_bridge
-
-
-
-    @property
-
-    def _vtuber_bridge(self):
-
-        return self.bridges._vtuber_bridge
-
-    # ---- Step 1C-2/3/4: 持久化容器转发 (兼容旧 API) ----
-
-    @property
-
-    def ipc_server(self):
-
-        return self.containers.ipc
-
-    @property
-
-    def state(self):
-
-        return self.containers.state
-
-    @property
-
-    def worker(self):
-
-        return self.containers.worker
-
-    @property
-
-    def shortcuts(self):
-
-        return self.containers.shortcuts
-
-
-
-    @property
-
-    def _assistant_bridge(self):
-
-        return self.bridges._assistant_bridge
-
-
-
-    @property
-
-    def _reminder_timer(self):
-
-        return self.bridges._reminder_timer
-
-
-
-    @property
-
-    def _diary_scheduler(self):
-
-        return self.bridges._diary_scheduler
-
-
-
-    def __init__(self) -> None:
-
-        super().__init__()
-
-        from i18n import t as _t
-
-        self.setWindowTitle(_t("app_title"))
-
-        self.resize(960, 640)
-
-
-
-        # Step 1C-1/2/3/4: 持久化容器组 (替代 self.state/self.ipc_server/self.worker/self.shortcuts)
-
-        self.containers = AppContainers(self)
-
-        self.containers.state = UIState.load(self.STATE_FILE)  # 记忆上次启动的 PID
-
-
-
-        # ===== 左侧:快捷方式列表 =====
-
-        self.list_widget = QListWidget(self)
-
-        self.list_widget.setMinimumWidth(260)
-
-        self.list_widget.setUniformItemSizes(True)  # 固定行高,不会压扁
-
-        self.list_widget.setWordWrap(False)
-
-        self.list_widget.setStyleSheet(
-
-            "QListWidget { font-size: 13px; }"
-
-            "QListWidget::item { height: 26px; padding: 2px; }"
-
-        )
-
-        self.list_widget.itemSelectionChanged.connect(self._on_select)
-
-        # 双击启动应用 (与「执行」按钮行为一致)
-
-        self.list_widget.itemDoubleClicked.connect(self.run_action)
-
-
-
-        # ===== 右侧:控制面板 =====
-
-        self.info_label = QLabel(t("ql_info_selected"), self)
-
-        self.info_label.setWordWrap(True)
-
-        self.info_label.setStyleSheet("color: #555;")
-
-
-
-        # 启动方式 radio (顺序按推荐度: 鼠标双击 > Popen > Shell > 图像)
-
-        self.mode_group = QButtonGroup(self)
-
-        self.radio_direct = QRadioButton(t("ql_radio_direct"), self)
-
-        self.radio_desktop = QRadioButton(t("ql_radio_desktop"), self)
-
-        self.radio_shellexec = QRadioButton(t("ql_radio_shell"), self)
-
-        self.radio_image = QRadioButton(t("ql_radio_image"), self)
-
-        self.radio_direct.setChecked(True)
-
-        self.mode_group.addButton(self.radio_desktop, 1)
-
-        self.mode_group.addButton(self.radio_direct, 2)
-
-        self.mode_group.addButton(self.radio_shellexec, 3)
-
-        self.mode_group.addButton(self.radio_image, 4)
-
-
-
-        self.chk_notepad = QCheckBox(t("ql_chk_notepad"), self)
-
-
-
-        self.samples_label = QLabel(t("ql_template_none"), self)
-
-        self.samples_label.setWordWrap(True)
-
-
-
-        self.btn_refresh = QPushButton(t("ql_btn_refresh"), self)
-
-        self.btn_snipping = QPushButton(t("ql_btn_screenshot"), self)
-
-        self.btn_load_samples = QPushButton(t("ql_btn_load_template"), self)
-
-        self.btn_run = QPushButton(t("ql_btn_run"), self)
-
-        self.btn_run.setStyleSheet("font-weight: bold; padding: 6px; min-height: 24px;")
-
-        self.btn_stop = QPushButton(t("ql_btn_stop"), self)
-
-        self.btn_stop.setStyleSheet("min-height: 24px;")
-
-        self.btn_stop.setEnabled(False)
-
-
-
-        # 启动参数(Electron / Chromium 沙箱绕过)
-
-        self.args_edit = QLineEdit(self)
-
-        self.args_edit.setPlaceholderText("--no-sandbox --disable-gpu --no-stdio-init ...")
-
-        self.args_edit.setClearButtonEnabled(True)
-
-
-
-        # ===== 清理残留进程 =====
-
-        self.cleanup_kw = QLineEdit(self)
-
-        self.cleanup_kw.setPlaceholderText("aipy  lobe  mobax  ... (空格分隔多个关键词)")
-
-        self.cleanup_kw.setClearButtonEnabled(True)
-
-        self.btn_cleanup = QPushButton(t("ql_btn_cleanup"), self)
-
-        self.btn_cleanup.setStyleSheet(
-
-            "QPushButton { background:#f59e0b; color:white; font-weight:bold; padding:6px; min-height: 24px; }"
-
-            "QPushButton:hover { background:#d97706; }"
-
-        )
-
-
-
-        right = QWidget(self)
-
-        # 右侧选项卡布局: 快速启动 | 工作流
-
-        from PySide6.QtWidgets import QTabWidget
-
-        self.right_tabs = QTabWidget(right)
-
-
-
-        # === Tab 1: 快速启动 (原内容) ===
-
-        # 用 QScrollArea 包裹,防止控件重叠
-
-        quick_tab = QWidget()
-
-        quick_outer = QVBoxLayout(quick_tab)
-
-        quick_outer.setContentsMargins(0, 0, 0, 0)
-
-        quick_scroll = QScrollArea(quick_tab)
-
-        quick_scroll.setWidgetResizable(True)
-
-        quick_scroll.setFrameShape(QFrame.NoFrame)
-
-        quick_inner = QWidget()
-
-        quick_scroll.setWidget(quick_inner)
-
-        rv = QVBoxLayout(quick_inner)
-
-        rv.setContentsMargins(4, 4, 4, 4)
-
-        rv.setSpacing(6)
-
-        quick_outer.addWidget(quick_scroll)
-
-
-
-        rv.addWidget(QLabel(t("ql_label_target") + ":"))
-
-        rv.addWidget(self.info_label)
-
-        gb = QGroupBox(t("ql_launch_mode_box"), quick_tab)
-
-        gv = QVBoxLayout(gb)
-
-        gv.addWidget(self.radio_desktop)
-
-        gv.addWidget(self.radio_direct)
-
-        gv.addWidget(self.radio_shellexec)
-
-        gv.addWidget(self.radio_image)
-
-        gb.setMinimumHeight(150)
-
-        rv.addWidget(gb)
-
-
-
-        # ===== 启动方式绑定 (快捷方式级别) =====
-
-        bind_box = QGroupBox(t("ql_bind_box"))
-
-        bv = QVBoxLayout(bind_box)
-
-        bv.setContentsMargins(8, 4, 8, 6)
-
-        bv.setSpacing(4)
-
-        self.lbl_launch_mode_hint = QLabel(t("ql_info_selected"))
-
-        self.lbl_launch_mode_hint.setStyleSheet("color: #2563eb; font-size: 11px; padding: 2px 4px;")
-
-        self.lbl_launch_mode_hint.setWordWrap(True)
-
-        bv.addWidget(self.lbl_launch_mode_hint)
-
-        bind_row = QHBoxLayout()
-
-        self.btn_bind_launch_mode = QPushButton(t("ql_btn_bind_mode"))
-
-        self.btn_bind_launch_mode.setToolTip(t("ql_bind_mode_tooltip"))
-
-        self.btn_bind_launch_mode.setStyleSheet(
-
-            "QPushButton { background:#2563eb; color:white; font-weight:bold; padding:5px 10px; }"
-
-            "QPushButton:hover { background:#1d4ed8; }"
-
-            "QPushButton:disabled { background:#9ca3af; }"
-
-        )
-
-        self.btn_bind_launch_mode.clicked.connect(self._bind_launch_mode)
-
-        self.btn_bind_launch_mode.setEnabled(False)
-
-        bind_row.addWidget(self.btn_bind_launch_mode)
-
-        self.btn_clear_launch_mode = QPushButton(t("ql_btn_clear_bind"))
-
-        self.btn_clear_launch_mode.setToolTip(t("ql_clear_bind_tooltip"))
-
-        self.btn_clear_launch_mode.clicked.connect(self._clear_launch_mode)
-
-        self.btn_clear_launch_mode.setEnabled(False)
-
-        bind_row.addWidget(self.btn_clear_launch_mode)
-
-        bind_row.addStretch()
-
-        bv.addLayout(bind_row)
-
-        rv.addWidget(bind_box)
-
-
-
-        rv.addWidget(self.chk_notepad)
-
-        rv.addWidget(QLabel(t("ql_label_template") + ":"))
-
-        rv.addWidget(self.samples_label)
-
-        hb = QHBoxLayout()
-
-        hb.addWidget(self.btn_snipping)
-
-        hb.addWidget(self.btn_load_samples)
-
-        rv.addLayout(hb)
-
-        # ===== 坐标点击 (代替图像识别) =====
-
-        coord_group = QGroupBox(t("ql_coord_box"))
-
-        cg_v = QVBoxLayout(coord_group)
-
-        coord_row = QHBoxLayout()
-
-        coord_row.addWidget(QLabel(t("coord_label_x")))
-
-        self.coord_x = QSpinBox()
-
-        self.coord_x.setRange(0, 9999)
-
-        coord_row.addWidget(self.coord_x)
-
-        coord_row.addWidget(QLabel(t("coord_label_y")))
-
-        self.coord_y = QSpinBox()
-
-        self.coord_y.setRange(0, 9999)
-
-        coord_row.addWidget(self.coord_y)
-
-        coord_row.addWidget(QLabel(t("ql_click_label") + ":"))
-
-        self.coord_click_type = QComboBox()
-
-        self.coord_click_type.addItem(t("ql_click_double") + " (" + t("ql_default") + ")", "left_double")
-
-        self.coord_click_type.addItem(t("ql_click_single"), "left_single")
-
-        self.coord_click_type.addItem(t("ql_click_right"), "right_single")
-
-        coord_row.addWidget(self.coord_click_type)
-
-        coord_row.addStretch()
-
-        cg_v.addLayout(coord_row)
-
-        capture_row = QHBoxLayout()
-
-        self.btn_capture_coord = QPushButton(t("ql_btn_capture_coord"))
-
-        self.btn_capture_coord.setStyleSheet(
-
-            "QPushButton { background:#0891b2; color:white; padding:6px; font-weight:bold; }"
-
-            "QPushButton:hover { background:#0e7490; }"
-
-            "QPushButton:disabled { background:#9ca3af; }"
-
-        )
-
-        capture_row.addWidget(self.btn_capture_coord)
-
-        self.coord_status = QLabel("")
-
-        self.coord_status.setStyleSheet("color:#666; font-size:11px;")
-
-        capture_row.addWidget(self.coord_status)
-
-        capture_row.addStretch()
-
-        cg_v.addLayout(capture_row)
-
-        rv.addWidget(coord_group)
-
-        rv.addWidget(QLabel(t("ql_label_args") + ":"))
-
-        rv.addWidget(self.args_edit)
-
-        rv.addStretch(1)
-
-        rv.addWidget(self.btn_run)
-
-        rv.addWidget(self.btn_stop)
-
-
-
-        # 一键启停区域 (已替换为工作流面板)
-
-        onekey_box = QGroupBox(t("ql_onekey_box"), quick_tab)
-
-        obv = QVBoxLayout(onekey_box)
-
-        obv.addWidget(QLabel(t("ql_onekey_hint")))
-
-        obv.addWidget(QLabel(t("ql_onekey_sub")))
-
-        rv.addWidget(onekey_box)
-
-
-
-        # 清理残留
-
-        clean_box = QGroupBox(t("ql_cleanup_box"), quick_tab)
-
-        cv = QVBoxLayout(clean_box)
-
-        cv.addWidget(QLabel(t("ql_cleanup_label")))
-
-        cv.addWidget(self.cleanup_kw)
-
-        cv.addWidget(self.btn_cleanup)
-
-        clean_box.setMinimumHeight(130)
-
-        rv.addWidget(clean_box)
-
-
-
-        # ===== (MCP Server 控制已转移到【工具】标签页) =====
-
-
-
-        # === Tab 2: 工作流 ===
-
-        from workflow_panel import WorkflowEditor
-
-        self.workflow_editor = WorkflowEditor(self)
-
-        workflow_tab = QWidget()
-
-        wv = QVBoxLayout(workflow_tab)
-
-        wv.setContentsMargins(0, 0, 0, 0)
-
-        wv.addWidget(self.workflow_editor)
-
-
-
-        # === Tab 2: 文件搜索 ===
-
-        from i18n import t as _t
-
-        try:
-
-            from search_panel import SearchPanel
-
-            self.search_panel = SearchPanel(self)
-
-            self.right_tabs.addTab(self.search_panel, _t("tab_search"))
-
-        except Exception as e:
-
-            log.warning(f"文件搜索标签加载失败: {e}")
-
-
-
-        # 添加到选项卡
-
-        self.right_tabs.addTab(quick_tab, _t("tab_quick_launch"))
-
-        self.right_tabs.addTab(workflow_tab, _t("tab_workflow"))
-
-        # === Tab 4: 工具 (MCP server 控制 + 简介) ===
-
-        try:
-
-            from tools_tab import ToolsTab
-
-            self.tools_tab = ToolsTab(self)
-
-            self.right_tabs.addTab(self.tools_tab, _t("tab_tools"))
-
-        except Exception as e:
-
-            log.warning(f"工具标签加载失败: {e}")
-
-
-
-        # === Tab 5: AI 感知 (上下文感知系统) ===
-
-        try:
-
-            from context_tab import ContextTab
-
-            self.context_tab = ContextTab(self)
-
-            self.right_tabs.addTab(self.context_tab, _t("tab_ai_perception"))
-
-        except Exception as e:
-
-            import traceback
-
-            tb = traceback.format_exc()
-
-            log.warning(f"AI 感知标签加载失败: {e}")
-
-            # 暴露到全局日志, 便于查 bug
-
-            try:
-
-                from log_bus import log_bus
-
-                log_bus.emit(f"[加载] ❌ AI 感知 tab 加载失败: {e}\n{tb}")
-
-            except Exception:
-
-                pass
-
-
-
-        # 设置选项卡
-
-        right_layout = QVBoxLayout(right)
-
-        right_layout.setContentsMargins(0, 0, 0, 0)
-
-        right_layout.addWidget(self.right_tabs)
-
-
-
-        # ===== 底部:日志 =====
-
-        self.log_view = QTextEdit(self)
-
-        self.log_view.setReadOnly(True)
-
-        self.log_view.setStyleSheet(
-
-            "background:#1e1e1e;color:#dcdcdc;font-family:Consolas,monospace;"
-
-        )
-
-
-
-        # ===== 整体布局: 用 QSplitter 干调拖动划分,避免嵌套后 stretch 失效 =====
-
-        from PySide6.QtWidgets import QSplitter
-
-        # 右侧不包 QScrollArea,直接让 right_tabs 填满右侧面板
-
-        # (原来用 QScrollArea 会导致 QTextEdit 被拉伸超限、输入区被挤走)
-
-        right.setMinimumWidth(300)
-
-        right.setMaximumWidth(750)  # 限制右侧面板最大宽度,防止聊天区域过宽
-
-        scroll = right  # 向后兼容名
-
-
-
-        # ===== 左侧: 快捷方式列表 + 重新扫描按钮 =====
-
-        left_panel = QWidget()
-
-        left_layout = QVBoxLayout(left_panel)
-
-        left_layout.setContentsMargins(0, 0, 0, 0)
-
-        left_layout.setSpacing(4)
-
-        # 头部: 标题 + 重新扫描
-
-        header_row = QHBoxLayout()
-
-        header_row.setContentsMargins(4, 4, 4, 0)
-
-        list_title = QLabel(t("ql_desktop_shortcuts"))
-
-        list_title.setStyleSheet("font-weight: bold;")
-
-        header_row.addWidget(list_title)
-
-        header_row.addStretch()
-
-        # 自定义添加按钮
-
-        self.btn_add_custom = QPushButton("➕", self)
-
-        self.btn_add_custom.setStyleSheet("padding: 2px 8px; min-height: 22px; font-weight: bold; color: #10b981;")
-
-        self.btn_add_custom.setToolTip(t("ql_btn_add_custom_tooltip"))
-
-        header_row.addWidget(self.btn_add_custom)
-
-        # 删除自定义按钮
-
-        self.btn_remove_custom = QPushButton("🗑", self)
-
-        self.btn_remove_custom.setStyleSheet("padding: 2px 8px; min-height: 22px; font-weight: bold; color: #dc2626;")
-
-        self.btn_remove_custom.setToolTip(t("ql_btn_remove_custom_tooltip"))
-
-        header_row.addWidget(self.btn_remove_custom)
-
-        # 重新扫描
-
-        self.btn_refresh.setStyleSheet("padding: 2px 8px; min-height: 22px;")
-
-        self.btn_refresh.setToolTip(t("ql_btn_refresh_tooltip"))
-
-        header_row.addWidget(self.btn_refresh)
-
-        left_layout.addLayout(header_row)
-
-        left_layout.addWidget(self.list_widget)
-
-
-
-        splitter = QSplitter(Qt.Horizontal, self)
-
-        splitter.addWidget(left_panel)
-
-        splitter.addWidget(scroll)
-
-        splitter.setStretchFactor(0, 2)
-
-        splitter.setStretchFactor(1, 2)  # 1:1 均分,右侧不超过 900
-
-        splitter.setSizes([500, 820])  # 右侧宽一些
-
-
-
-        outer = QWidget(self)
-
-        ov = QVBoxLayout(outer)
-
-        ov.setContentsMargins(6, 6, 6, 6)
-
-        ov.addWidget(splitter, 3)
-
-        ov.addWidget(QLabel(t("ql_label_log") + ":"))
-
-        ov.addWidget(self.log_view, 1)
-
-        self.setCentralWidget(outer)
-
-        self.setCentralWidget(outer)
-
-
-
-        # 强制最小尺寸防坍缩
-
-        self.list_widget.setMinimumWidth(280)
-
-        self.setMinimumSize(1280, 720)
-
-        self.resize(1400, 860)
-
-
-
-        self.setStatusBar(QStatusBar(self))
-
-
-
-        # 信号
-
-        self.btn_refresh.clicked.connect(self.refresh_shortcuts)
-
-        self.btn_add_custom.clicked.connect(self._add_custom_app)
-
-        self.btn_remove_custom.clicked.connect(self._remove_custom_app)
-
-        self.btn_snipping.clicked.connect(self.start_snipping)
-
-        self.btn_load_samples.clicked.connect(self.load_samples_from_files)
-
-        self.btn_capture_coord.clicked.connect(self._capture_coord_for_quick)
-
-        self.btn_run.clicked.connect(self.run_action)
-
-        self.btn_stop.clicked.connect(self.stop_action)
-
-        # btn_onekey_start / btn_onekey_stop 已替换为工作流面板
-
-        self.btn_cleanup.clicked.connect(self.cleanup_residuals)
-
-        # MCP server 控制已转移到【工具】标签页
-
-
-
-        # 启动时自动扫描
-
-        self.refresh_shortcuts()
-
-        self._start_ipc_server()
-
-
-
-        # ---- 系统托盘 ----
-
-        self._tray_icon: Optional[QSystemTrayIcon] = None
-
-        self._tray_menu: Optional[QMenu] = None
-
-        self._truly_quit = False  # 区分"隐藏到托盘"和"真正退出"
-
-        self._setup_system_tray()
-
-        # 加载窗口状态(位置/大小/是否默认后台)
-
-        self._load_window_state()
-
-
-
-        # ---- 7 个桥接状态已迁移到 AppBridges (Step 1B-2) ----
-
-        # ---- AppBridges 集中容器 (Step 1B-3) ----
-
-        self.bridges = AppBridges(self)
-
-        # ---- 7.4 Assistant Bridge (Step 4+5: VTuber 双脑路由) ----
-
-        self._init_memory_engine()
-
-        self._init_reminder_scheduler()
-
-        self._init_companion_bridge()
-
-        self._init_vtuber_bridge()
-
-        self._init_assistant_bridge()
-
-
-
-    # ---- 7.1 日志桥接 ----
-
-    def _append_log(self, msg: str) -> None:
-
-        self.log_view.append(msg)
-
-        # 自动滚到底
-
-        sb = self.log_view.verticalScrollBar()
-
-        sb.setValue(sb.maximum())
-
-
-
-    def _setup_global_log_bus(self) -> None:
-
-        """订阅全局 log_bus,所有标签页/子系统的日志都会汇到这里"""
-
-        try:
-
-            from log_bus import log_bus
-
-            # 文件记录: 同目录下 desktop_auto.log
-
-            log_path = USER_DATA_DIR / "desktop_auto.log"
-
-            log_bus.set_log_file(str(log_path))
-
-            log_bus.log_signal.connect(self._append_log)
-
-            log_bus.emit("[全局日志] 已启用,文件: " + str(log_path))
-
-        except Exception as e:
-
-            self._append_log(f"[全局日志] 初始化失败: {e}")
-
-
-
-    def _start_ipc_server(self) -> None:
-
-        """启动命名管道 IPC 服务,供后续实例转发任务。
-
-
-
-        Step 1C-2: 实例移到 self.containers.ipc, 通过 @property ipc_server 保持 API 兼容
-
-        """
-
-        self.containers.ipc = IPCServerThread()
-
-        self.containers.ipc.log_signal.connect(lambda m: self._append_log(f"[IPC] {m}"))
-
-        self.containers.ipc.message_signal.connect(self._handle_ipc_message)
-
-        self.containers.ipc.start()
-
-
-
-    def _handle_ipc_message(self, data: dict) -> None:
-
-        """处理新进程转发来的任务。"""
-
-        argv = data.get("argv", [])
-
-        args = [str(a).lower() for a in argv]
-
-        if "--close-main" in args:
-
-            self._append_log("[IPC] 收到关闭命令, 退出主窗口...")
-
-            QApplication.quit()
-
-            return
-
-        self._append_log(f"[IPC] 收到任务: {argv}")
-
-        self._activate_self()
-
-        if "--install-shortcut" in args or "--install" in args:
-
-            _do_install_shortcut()
-
-        elif "--remove-shortcut" in args or "--uninstall" in args:
-
-            _do_remove_shortcut()
-
-
-
-    def _activate_self(self) -> None:
-
-        """把当前主窗口切到前台。"""
-
-        self.showNormal()
-
-        self.raise_()
-
-        self.activateWindow()
-
-        try:
-
-            import win32con
-
-            import win32gui
-
-            hwnd = int(self.winId())
-
-            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-
-            win32gui.SetForegroundWindow(hwnd)
-
-        except Exception:
-
-            pass
-
-
-
-    def closeEvent(self, event) -> None:
-
-        # 如果有托盘,且不是真正退出,则隐藏到托盘
-
-        if self._tray_icon and self._tray_icon.isVisible() and not self._truly_quit:
-
-            event.ignore()
-
-            self.hide()
-
-            if self._tray_icon and not self._tray_icon.supportsMessages() is False:
-
-                pass
-
-            # 首次隐藏给个气泡提示
-
-            if not getattr(self, "_tray_hint_shown", False):
-
-                self._tray_hint_shown = True
-
-                try:
-
-                    self._tray_icon.showMessage(
-
-                        "桌面自动化助手",
-
-                        "已最小化到托盘，双击图标可恢复窗口。",
-
-                        QSystemTrayIcon.Information,
-
-                        3000,
-
-                    )
-
-                except Exception:
-
-                    pass
-
-            return
-
-        # 真正退出:清理资源
-
-        self._save_window_state()
-
-        if self.containers.ipc:
-
-            self.containers.ipc.stop()
-
-            self.containers.ipc.wait(1000)
-
-        # 关闭 AI 感知标签页（释放 QThread 等资源）
-
-        try:
-
-            if hasattr(self, "context_tab") and self.context_tab:
-
-                self.context_tab.shutdown()
-
-        except Exception:
-
-            pass
-
-        # 关闭记忆引擎（Phase A）
-
-        try:
-
-            if hasattr(self.bridges, "memory_engine_mgr") and self.bridges.memory_engine_mgr:
-
-                self.bridges.memory_engine_mgr.stop()
-
-        except Exception:
-
-            pass
-
-
-
-        # 停止桌宠桥接（Phase D）
-
-        try:
-
-            if hasattr(self.bridges, "_companion_bridge") and self.bridges._companion_bridge:
-
-                self.bridges._companion_bridge.stop()
-
-        except Exception:
-
-            pass
-
-
-
-        # 停止 Assistant Bridge (双脑路由)
-
-        try:
-
-            if hasattr(self.bridges, "_assistant_bridge") and self.bridges._assistant_bridge:
-
-                self.bridges._assistant_bridge.stop()
-
-        except Exception:
-
-            pass
-
-
-
-        if self._tray_icon:
-
-            try:
-
-                self._tray_icon.hide()
-
-            except Exception:
-
-                pass
-
-        super().closeEvent(event)
-
-
-
-    # ---- 7.2 桌宠桥接 (Phase D) ----
-
-    def _update_companion_config(self, config: dict) -> None:
-
-        """更新桥接配置（由 Tools 標签页调用）。"""
-
-        if hasattr(self.bridges, "_companion_bridge") and self.bridges._companion_bridge:
-
-            self.bridges._companion_bridge.update_config(config)
-
-
-
-    def _init_companion_bridge(self) -> None:
-
-        """启动 MetaPact 桌宠桥接（默认禁用）。同时初始化 LLM backend 供 VTuber /v1/chat/completions 调用。"""
-
-        try:
-
-            from companion_bridge import CompanionBridgeThread, CompanionAPIHandler
-
-            from context_agent import EchoBackend, OpenAICompatibleBackend
-
-
-
-            # 创建 LLM backend 实例：优先复用 AI 感知页保存的真实后端配置
-
-            backend = EchoBackend()
-
-            backend_desc = "EchoBackend"
-
-            context_cfg_path = USER_DATA_DIR / "context_aware_config.json"
-
-            try:
-
-                import json
-
-                if context_cfg_path.exists():
-
-                    context_cfg = json.loads(context_cfg_path.read_text(encoding="utf-8"))
-
-                    backend_cfg = context_cfg.get("backend", {}) if isinstance(context_cfg, dict) else {}
-
-                    backend_type = int(backend_cfg.get("type", 0) or 0)
-
-                    if backend_type == 1:
-
-                        base_url = str(backend_cfg.get("base_url") or "").strip()
-
-                        api_key = str(backend_cfg.get("api_key") or "EMPTY").strip() or "EMPTY"
-
-                        model = str(backend_cfg.get("model") or "").strip()
-
-                        if base_url and model:
-
-                            backend = OpenAICompatibleBackend(
-
-                                base_url=base_url,
-
-                                api_key=api_key,
-
-                                model=model,
-
-                            )
-
-                            backend_desc = f"OpenAICompatibleBackend({base_url}, model={model})"
-
-                        else:
-
-                            self._append_log(f"[桥接] AI 后端配置不完整，使用 EchoBackend: {backend_cfg}")
-
-                    else:
-
-                        self._append_log(f"[桥接] AI 后端为 Echo/未配置，VTuber 聊天将使用 EchoBackend")
-
-                else:
-
-                    self._append_log(f"[桥接] context_aware_config.json 不存在，使用 EchoBackend: {context_cfg_path}")
-
-            except Exception as e:
-
-                self._append_log(f"[桥接] 读取 AI 后端配置失败，使用 EchoBackend: {e}")
-
-
-
-            # 设置给 CompanionAPIHandler 类级别属性
-
-            CompanionAPIHandler._backend = backend
-
-            if hasattr(backend, "model"):
-
-                CompanionAPIHandler._backend_model = backend.model
-
-            elif hasattr(backend, "_model"):
-
-                CompanionAPIHandler._backend_model = backend._model
-
-            else:
-
-                CompanionAPIHandler._backend_model = model
-
-            self._append_log(f"[桥接] LLM backend 已初始化: {backend_desc}")
-
-
-
-            # 读取配置：优先从 tools_tab 注入，fallback 到 USER_DATA_DIR/config.json
-
-            config = {
-
-                "enabled": True,  # 默认启用 companion bridge HTTP server（供 VTuber LLM 调用）
-
-                "token": "",
-
-                "whitelist_workflows": [],
-
-            }
-
-            config_path = USER_DATA_DIR / "config.json"
-
-            self._append_log(f"[桥接] config_path: {config_path}, exists={config_path.exists()}")
-
-            if config_path.exists():
-
-                try:
-
-                    import json
-
-                    saved = json.loads(config_path.read_text(encoding="utf-8"))
-
-                    raw_enabled = saved.get("companion_enabled", False)
-
-                    self._append_log(f"[桥接] raw companion_enabled={raw_enabled}, type={type(raw_enabled)}")
-
-                    config["enabled"] = bool(raw_enabled)
-
-                    config["token"] = saved.get("companion_token", "")
-
-                    config["whitelist_workflows"] = saved.get("companion_whitelist_workflows", [])
-
-                except Exception as e:
-
-                    self._append_log(f"[桥接] 读取配置失败: {e}")
-
-            else:
-
-                self._append_log(f"[桥接] config.json 不存在，使用默认 config")
-
-            self.bridges._companion_bridge = CompanionBridgeThread(port=16260)
-
-            # 桥接日志信号（plain callback，threading 版本不需要 .connect()）
-
-            self.bridges._companion_bridge.log_signal = self._append_log
-
-            self.bridges._companion_bridge.status_signal = lambda running, msg: self._append_log(f"[桥接] {msg}")
-
-            # 透传配置
-
-            self.bridges._companion_bridge.update_config(config)
-
-            self.bridges._companion_bridge.start()
-
-        except Exception as e:
-
-            self._append_log(f"[桥接] 初始化失败: {e}")
-
-
-
-    def _update_vtuber_config(self, config: dict) -> None:
-
-        if hasattr(self.bridges, "_vtuber_bridge") and self.bridges._vtuber_bridge:
-
-            enabled = config.get("vtuber_enabled", False)
-
-            url = config.get("vtuber_backend_url", "http://127.0.0.1:12393")
-
-            self.bridges._vtuber_bridge.enabled = enabled
-
-            self.bridges._vtuber_bridge.backend_url = url
-
-            self.bridges._vtuber_bridge._http_url = url
-
-            self._append_log(f"[VTuber] 桥接配置已更新: enabled={enabled}, url={url}")
-
-
-
-    def _init_vtuber_bridge(self) -> None:
-
-        try:
-
-            from vtuber_bridge import VTuberBridge
-
-            config = {"vtuber_enabled": False, "vtuber_backend_url": "http://127.0.0.1:12393"}
-
-            config_path = USER_DATA_DIR / "config.json"
-
-            if config_path.exists():
-
-                try:
-
-                    import json
-
-                    saved = json.loads(config_path.read_text(encoding="utf-8"))
-
-                    config["vtuber_enabled"] = saved.get("vtuber_enabled", False)
-
-                    config["vtuber_backend_url"] = saved.get("vtuber_backend_url", "http://127.0.0.1:12393")
-
-                except Exception:
-
-                    pass
-
+"""
+
+桌面自动化助手 (PySide6)
+
+
+
+功能:
+
+1. 扫描桌面所有 .lnk 快捷方式
+
+2. 选中后:既支持「直接启动」(稳定),也支持「图像识别点击」(通用)
+
+3. 图像识别支持多模板(普通/悬停/选中),Win10 高 DPI / 多屏兼容
+
+4. 程序启动后用 pywinauto 等窗口就绪,不再硬 sleep
+
+5. 自带截图框选工具,可以直接把桌面图标保存为模板
+
+6. 操作日志实时显示在 UI 中
+
+
+
+依赖:
+
+    pip install PySide6 pyautogui pillow pyperclip pywinauto opencv-python pywin32
+
+"""
+
+
+
+from __future__ import annotations
+
+
+
+import os
+
+import sys
+
+import json
+
+from pathlib import Path
+
+
+
+# 确保脚本所在目录在 sys.path 首位 (便携 Python/无 GUI CLI 模式也需要)。
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+if _SCRIPT_DIR not in sys.path:
+
+    sys.path.insert(0, _SCRIPT_DIR)
+
+
+
+# 数据目录必须在任何自定义模块 import 前解析，否则子模块会先读到旧默认路径。
+
+from data_paths import RUNTIME_DIR, USER_DATA_DIR, DEFAULT_USER_DATA_DIR, MIGRATION_PENDING_FILE, normalize_data_dir_target, resolve_user_data_dir
+
+
+
+# 提前 import 非 GUI 辅助模块；GUI 面板必须懒加载，避免打包启动阶段崩溃。
+
+# PyInstaller 依赖收集由 build.spec hiddenimports 负责。
+
+# MCP 只在 --mcp 模式或工具页实际需要时懒加载。
+
+import backup  # noqa: F401
+
+from i18n import t  # noqa: F401
+
+from app_bridges import AppBridges  # Step 1B-1: 桥接状态集中容器
+
+from app_containers import AppContainers, UIState  # Step 1C-1: 持久化容器组
+# Step 2-2B: 启动 worker 类与数据模型抽到 launch_worker.py, 保持 re-export 让 from desktop_auto import LaunchWorker 仍可用
+from launch_worker import LaunchWorker, ShortcutInfo, _get_pyautogui, _resolve_sample_path
+
+
+
+import os
+
+import sys
+
+import time
+
+import ctypes
+
+import logging
+
+import json
+
+import subprocess
+
+import threading
+
+from pathlib import Path
+
+from dataclasses import dataclass, field
+
+from typing import Optional
+
+
+
+_SINGLE_INSTANCE_MEMORY = None
+
+_IPC_PIPE_NAME = r"\\.\pipe\desktop_auto_assistant_ipc"
+
+
+
+# 0. 环境自检: 缺包时用当前 python 自动装,避免 ModuleNotFoundError
+
+# 打包后 (PyInstaller) 不需要这个检查,直接跳过
+
+def _ensure_dependencies() -> None:
+
+    # 打包后冻结环境跳过: 没有 pip / 不能安装依赖
+
+    if getattr(sys, 'frozen', False):
+
+        return
+
+    import importlib.util
+
+    missing = []
+
+    for mod, pkg in [
+
+        ("pyautogui", "pyautogui"),
+
+        ("pyperclip", "pyperclip"),
+
+        ("win32com", "pywin32"),
+
+        ("PIL", "Pillow"),
+
+        ("PySide6", "PySide6"),
+
+        ("psutil", "psutil"),
+
+    ]:
+
+        if importlib.util.find_spec(mod) is None:
+
+            missing.append(pkg)
+
+    if missing:
+
+        print(f"[env] 缺依赖,自动安装: {missing}", flush=True)
+
+        try:
+
+            subprocess.check_call(
+
+                [sys.executable, "-m", "pip", "install", *missing],
+
+            )
+
+        except Exception as e:
+
+            print(f"[env] 自动安装失败: {e}\n请手动: pip install {' '.join(missing)}", flush=True)
+
+            sys.exit(1)
+
+
+
+_ensure_dependencies()
+
+# ============================================================
+
+# CLI 参数路由网关 (必须在任何 GUI 初始化之前执行)
+
+# ============================================================
+
+def _cli_router() -> None:
+
+    """
+
+    命令行参数路由网关
+
+
+
+    处理 --install-shortcut / --remove-shortcut 等无头任务,
+
+    执行完毕后直接 sys.exit(), 不加载 GUI。
+
+    """
+
+    args = [a.lower() for a in sys.argv[1:]]
+
+
+
+    if not args:
+
+        return
+
+
+
+    if any(a in args for a in ('--install-shortcut', '--install')):
+
+        _do_install_shortcut()
+
+        sys.exit(0)
+
+
+
+    if any(a in args for a in ('--remove-shortcut', '--uninstall')):
+
+        _do_remove_shortcut()
+
+        sys.exit(0)
+
+
+
+    if args and args[0] == '--write-data-dir-pointer':
+
+        target = sys.argv[2] if len(sys.argv) >= 3 else ""
+
+        source = sys.argv[3] if len(sys.argv) >= 4 else ""
+
+        _do_write_data_dir_pointer(target, source)
+
+        sys.exit(0)
+
+
+
+    if '--mcp' in args:
+
+        return
+
+
+
+    # --replace 是桌面快捷方式入口: 先关闭旧实例,再启动新 GUI。
+
+
+
+    # 如果没有实例在运行,正常打开 GUI;如果已有实例,先关闭旧窗口再开新窗口。
+
+
+
+def _do_install_shortcut() -> None:
+
+    """在桌面创建快捷方式, 目标指向当前 EXE 并携带 --replace 参数"""
+
+    try:
+
+        import win32com.client
+
+        desktop = Path.home() / "Desktop"
+
+        exe_path = sys.executable
+
+        icon_path = Path(__file__).parent / "app_icon.ico"
+
+
+
+        shell = win32com.client.Dispatch("WScript.Shell")
+
+
+
+        shortcut_path = desktop / "桌面助手.lnk"
+
+        sc = shell.CreateShortCut(str(shortcut_path))
+
+        sc.TargetPath = str(exe_path)
+
+        sc.Arguments = "--replace"
+
+        sc.WorkingDirectory = str(Path(exe_path).parent)
+
+        if icon_path.exists():
+
+            sc.IconLocation = str(icon_path)
+
+        sc.Description = "桌面自动化助手"
+
+        sc.WindowStyle = 1
+
+        sc.save()
+
+        print(f"[CLI] 桌面快捷方式已创建: {shortcut_path}")
+
+    except Exception as e:
+
+        print(f"[CLI] 创建快捷方式失败: {e}")
+
+def _do_write_data_dir_pointer(target: str, source: str = "") -> None:
+
+    """无 GUI 写入迁移指针；由 BAT 调用，确保 UTF-8 JSON 不被 cmd 编码破坏。"""
+
+    if not target:
+
+        raise SystemExit(2)
+
+    target_path = normalize_data_dir_target(target)
+
+    source_path = Path(source).expanduser().resolve() if source else DEFAULT_USER_DATA_DIR
+
+    payload = json.dumps({"path": str(target_path)}, ensure_ascii=False, indent=2)
+
+    for d in [DEFAULT_USER_DATA_DIR, target_path, source_path]:
+
+        try:
+
+            d.mkdir(parents=True, exist_ok=True)
+
+            (d / "data_dir.json").write_text(payload, encoding="utf-8")
+
+            (d / ".moved_to").write_text(str(target_path), encoding="utf-8")
+
+        except Exception as e:
+
+            print(f"[CLI] 写指针失败 {d}: {e}", flush=True)
+
+    try:
+
+        pending = target_path / MIGRATION_PENDING_FILE
+
+        if pending.exists():
+
+            pending.unlink()
+
+    except Exception:
+
+        pass
+
+    print(f"[CLI] data dir pointer => {target_path}", flush=True)
+
+
+
+
+
+def _do_remove_shortcut() -> None:
+
+    """删除桌面快捷方式"""
+
+    desktop = Path.home() / "Desktop"
+
+    shortcut_path = desktop / "桌面助手.lnk"
+
+    if shortcut_path.exists():
+
+        shortcut_path.unlink()
+
+        print(f"[CLI] 已删除: {shortcut_path}")
+
+    else:
+
+        print(f"[CLI] 快捷方式不存在: {shortcut_path}")
+
+def _do_silent_task(args: list[str]) -> None:
+
+    """静默执行任务模式 (预留)。当前作为桌面快捷方式启动入口。"""
+
+    print("[CLI] 静默任务模式启动")
+
+    print("[CLI] 静默任务完成")
+
+
+
+
+
+def _forward_to_running_instance(argv: list[str]) -> bool:
+
+    """已有实例运行时,通过命名管道把任务发送给主实例。"""
+
+    payload = {
+
+        "argv": argv,
+
+        "cwd": os.getcwd(),
+
+        "pid": os.getpid(),
+
+        "time": time.time(),
+
+    }
+
+    data = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+
+    try:
+
+        import win32file
+
+        import win32pipe
+
+
+
+        # 等待主实例管道就绪,最多 1.5s
+
+        try:
+
+            win32pipe.WaitNamedPipe(_IPC_PIPE_NAME, 1500)
+
+        except Exception:
+
+            pass
+
+        handle = win32file.CreateFile(
+
+            _IPC_PIPE_NAME,
+
+            win32file.GENERIC_WRITE,
+
+            0,
+
+            None,
+
+            win32file.OPEN_EXISTING,
+
+            0,
+
+            None,
+
+        )
+
+        try:
+
+            win32file.WriteFile(handle, data)
+
+        finally:
+
+            win32file.CloseHandle(handle)
+
+        print("[单实例] 已通过命名管道转发任务")
+
+        return True
+
+    except Exception as e:
+
+        print(f"[单实例] 命名管道转发失败,回退到前台激活: {e}")
+
+        return _activate_existing_window()
+
+
+
+
+
+def _activate_existing_window() -> bool:
+
+    """回退方案: 找到主窗口并切到前台。"""
+
+    try:
+
+        import win32con
+
+        import win32gui
+
+
+
+        title_keyword = "桌面自动化助手"
+
+        matches = []
+
+
+
+        def enum_handler(hwnd, _):
+
+            if not win32gui.IsWindowVisible(hwnd):
+
+                return
+
+            title = win32gui.GetWindowText(hwnd)
+
+            if title_keyword in title:
+
+                matches.append(hwnd)
+
+
+
+        win32gui.EnumWindows(enum_handler, None)
+
+        if not matches:
+
+            print("[单实例] 未找到已运行窗口")
+
+            return False
+
+
+
+        hwnd = matches[0]
+
+        try:
+
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+
+        except Exception:
+
+            pass
+
+        try:
+
+            win32gui.SetForegroundWindow(hwnd)
+
+        except Exception:
+
+            pass
+
+        print(f"[单实例] 已切换到窗口: {win32gui.GetWindowText(hwnd)}")
+
+        return True
+
+    except Exception as e:
+
+        print(f"[单实例] 前台激活失败: {e}")
+
+        return False
+
+
+
+
+
+# ============================================================
+
+# 单实例锁 (QSharedMemory)
+
+# ============================================================
+
+def _try_acquire_single_instance() -> bool:
+
+    """
+
+    尝试获取单实例锁。
+
+    返回 True 表示当前进程是主实例, 可以继续加载 GUI。
+
+    返回 False 表示已有主实例在运行, 当前进程应退出。
+
+    """
+
+    try:
+
+        from PySide6.QtCore import QSharedMemory, QSystemSemaphore
+
+
+
+        semaphore = QSystemSemaphore("desktop_auto_semaphore", 1)
+
+        semaphore.acquire()
+
+
+
+        shared_mem = QSharedMemory("desktop_auto_single_instance")
+
+        if shared_mem.attach():
+
+            semaphore.release()
+
+            return False
+
+
+
+        if not shared_mem.create(1):
+
+            # 极少数情况下 create 失败但并非已有实例,保守允许启动,避免锁异常导致打不开。
+
+            semaphore.release()
+
+            return True
+
+        # 必须挂到模块全局变量上,否则 QSharedMemory 对象被回收后锁会释放。
+
+        global _SINGLE_INSTANCE_MEMORY
+
+        _SINGLE_INSTANCE_MEMORY = shared_mem
+
+        semaphore.release()
+
+        return True
+
+    except Exception:
+
+        return True
+
+_cli_router()
+
+import pyperclip
+
+import win32com.client
+
+from PIL import Image
+
+from PySide6.QtCore import Qt, QRect, QPoint, QThread, Signal, QTimer
+
+from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QGuiApplication, QAction, QIcon
+
+from PySide6.QtWidgets import (
+
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+
+    QPushButton, QListWidget, QListWidgetItem, QLabel, QTextEdit,
+
+    QFileDialog, QMessageBox, QStatusBar, QGroupBox, QRadioButton,
+
+    QButtonGroup, QCheckBox, QSpinBox, QLineEdit, QComboBox, QInputDialog,
+
+    QSystemTrayIcon, QMenu, QProgressDialog, QSizePolicy, QScrollArea, QFrame,
+
+)
+
+
+
+# ---------------------------------------------------------------------------
+
+# 1. Windows DPI / 多屏 初始化(必须在 QApplication 之前)
+
+# ---------------------------------------------------------------------------
+
+# PySide6 6.x 默认自动管理 DPI awareness,不需要手动调 SetProcessDpiAwareness。
+
+# 手动调反而会与 Qt 内部冲突,报 "SetProcessDpiAwarenessContext() failed: 拒绝访问"。
+
+# 如果需要高 DPI 缩放策略,在 QApplication 创建后用 Qt.AA_EnableHighDpiScaling 即可
+
+# (PySide6 6.x 默认就开启)。这里仅在环境变量不存在时才做兑底。
+
+def _setup_dpi() -> None:
+
+    try:
+
+        import os as _os
+
+        # PySide6 自带高 DPI 缩放, 6.0+ 是默认的。不需要手动调 shcore/user32。
+
+        # 如果是反复重启 (该进程已被 set 过), 调用 SetProcessDpiAwareness 会 拒绝访问, 直接跳过。
+
+        pass
+
+    except Exception:
+
+        pass
+
+
+
+_setup_dpi()
+
+
+# ---------------------------------------------------------------------------
+
+# 2. 日志
+
+# ---------------------------------------------------------------------------
+
+logging.basicConfig(
+
+    level=logging.INFO,
+
+    format="%(asctime)s [%(levelname)s] %(message)s",
+
+    datefmt="%H:%M:%S",
+
+)
+
+log = logging.getLogger("desktop_auto")
+
+
+
+
+
+# ---------------------------------------------------------------------------
+
+# 3. 数据模型
+
+# ---------------------------------------------------------------------------
+
+# 4. 桌面快捷方式扫描
+
+# ---------------------------------------------------------------------------
+
+def get_real_desktop() -> Path:
+
+    """通过注册表取真实桌面路径(支持 OneDrive 重定向 / 多用户)"""
+
+    try:
+
+        from winreg import HKEY_CURRENT_USER, OpenKey, QueryValueEx
+
+        with OpenKey(
+
+            HKEY_CURRENT_USER,
+
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+
+        ) as k:
+
+            return Path(QueryValueEx(k, "Desktop")[0])
+
+    except Exception:
+
+        return Path(os.environ["USERPROFILE"]) / "Desktop"
+
+
+
+
+
+def scan_desktop_shortcuts() -> list[ShortcutInfo]:
+
+    """扫描桌面所有 .lnk 快捷方式,容错处理每个文件
+
+    + 追加自定义应用 (custom_apps.json)"""
+
+    desktop = get_real_desktop()
+
+    if not desktop.exists():
+
+        log.warning(f"桌面路径不存在: {desktop}")
+
+        return []
+
+
+
+    try:
+
+        shell = win32com.client.Dispatch("WScript.Shell")
+
+    except Exception as e:
+
+        log.error(f"WScript.Shell 初始化失败: {e}")
+
+        return []
+
+
+
+    out: list[ShortcutInfo] = []
+
+    for lnk in desktop.glob("*.lnk"):
+
+        try:
+
+            sc = shell.CreateShortCut(str(lnk))
+
+            info = ShortcutInfo(
+
+                name=lnk.stem,
+
+                target=sc.TargetPath or "",
+
+                lnk_path=str(lnk),
+
+                work_dir=sc.WorkingDirectory or "",
+
+            )
+
+            out.append(info)
+
+        except Exception as e:
+
+            log.warning(f"跳过 {lnk.name}: {e}")
+
+
+
+    # 追加用户自定义应用
+
+    for custom in load_custom_apps():
+
+        out.append(ShortcutInfo(
+
+            name=custom.get("name", Path(custom["target"]).stem),
+
+            target=custom.get("target", ""),
+
+            lnk_path="",  # 自定义不是快捷方式
+
+            work_dir=custom.get("work_dir", ""),
+
+        ))
+
+
+
+    # 加载快捷方式绑定元数据(launch_mode 等)
+
+    meta = load_shortcut_meta()
+
+    for sc in out:
+
+        key = _shortcut_key(sc)
+
+        item = meta.get(key) or {}
+
+        sc.launch_mode = item.get("launch_mode", "")
+
+        # 加载绑定坐标 (后续可在 run_action 里采用)
+
+        sc._coord_x = int(item.get("coord_x", 0) or 0)
+
+        sc._coord_y = int(item.get("coord_y", 0) or 0)
+
+        sc._click_type = item.get("click_type", "left_double")
+
+    return out
+
+
+
+
+
+# 迁移旧文件到新目录：只在显式调用时执行，禁止模块 import 时自动搬文件。
+
+def _migrate_old_file(old_path: Path) -> None:
+
+    if old_path.exists():
+
+        new_path = USER_DATA_DIR / old_path.name
+
+        if not new_path.exists():
+
+            try:
+
+                import shutil
+
+                shutil.copy2(old_path, new_path)
+
+                log.info(f"[迁移] {old_path.name} -> {USER_DATA_DIR}")
+
+            except Exception:
+
+                pass
+
+
+
+
+
+def migrate_legacy_runtime_files_once() -> None:
+
+    if USER_DATA_DIR.exists():
+
+        # 只兼容非常早期写在用户主目录的配置；不再从 exe/源码同级目录导入运行时文件，
+
+        # 避免迁移后又把旧 workflows/config/log 当成默认数据源。
+
+        _migrate_old_file(Path.home() / "context_aware_config.json")
+
+
+
+
+
+# 自定义应用管理
+
+CUSTOM_APPS_FILE = USER_DATA_DIR / "custom_apps.json"
+
+SAMPLES_DIR = USER_DATA_DIR / "samples"
+
+
+
+
+
+def _current_user_data_dir() -> Path:
+
+    """运行时动态读取当前数据目录，避免迁移后继续使用启动时缓存路径。"""
+
+    return resolve_user_data_dir()
+
+
+
+
+
+def _samples_dir() -> Path:
+
+    return _current_user_data_dir() / "samples"
+
+
+
+# 快捷方式绑定元数据: 存 launch_mode 等
+
+SHORTCUT_META_FILE = USER_DATA_DIR / "shortcut_meta.json"
+
+
+
+
+
+def _shortcut_key(sc) -> str:
+
+    """生成快捷方式的唯一键。优先用 lnk_path，其次 target，最后 name。"""
+
+    if sc.lnk_path:
+
+        return sc.lnk_path
+
+    if sc.target:
+
+        return f"target::{sc.target}"
+
+    return f"name::{sc.name}"
+
+
+
+
+
+def load_shortcut_meta() -> dict:
+
+    """加载 shortcut_meta.json, 返回 {key: {launch_mode}}"""
+
+    if not SHORTCUT_META_FILE.exists():
+
+        return {}
+
+    try:
+
+        data = json.loads(SHORTCUT_META_FILE.read_text(encoding="utf-8"))
+
+        return data if isinstance(data, dict) else {}
+
+    except Exception as e:
+
+        log.warning(f"shortcut_meta.json 读取失败: {e}")
+
+        return {}
+
+
+
+
+
+def save_shortcut_meta(meta: dict) -> None:
+
+    """保存到 shortcut_meta.json"""
+
+    try:
+
+        SHORTCUT_META_FILE.write_text(
+
+            json.dumps(meta, ensure_ascii=False, indent=2),
+
+            encoding="utf-8"
+
+        )
+
+    except Exception as e:
+
+        log.warning(f"shortcut_meta.json 保存失败: {e}")
+
+
+
+
+
+def load_custom_apps() -> list[dict]:
+
+    """加载 custom_apps.json"""
+
+    if not CUSTOM_APPS_FILE.exists():
+
+        return []
+
+    try:
+
+        return json.loads(CUSTOM_APPS_FILE.read_text(encoding="utf-8"))
+
+    except Exception as e:
+
+        log.warning(f"custom_apps.json 读取失败: {e}")
+
+        return []
+
+
+
+
+
+def save_custom_apps(apps: list[dict]) -> None:
+
+    """保存到 custom_apps.json"""
+
+    CUSTOM_APPS_FILE.write_text(
+
+        json.dumps(apps, ensure_ascii=False, indent=2),
+
+        encoding="utf-8"
+
+    )
+
+
+
+
+
+def add_custom_app(name: str, target: str, work_dir: str = "") -> dict:
+
+    """添加一个自定义应用(同名/同 target 视为重复,返回已有)"""
+
+    if not target or not Path(target).exists():
+
+        raise FileNotFoundError(f"目标不存在: {target}")
+
+    apps = load_custom_apps()
+
+    # 去重: 同 target (不区分大小写) 不重复
+
+    for a in apps:
+
+        if a["target"].lower() == target.lower():
+
+            return a
+
+    app = {
+
+        "name": name.strip() or Path(target).stem,
+
+        "target": target,
+
+        "work_dir": work_dir or str(Path(target).parent),
+
+    }
+
+    apps.append(app)
+
+    save_custom_apps(apps)
+
+    return app
+
+
+
+
+
+def remove_custom_app(target: str) -> bool:
+
+    """删除指定 target 的自定义应用"""
+
+    apps = load_custom_apps()
+
+    new_apps = [a for a in apps if a["target"].lower() != target.lower()]
+
+    if len(new_apps) < len(apps):
+
+        save_custom_apps(new_apps)
+
+        return True
+
+    return False
+
+
+
+
+
+# ---------------------------------------------------------------------------
+
+# 5. 启动程序(后台线程跑,UI 不卡)
+
+# ---------------------------------------------------------------------------
+
+class IPCServerThread(QThread):
+
+    """主实例命名管道 IPC 服务线程。"""
+
+
+
+    message_signal = Signal(dict)
+
+    log_signal = Signal(str)
+
+
+
+    def __init__(self) -> None:
+
+        super().__init__()
+
+        self._stop_event = threading.Event()
+
+
+
+    def stop(self) -> None:
+
+        self._stop_event.set()
+
+        # 连接一次管道,唤醒阻塞中的 ConnectNamedPipe
+
+        try:
+
+            _forward_to_running_instance([sys.executable, "--ipc-stop"])
+
+        except Exception:
+
+            pass
+
+
+
+    def run(self) -> None:
+
+        try:
+
+            import pywintypes
+
+            import win32file
+
+            import win32pipe
+
+        except Exception as e:
+
+            self.log_signal.emit(f"IPC 服务不可用: {e}")
+
+            return
+
+
+
+        self.log_signal.emit("IPC 命名管道服务已启动")
+
+        while not self._stop_event.is_set():
+
+            pipe = None
+
+            try:
+
+                pipe = win32pipe.CreateNamedPipe(
+
+                    _IPC_PIPE_NAME,
+
+                    win32pipe.PIPE_ACCESS_INBOUND,
+
+                    win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
+
+                    1,
+
+                    65536,
+
+                    65536,
+
+                    0,
+
+                    None,
+
+                )
+
+                try:
+
+                    win32pipe.ConnectNamedPipe(pipe, None)
+
+                except pywintypes.error as e:
+
+                    # 535 = ERROR_PIPE_CONNECTED,客户端已先连上,可继续读
+
+                    if getattr(e, "winerror", None) != 535:
+
+                        raise
+
+
+
+                chunks = []
+
+                while True:
+
+                    try:
+
+                        _hr, chunk = win32file.ReadFile(pipe, 65536)
+
+                        if chunk:
+
+                            chunks.append(chunk)
+
+                        if not chunk or chunk.endswith(b"\n"):
+
+                            break
+
+                    except pywintypes.error as e:
+
+                        # 109 = ERROR_BROKEN_PIPE
+
+                        if getattr(e, "winerror", None) == 109:
+
+                            break
+
+                        raise
+
+
+
+                raw = b"".join(chunks).decode("utf-8", errors="replace").strip()
+
+                if raw:
+
+                    data = json.loads(raw)
+
+                    argv = [str(a).lower() for a in data.get("argv", [])]
+
+                    if "--ipc-stop" not in argv:
+
+                        self.message_signal.emit(data)
+
+            except Exception as e:
+
+                if not self._stop_event.is_set():
+
+                    self.log_signal.emit(f"IPC 服务异常: {e}")
+
+            finally:
+
+                if pipe is not None:
+
+                    try:
+
+                        win32file.CloseHandle(pipe)
+
+                    except Exception:
+
+                        pass
+
+        self.log_signal.emit("IPC 命名管道服务已停止")
+
+
+
+
+
+# ---------------------------------------------------------------------------
+
+# 6. 全屏截图 + 框选(手动做模板)
+
+# ---------------------------------------------------------------------------
+
+class SnippingWindow(QWidget):
+
+    """全屏覆盖窗口,鼠标拖拽框选一块区域并保存为 PNG。
+
+
+
+    关键: 统一使用"逻辑坐标" (DPI-缩放后),避免在 125%/150% 屏幕上坐标偏移。
+
+    截图时拿真实物理像素,但画到 widget 上时按 devicePixelRatio 缩放。
+
+    保存时使用选中区在物理像素图中的子区域(坐标*ratio)。
+
+    """
+
+
+
+    captured = Signal(QRect)
+
+
+
+    def __init__(self) -> None:
+
+        super().__init__()
+
+        self.setWindowFlags(
+
+            Qt.FramelessWindowHint
+
+            | Qt.WindowStaysOnTopHint
+
+            | Qt.Tool
+
+        )
+
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+
+        self.setCursor(Qt.CrossCursor)
+
+
+
+        screen = QGuiApplication.primaryScreen()
+
+        # 物理像素图 (高 DPI 下分辨率会高)
+
+        self._full_pixmap: QPixmap = screen.grabWindow(0)
+
+        self._dpr: float = screen.devicePixelRatio()
+
+        # widget 覆盖整个屏幕(逻辑坐标)
+
+        self.setGeometry(screen.geometry())
+
+
+
+        self._start: Optional[QPoint] = None
+
+        self._end: Optional[QPoint] = None
+
+
+
+    def paintEvent(self, _event) -> None:
+
+        p = QPainter(self)
+
+        # 画原图,但拉伸到 widget 逻辑尺寸 (画出来跟屏幕一样)
+
+        p.drawPixmap(self.rect(), self._full_pixmap)
+
+        # 画一个半透明黑色遮罩
+
+        p.fillRect(self.rect(), QColor(0, 0, 0, 80))
+
+        if self._start and self._end:
+
+            rect = QRect(self._start, self._end).normalized()
+
+            # 逻辑坐标下的选区 → 物理像素子区域
+
+            phys_rect = QRect(
+
+                int(rect.left() * self._dpr),
+
+                int(rect.top() * self._dpr),
+
+                int(rect.width() * self._dpr),
+
+                int(rect.height() * self._dpr),
+
+            )
+
+            cropped = self._full_pixmap.copy(phys_rect)
+
+            p.drawPixmap(rect.topLeft(), cropped)
+
+            pen = QPen(QColor(0, 200, 255), 2, Qt.SolidLine)
+
+            p.setPen(pen)
+
+            p.drawRect(rect)
+
+
+
+    def mousePressEvent(self, ev) -> None:
+
+        # ev.position() 已经是逻辑坐标,转 QPoint 即可
+
+        self._start = ev.position().toPoint()
+
+        self._end = self._start
+
+        self.update()
+
+
+
+    def mouseMoveEvent(self, ev) -> None:
+
+        self._end = ev.position().toPoint()
+
+        self.update()
+
+
+
+    def mouseReleaseEvent(self, ev) -> None:
+
+        self._end = ev.position().toPoint()
+
+        rect = QRect(self._start, self._end).normalized()
+
+        # 发射物理像素坐标,让调用者直接用 .copy(rect)
+
+        phys_rect = QRect(
+
+            int(rect.left() * self._dpr),
+
+            int(rect.top() * self._dpr),
+
+            int(rect.width() * self._dpr),
+
+            int(rect.height() * self._dpr),
+
+        )
+
+        self.captured.emit(phys_rect)
+
+        self.close()
+
+
+
+    def keyPressEvent(self, ev) -> None:
+
+        if ev.key() == Qt.Key_Escape:
+
+            self.close()
+
+
+
+
+
+# ---------------------------------------------------------------------------
+
+# 7. 主窗口
+
+# ---------------------------------------------------------------------------
+
+class MainWindow(QMainWindow):
+
+    # ---- 桥接状态转发 (Step 1B-4) ----
+
+    # 目的: context_tab.py 等外部代码通过 self.window().memory_engine_mgr 访问,
+
+    # 转发到 self.bridges.xxx 保持 API 兼容, 不修改调用方
+
+    @property
+
+    def memory_engine_mgr(self):
+
+        return self.bridges.memory_engine_mgr
+
+
+
+    @property
+
+    def assistant_core(self):
+
+        return self.bridges.assistant_core
+
+
+
+    @property
+
+    def _companion_bridge(self):
+
+        return self.bridges._companion_bridge
+
+
+
+    @property
+
+    def _vtuber_bridge(self):
+
+        return self.bridges._vtuber_bridge
+
+    # ---- Step 1C-2/3/4: 持久化容器转发 (兼容旧 API) ----
+
+    @property
+
+    def ipc_server(self):
+
+        return self.containers.ipc
+
+    @property
+
+    def state(self):
+
+        return self.containers.state
+
+    @property
+
+    def worker(self):
+
+        return self.containers.worker
+
+    @property
+
+    def shortcuts(self):
+
+        return self.containers.shortcuts
+
+
+
+    @property
+
+    def _assistant_bridge(self):
+
+        return self.bridges._assistant_bridge
+
+
+
+    @property
+
+    def _reminder_timer(self):
+
+        return self.bridges._reminder_timer
+
+
+
+    @property
+
+    def _diary_scheduler(self):
+
+        return self.bridges._diary_scheduler
+
+
+
+    def __init__(self) -> None:
+
+        super().__init__()
+
+        from i18n import t as _t
+
+        self.setWindowTitle(_t("app_title"))
+
+        self.resize(960, 640)
+
+
+
+        # Step 1C-1/2/3/4: 持久化容器组 (替代 self.state/self.ipc_server/self.worker/self.shortcuts)
+
+        self.containers = AppContainers(self)
+
+        self.containers.state = UIState.load(self.STATE_FILE)  # 记忆上次启动的 PID
+
+
+
+        # ===== 左侧:快捷方式列表 =====
+
+        self.list_widget = QListWidget(self)
+
+        self.list_widget.setMinimumWidth(260)
+
+        self.list_widget.setUniformItemSizes(True)  # 固定行高,不会压扁
+
+        self.list_widget.setWordWrap(False)
+
+        self.list_widget.setStyleSheet(
+
+            "QListWidget { font-size: 13px; }"
+
+            "QListWidget::item { height: 26px; padding: 2px; }"
+
+        )
+
+        self.list_widget.itemSelectionChanged.connect(self._on_select)
+
+        # 双击启动应用 (与「执行」按钮行为一致)
+
+        self.list_widget.itemDoubleClicked.connect(self.run_action)
+
+
+
+        # ===== 右侧:控制面板 =====
+
+        self.info_label = QLabel(t("ql_info_selected"), self)
+
+        self.info_label.setWordWrap(True)
+
+        self.info_label.setStyleSheet("color: #555;")
+
+
+
+        # 启动方式 radio (顺序按推荐度: 鼠标双击 > Popen > Shell > 图像)
+
+        self.mode_group = QButtonGroup(self)
+
+        self.radio_direct = QRadioButton(t("ql_radio_direct"), self)
+
+        self.radio_desktop = QRadioButton(t("ql_radio_desktop"), self)
+
+        self.radio_shellexec = QRadioButton(t("ql_radio_shell"), self)
+
+        self.radio_image = QRadioButton(t("ql_radio_image"), self)
+
+        self.radio_direct.setChecked(True)
+
+        self.mode_group.addButton(self.radio_desktop, 1)
+
+        self.mode_group.addButton(self.radio_direct, 2)
+
+        self.mode_group.addButton(self.radio_shellexec, 3)
+
+        self.mode_group.addButton(self.radio_image, 4)
+
+
+
+        self.chk_notepad = QCheckBox(t("ql_chk_notepad"), self)
+
+
+
+        self.samples_label = QLabel(t("ql_template_none"), self)
+
+        self.samples_label.setWordWrap(True)
+
+
+
+        self.btn_refresh = QPushButton(t("ql_btn_refresh"), self)
+
+        self.btn_snipping = QPushButton(t("ql_btn_screenshot"), self)
+
+        self.btn_load_samples = QPushButton(t("ql_btn_load_template"), self)
+
+        self.btn_run = QPushButton(t("ql_btn_run"), self)
+
+        self.btn_run.setStyleSheet("font-weight: bold; padding: 6px; min-height: 24px;")
+
+        self.btn_stop = QPushButton(t("ql_btn_stop"), self)
+
+        self.btn_stop.setStyleSheet("min-height: 24px;")
+
+        self.btn_stop.setEnabled(False)
+
+
+
+        # 启动参数(Electron / Chromium 沙箱绕过)
+
+        self.args_edit = QLineEdit(self)
+
+        self.args_edit.setPlaceholderText("--no-sandbox --disable-gpu --no-stdio-init ...")
+
+        self.args_edit.setClearButtonEnabled(True)
+
+
+
+        # ===== 清理残留进程 =====
+
+        self.cleanup_kw = QLineEdit(self)
+
+        self.cleanup_kw.setPlaceholderText("aipy  lobe  mobax  ... (空格分隔多个关键词)")
+
+        self.cleanup_kw.setClearButtonEnabled(True)
+
+        self.btn_cleanup = QPushButton(t("ql_btn_cleanup"), self)
+
+        self.btn_cleanup.setStyleSheet(
+
+            "QPushButton { background:#f59e0b; color:white; font-weight:bold; padding:6px; min-height: 24px; }"
+
+            "QPushButton:hover { background:#d97706; }"
+
+        )
+
+
+
+        right = QWidget(self)
+
+        # 右侧选项卡布局: 快速启动 | 工作流
+
+        from PySide6.QtWidgets import QTabWidget
+
+        self.right_tabs = QTabWidget(right)
+
+
+
+        # === Tab 1: 快速启动 (原内容) ===
+
+        # 用 QScrollArea 包裹,防止控件重叠
+
+        quick_tab = QWidget()
+
+        quick_outer = QVBoxLayout(quick_tab)
+
+        quick_outer.setContentsMargins(0, 0, 0, 0)
+
+        quick_scroll = QScrollArea(quick_tab)
+
+        quick_scroll.setWidgetResizable(True)
+
+        quick_scroll.setFrameShape(QFrame.NoFrame)
+
+        quick_inner = QWidget()
+
+        quick_scroll.setWidget(quick_inner)
+
+        rv = QVBoxLayout(quick_inner)
+
+        rv.setContentsMargins(4, 4, 4, 4)
+
+        rv.setSpacing(6)
+
+        quick_outer.addWidget(quick_scroll)
+
+
+
+        rv.addWidget(QLabel(t("ql_label_target") + ":"))
+
+        rv.addWidget(self.info_label)
+
+        gb = QGroupBox(t("ql_launch_mode_box"), quick_tab)
+
+        gv = QVBoxLayout(gb)
+
+        gv.addWidget(self.radio_desktop)
+
+        gv.addWidget(self.radio_direct)
+
+        gv.addWidget(self.radio_shellexec)
+
+        gv.addWidget(self.radio_image)
+
+        gb.setMinimumHeight(150)
+
+        rv.addWidget(gb)
+
+
+
+        # ===== 启动方式绑定 (快捷方式级别) =====
+
+        bind_box = QGroupBox(t("ql_bind_box"))
+
+        bv = QVBoxLayout(bind_box)
+
+        bv.setContentsMargins(8, 4, 8, 6)
+
+        bv.setSpacing(4)
+
+        self.lbl_launch_mode_hint = QLabel(t("ql_info_selected"))
+
+        self.lbl_launch_mode_hint.setStyleSheet("color: #2563eb; font-size: 11px; padding: 2px 4px;")
+
+        self.lbl_launch_mode_hint.setWordWrap(True)
+
+        bv.addWidget(self.lbl_launch_mode_hint)
+
+        bind_row = QHBoxLayout()
+
+        self.btn_bind_launch_mode = QPushButton(t("ql_btn_bind_mode"))
+
+        self.btn_bind_launch_mode.setToolTip(t("ql_bind_mode_tooltip"))
+
+        self.btn_bind_launch_mode.setStyleSheet(
+
+            "QPushButton { background:#2563eb; color:white; font-weight:bold; padding:5px 10px; }"
+
+            "QPushButton:hover { background:#1d4ed8; }"
+
+            "QPushButton:disabled { background:#9ca3af; }"
+
+        )
+
+        self.btn_bind_launch_mode.clicked.connect(self._bind_launch_mode)
+
+        self.btn_bind_launch_mode.setEnabled(False)
+
+        bind_row.addWidget(self.btn_bind_launch_mode)
+
+        self.btn_clear_launch_mode = QPushButton(t("ql_btn_clear_bind"))
+
+        self.btn_clear_launch_mode.setToolTip(t("ql_clear_bind_tooltip"))
+
+        self.btn_clear_launch_mode.clicked.connect(self._clear_launch_mode)
+
+        self.btn_clear_launch_mode.setEnabled(False)
+
+        bind_row.addWidget(self.btn_clear_launch_mode)
+
+        bind_row.addStretch()
+
+        bv.addLayout(bind_row)
+
+        rv.addWidget(bind_box)
+
+
+
+        rv.addWidget(self.chk_notepad)
+
+        rv.addWidget(QLabel(t("ql_label_template") + ":"))
+
+        rv.addWidget(self.samples_label)
+
+        hb = QHBoxLayout()
+
+        hb.addWidget(self.btn_snipping)
+
+        hb.addWidget(self.btn_load_samples)
+
+        rv.addLayout(hb)
+
+        # ===== 坐标点击 (代替图像识别) =====
+
+        coord_group = QGroupBox(t("ql_coord_box"))
+
+        cg_v = QVBoxLayout(coord_group)
+
+        coord_row = QHBoxLayout()
+
+        coord_row.addWidget(QLabel(t("coord_label_x")))
+
+        self.coord_x = QSpinBox()
+
+        self.coord_x.setRange(0, 9999)
+
+        coord_row.addWidget(self.coord_x)
+
+        coord_row.addWidget(QLabel(t("coord_label_y")))
+
+        self.coord_y = QSpinBox()
+
+        self.coord_y.setRange(0, 9999)
+
+        coord_row.addWidget(self.coord_y)
+
+        coord_row.addWidget(QLabel(t("ql_click_label") + ":"))
+
+        self.coord_click_type = QComboBox()
+
+        self.coord_click_type.addItem(t("ql_click_double") + " (" + t("ql_default") + ")", "left_double")
+
+        self.coord_click_type.addItem(t("ql_click_single"), "left_single")
+
+        self.coord_click_type.addItem(t("ql_click_right"), "right_single")
+
+        coord_row.addWidget(self.coord_click_type)
+
+        coord_row.addStretch()
+
+        cg_v.addLayout(coord_row)
+
+        capture_row = QHBoxLayout()
+
+        self.btn_capture_coord = QPushButton(t("ql_btn_capture_coord"))
+
+        self.btn_capture_coord.setStyleSheet(
+
+            "QPushButton { background:#0891b2; color:white; padding:6px; font-weight:bold; }"
+
+            "QPushButton:hover { background:#0e7490; }"
+
+            "QPushButton:disabled { background:#9ca3af; }"
+
+        )
+
+        capture_row.addWidget(self.btn_capture_coord)
+
+        self.coord_status = QLabel("")
+
+        self.coord_status.setStyleSheet("color:#666; font-size:11px;")
+
+        capture_row.addWidget(self.coord_status)
+
+        capture_row.addStretch()
+
+        cg_v.addLayout(capture_row)
+
+        rv.addWidget(coord_group)
+
+        rv.addWidget(QLabel(t("ql_label_args") + ":"))
+
+        rv.addWidget(self.args_edit)
+
+        rv.addStretch(1)
+
+        rv.addWidget(self.btn_run)
+
+        rv.addWidget(self.btn_stop)
+
+
+
+        # 一键启停区域 (已替换为工作流面板)
+
+        onekey_box = QGroupBox(t("ql_onekey_box"), quick_tab)
+
+        obv = QVBoxLayout(onekey_box)
+
+        obv.addWidget(QLabel(t("ql_onekey_hint")))
+
+        obv.addWidget(QLabel(t("ql_onekey_sub")))
+
+        rv.addWidget(onekey_box)
+
+
+
+        # 清理残留
+
+        clean_box = QGroupBox(t("ql_cleanup_box"), quick_tab)
+
+        cv = QVBoxLayout(clean_box)
+
+        cv.addWidget(QLabel(t("ql_cleanup_label")))
+
+        cv.addWidget(self.cleanup_kw)
+
+        cv.addWidget(self.btn_cleanup)
+
+        clean_box.setMinimumHeight(130)
+
+        rv.addWidget(clean_box)
+
+
+
+        # ===== (MCP Server 控制已转移到【工具】标签页) =====
+
+
+
+        # === Tab 2: 工作流 ===
+
+        from workflow_panel import WorkflowEditor
+
+        self.workflow_editor = WorkflowEditor(self)
+
+        workflow_tab = QWidget()
+
+        wv = QVBoxLayout(workflow_tab)
+
+        wv.setContentsMargins(0, 0, 0, 0)
+
+        wv.addWidget(self.workflow_editor)
+
+
+
+        # === Tab 2: 文件搜索 ===
+
+        from i18n import t as _t
+
+        try:
+
+            from search_panel import SearchPanel
+
+            self.search_panel = SearchPanel(self)
+
+            self.right_tabs.addTab(self.search_panel, _t("tab_search"))
+
+        except Exception as e:
+
+            log.warning(f"文件搜索标签加载失败: {e}")
+
+
+
+        # 添加到选项卡
+
+        self.right_tabs.addTab(quick_tab, _t("tab_quick_launch"))
+
+        self.right_tabs.addTab(workflow_tab, _t("tab_workflow"))
+
+        # === Tab 4: 工具 (MCP server 控制 + 简介) ===
+
+        try:
+
+            from tools_tab import ToolsTab
+
+            self.tools_tab = ToolsTab(self)
+
+            self.right_tabs.addTab(self.tools_tab, _t("tab_tools"))
+
+        except Exception as e:
+
+            log.warning(f"工具标签加载失败: {e}")
+
+
+
+        # === Tab 5: AI 感知 (上下文感知系统) ===
+
+        try:
+
+            from context_tab import ContextTab
+
+            self.context_tab = ContextTab(self)
+
+            self.right_tabs.addTab(self.context_tab, _t("tab_ai_perception"))
+
+        except Exception as e:
+
+            import traceback
+
+            tb = traceback.format_exc()
+
+            log.warning(f"AI 感知标签加载失败: {e}")
+
+            # 暴露到全局日志, 便于查 bug
+
+            try:
+
+                from log_bus import log_bus
+
+                log_bus.emit(f"[加载] ❌ AI 感知 tab 加载失败: {e}\n{tb}")
+
+            except Exception:
+
+                pass
+
+
+
+        # 设置选项卡
+
+        right_layout = QVBoxLayout(right)
+
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
+        right_layout.addWidget(self.right_tabs)
+
+
+
+        # ===== 底部:日志 =====
+
+        self.log_view = QTextEdit(self)
+
+        self.log_view.setReadOnly(True)
+
+        self.log_view.setStyleSheet(
+
+            "background:#1e1e1e;color:#dcdcdc;font-family:Consolas,monospace;"
+
+        )
+
+
+
+        # ===== 整体布局: 用 QSplitter 干调拖动划分,避免嵌套后 stretch 失效 =====
+
+        from PySide6.QtWidgets import QSplitter
+
+        # 右侧不包 QScrollArea,直接让 right_tabs 填满右侧面板
+
+        # (原来用 QScrollArea 会导致 QTextEdit 被拉伸超限、输入区被挤走)
+
+        right.setMinimumWidth(300)
+
+        right.setMaximumWidth(750)  # 限制右侧面板最大宽度,防止聊天区域过宽
+
+        scroll = right  # 向后兼容名
+
+
+
+        # ===== 左侧: 快捷方式列表 + 重新扫描按钮 =====
+
+        left_panel = QWidget()
+
+        left_layout = QVBoxLayout(left_panel)
+
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
+        left_layout.setSpacing(4)
+
+        # 头部: 标题 + 重新扫描
+
+        header_row = QHBoxLayout()
+
+        header_row.setContentsMargins(4, 4, 4, 0)
+
+        list_title = QLabel(t("ql_desktop_shortcuts"))
+
+        list_title.setStyleSheet("font-weight: bold;")
+
+        header_row.addWidget(list_title)
+
+        header_row.addStretch()
+
+        # 自定义添加按钮
+
+        self.btn_add_custom = QPushButton("➕", self)
+
+        self.btn_add_custom.setStyleSheet("padding: 2px 8px; min-height: 22px; font-weight: bold; color: #10b981;")
+
+        self.btn_add_custom.setToolTip(t("ql_btn_add_custom_tooltip"))
+
+        header_row.addWidget(self.btn_add_custom)
+
+        # 删除自定义按钮
+
+        self.btn_remove_custom = QPushButton("🗑", self)
+
+        self.btn_remove_custom.setStyleSheet("padding: 2px 8px; min-height: 22px; font-weight: bold; color: #dc2626;")
+
+        self.btn_remove_custom.setToolTip(t("ql_btn_remove_custom_tooltip"))
+
+        header_row.addWidget(self.btn_remove_custom)
+
+        # 重新扫描
+
+        self.btn_refresh.setStyleSheet("padding: 2px 8px; min-height: 22px;")
+
+        self.btn_refresh.setToolTip(t("ql_btn_refresh_tooltip"))
+
+        header_row.addWidget(self.btn_refresh)
+
+        left_layout.addLayout(header_row)
+
+        left_layout.addWidget(self.list_widget)
+
+
+
+        splitter = QSplitter(Qt.Horizontal, self)
+
+        splitter.addWidget(left_panel)
+
+        splitter.addWidget(scroll)
+
+        splitter.setStretchFactor(0, 2)
+
+        splitter.setStretchFactor(1, 2)  # 1:1 均分,右侧不超过 900
+
+        splitter.setSizes([500, 820])  # 右侧宽一些
+
+
+
+        outer = QWidget(self)
+
+        ov = QVBoxLayout(outer)
+
+        ov.setContentsMargins(6, 6, 6, 6)
+
+        ov.addWidget(splitter, 3)
+
+        ov.addWidget(QLabel(t("ql_label_log") + ":"))
+
+        ov.addWidget(self.log_view, 1)
+
+        self.setCentralWidget(outer)
+
+        self.setCentralWidget(outer)
+
+
+
+        # 强制最小尺寸防坍缩
+
+        self.list_widget.setMinimumWidth(280)
+
+        self.setMinimumSize(1280, 720)
+
+        self.resize(1400, 860)
+
+
+
+        self.setStatusBar(QStatusBar(self))
+
+
+
+        # 信号
+
+        self.btn_refresh.clicked.connect(self.refresh_shortcuts)
+
+        self.btn_add_custom.clicked.connect(self._add_custom_app)
+
+        self.btn_remove_custom.clicked.connect(self._remove_custom_app)
+
+        self.btn_snipping.clicked.connect(self.start_snipping)
+
+        self.btn_load_samples.clicked.connect(self.load_samples_from_files)
+
+        self.btn_capture_coord.clicked.connect(self._capture_coord_for_quick)
+
+        self.btn_run.clicked.connect(self.run_action)
+
+        self.btn_stop.clicked.connect(self.stop_action)
+
+        # btn_onekey_start / btn_onekey_stop 已替换为工作流面板
+
+        self.btn_cleanup.clicked.connect(self.cleanup_residuals)
+
+        # MCP server 控制已转移到【工具】标签页
+
+
+
+        # 启动时自动扫描
+
+        self.refresh_shortcuts()
+
+        self._start_ipc_server()
+
+
+
+        # ---- 系统托盘 ----
+
+        self._tray_icon: Optional[QSystemTrayIcon] = None
+
+        self._tray_menu: Optional[QMenu] = None
+
+        self._truly_quit = False  # 区分"隐藏到托盘"和"真正退出"
+
+        self._setup_system_tray()
+
+        # 加载窗口状态(位置/大小/是否默认后台)
+
+        self._load_window_state()
+
+
+
+        # ---- 7 个桥接状态已迁移到 AppBridges (Step 1B-2) ----
+
+        # ---- AppBridges 集中容器 (Step 1B-3) ----
+
+        self.bridges = AppBridges(self)
+
+        # ---- 7.4 Assistant Bridge (Step 4+5: VTuber 双脑路由) ----
+
+        self._init_memory_engine()
+
+        self._init_reminder_scheduler()
+
+        self._init_companion_bridge()
+
+        self._init_vtuber_bridge()
+
+        self._init_assistant_bridge()
+
+
+
+    # ---- 7.1 日志桥接 ----
+
+    def _append_log(self, msg: str) -> None:
+
+        self.log_view.append(msg)
+
+        # 自动滚到底
+
+        sb = self.log_view.verticalScrollBar()
+
+        sb.setValue(sb.maximum())
+
+
+
+    def _setup_global_log_bus(self) -> None:
+
+        """订阅全局 log_bus,所有标签页/子系统的日志都会汇到这里"""
+
+        try:
+
+            from log_bus import log_bus
+
+            # 文件记录: 同目录下 desktop_auto.log
+
+            log_path = USER_DATA_DIR / "desktop_auto.log"
+
+            log_bus.set_log_file(str(log_path))
+
+            log_bus.log_signal.connect(self._append_log)
+
+            log_bus.emit("[全局日志] 已启用,文件: " + str(log_path))
+
+        except Exception as e:
+
+            self._append_log(f"[全局日志] 初始化失败: {e}")
+
+
+
+    def _start_ipc_server(self) -> None:
+
+        """启动命名管道 IPC 服务,供后续实例转发任务。
+
+
+
+        Step 1C-2: 实例移到 self.containers.ipc, 通过 @property ipc_server 保持 API 兼容
+
+        """
+
+        self.containers.ipc = IPCServerThread()
+
+        self.containers.ipc.log_signal.connect(lambda m: self._append_log(f"[IPC] {m}"))
+
+        self.containers.ipc.message_signal.connect(self._handle_ipc_message)
+
+        self.containers.ipc.start()
+
+
+
+    def _handle_ipc_message(self, data: dict) -> None:
+
+        """处理新进程转发来的任务。"""
+
+        argv = data.get("argv", [])
+
+        args = [str(a).lower() for a in argv]
+
+        if "--close-main" in args:
+
+            self._append_log("[IPC] 收到关闭命令, 退出主窗口...")
+
+            QApplication.quit()
+
+            return
+
+        self._append_log(f"[IPC] 收到任务: {argv}")
+
+        self._activate_self()
+
+        if "--install-shortcut" in args or "--install" in args:
+
+            _do_install_shortcut()
+
+        elif "--remove-shortcut" in args or "--uninstall" in args:
+
+            _do_remove_shortcut()
+
+
+
+    def _activate_self(self) -> None:
+
+        """把当前主窗口切到前台。"""
+
+        self.showNormal()
+
+        self.raise_()
+
+        self.activateWindow()
+
+        try:
+
+            import win32con
+
+            import win32gui
+
+            hwnd = int(self.winId())
+
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+
+            win32gui.SetForegroundWindow(hwnd)
+
+        except Exception:
+
+            pass
+
+
+
+    def closeEvent(self, event) -> None:
+
+        # 如果有托盘,且不是真正退出,则隐藏到托盘
+
+        if self._tray_icon and self._tray_icon.isVisible() and not self._truly_quit:
+
+            event.ignore()
+
+            self.hide()
+
+            if self._tray_icon and not self._tray_icon.supportsMessages() is False:
+
+                pass
+
+            # 首次隐藏给个气泡提示
+
+            if not getattr(self, "_tray_hint_shown", False):
+
+                self._tray_hint_shown = True
+
+                try:
+
+                    self._tray_icon.showMessage(
+
+                        "桌面自动化助手",
+
+                        "已最小化到托盘，双击图标可恢复窗口。",
+
+                        QSystemTrayIcon.Information,
+
+                        3000,
+
+                    )
+
+                except Exception:
+
+                    pass
+
+            return
+
+        # 真正退出:清理资源
+
+        self._save_window_state()
+
+        if self.containers.ipc:
+
+            self.containers.ipc.stop()
+
+            self.containers.ipc.wait(1000)
+
+        # 关闭 AI 感知标签页（释放 QThread 等资源）
+
+        try:
+
+            if hasattr(self, "context_tab") and self.context_tab:
+
+                self.context_tab.shutdown()
+
+        except Exception:
+
+            pass
+
+        # 关闭记忆引擎（Phase A）
+
+        try:
+
+            if hasattr(self.bridges, "memory_engine_mgr") and self.bridges.memory_engine_mgr:
+
+                self.bridges.memory_engine_mgr.stop()
+
+        except Exception:
+
+            pass
+
+
+
+        # 停止桌宠桥接（Phase D）
+
+        try:
+
+            if hasattr(self.bridges, "_companion_bridge") and self.bridges._companion_bridge:
+
+                self.bridges._companion_bridge.stop()
+
+        except Exception:
+
+            pass
+
+
+
+        # 停止 Assistant Bridge (双脑路由)
+
+        try:
+
+            if hasattr(self.bridges, "_assistant_bridge") and self.bridges._assistant_bridge:
+
+                self.bridges._assistant_bridge.stop()
+
+        except Exception:
+
+            pass
+
+
+
+        if self._tray_icon:
+
+            try:
+
+                self._tray_icon.hide()
+
+            except Exception:
+
+                pass
+
+        super().closeEvent(event)
+
+
+
+    # ---- 7.2 桌宠桥接 (Phase D) ----
+
+    def _update_companion_config(self, config: dict) -> None:
+
+        """更新桥接配置（由 Tools 標签页调用）。"""
+
+        if hasattr(self.bridges, "_companion_bridge") and self.bridges._companion_bridge:
+
+            self.bridges._companion_bridge.update_config(config)
+
+
+
+    def _init_companion_bridge(self) -> None:
+
+        """启动 MetaPact 桌宠桥接（默认禁用）。同时初始化 LLM backend 供 VTuber /v1/chat/completions 调用。"""
+
+        try:
+
+            from companion_bridge import CompanionBridgeThread, CompanionAPIHandler
+
+            from context_agent import EchoBackend, OpenAICompatibleBackend
+
+
+
+            # 创建 LLM backend 实例：优先复用 AI 感知页保存的真实后端配置
+
+            backend = EchoBackend()
+
+            backend_desc = "EchoBackend"
+
+            context_cfg_path = USER_DATA_DIR / "context_aware_config.json"
+
+            try:
+
+                import json
+
+                if context_cfg_path.exists():
+
+                    context_cfg = json.loads(context_cfg_path.read_text(encoding="utf-8"))
+
+                    backend_cfg = context_cfg.get("backend", {}) if isinstance(context_cfg, dict) else {}
+
+                    backend_type = int(backend_cfg.get("type", 0) or 0)
+
+                    if backend_type == 1:
+
+                        base_url = str(backend_cfg.get("base_url") or "").strip()
+
+                        api_key = str(backend_cfg.get("api_key") or "EMPTY").strip() or "EMPTY"
+
+                        model = str(backend_cfg.get("model") or "").strip()
+
+                        if base_url and model:
+
+                            backend = OpenAICompatibleBackend(
+
+                                base_url=base_url,
+
+                                api_key=api_key,
+
+                                model=model,
+
+                            )
+
+                            backend_desc = f"OpenAICompatibleBackend({base_url}, model={model})"
+
+                        else:
+
+                            self._append_log(f"[桥接] AI 后端配置不完整，使用 EchoBackend: {backend_cfg}")
+
+                    else:
+
+                        self._append_log(f"[桥接] AI 后端为 Echo/未配置，VTuber 聊天将使用 EchoBackend")
+
+                else:
+
+                    self._append_log(f"[桥接] context_aware_config.json 不存在，使用 EchoBackend: {context_cfg_path}")
+
+            except Exception as e:
+
+                self._append_log(f"[桥接] 读取 AI 后端配置失败，使用 EchoBackend: {e}")
+
+
+
+            # 设置给 CompanionAPIHandler 类级别属性
+
+            CompanionAPIHandler._backend = backend
+
+            # 设置浏览器通知弹窗点击回调
+            from PySide6.QtCore import QTimer
+            from context_toast import ToastIntent
+            def _on_browser_toast_clicked(text: str):
+                if not text:
+                    return
+                intent = ToastIntent(
+                    intent="VTuber 通知",
+                    message=text,
+                    suggested_action="",
+                    action_param=None,
+                )
+                QTimer.singleShot(0, lambda: self.context_tab._on_toast_clicked(intent))
+            CompanionAPIHandler.toast_click_callback = _on_browser_toast_clicked
+
+            if hasattr(backend, "model"):
+
+                CompanionAPIHandler._backend_model = backend.model
+
+            elif hasattr(backend, "_model"):
+
+                CompanionAPIHandler._backend_model = backend._model
+
+            else:
+
+                CompanionAPIHandler._backend_model = model
+
+            self._append_log(f"[桥接] LLM backend 已初始化: {backend_desc}")
+
+
+
+            # 读取配置：优先从 tools_tab 注入，fallback 到 USER_DATA_DIR/config.json
+
+            config = {
+
+                "enabled": True,  # 默认启用 companion bridge HTTP server（供 VTuber LLM 调用）
+
+                "token": "",
+
+                "whitelist_workflows": [],
+
+            }
+
+            config_path = USER_DATA_DIR / "config.json"
+
+            self._append_log(f"[桥接] config_path: {config_path}, exists={config_path.exists()}")
+
+            if config_path.exists():
+
+                try:
+
+                    import json
+
+                    saved = json.loads(config_path.read_text(encoding="utf-8"))
+
+                    raw_enabled = saved.get("companion_enabled", False)
+
+                    self._append_log(f"[桥接] raw companion_enabled={raw_enabled}, type={type(raw_enabled)}")
+
+                    config["enabled"] = bool(raw_enabled)
+
+                    config["token"] = saved.get("companion_token", "")
+
+                    config["whitelist_workflows"] = saved.get("companion_whitelist_workflows", [])
+
+                except Exception as e:
+
+                    self._append_log(f"[桥接] 读取配置失败: {e}")
+
+            else:
+
+                self._append_log(f"[桥接] config.json 不存在，使用默认 config")
+
+            self.bridges._companion_bridge = CompanionBridgeThread(port=16260)
+
+            # 桥接日志信号（plain callback，threading 版本不需要 .connect()）
+
+            self.bridges._companion_bridge.log_signal = self._append_log
+
+            self.bridges._companion_bridge.status_signal = lambda running, msg: self._append_log(f"[桥接] {msg}")
+
+            # 透传配置
+
+            self.bridges._companion_bridge.update_config(config)
+
+            self.bridges._companion_bridge.start()
+
+        except Exception as e:
+
+            self._append_log(f"[桥接] 初始化失败: {e}")
+
+
+
+    def _update_vtuber_config(self, config: dict) -> None:
+
+        if hasattr(self.bridges, "_vtuber_bridge") and self.bridges._vtuber_bridge:
+
+            enabled = config.get("vtuber_enabled", False)
+
+            url = config.get("vtuber_backend_url", "http://127.0.0.1:12393")
+
+            self.bridges._vtuber_bridge.enabled = enabled
+
+            self.bridges._vtuber_bridge.backend_url = url
+
+            self.bridges._vtuber_bridge._http_url = url
+
+            self._append_log(f"[VTuber] 桥接配置已更新: enabled={enabled}, url={url}")
+
+
+
+    def _init_vtuber_bridge(self) -> None:
+
+        try:
+
+            from vtuber_bridge import VTuberBridge
+
+            config = {"vtuber_enabled": False, "vtuber_backend_url": "http://127.0.0.1:12393"}
+
+            config_path = USER_DATA_DIR / "config.json"
+
+            if config_path.exists():
+
+                try:
+
+                    import json
+
+                    saved = json.loads(config_path.read_text(encoding="utf-8"))
+
+                    config["vtuber_enabled"] = saved.get("vtuber_enabled", False)
+
+                    config["vtuber_backend_url"] = saved.get("vtuber_backend_url", "http://127.0.0.1:12393")
+
+                except Exception:
+
+                    pass
+
             self.bridges._vtuber_bridge = VTuberBridge(
 
                 backend_url=config["vtuber_backend_url"],
@@ -2598,3042 +2613,3042 @@ class MainWindow(QMainWindow):
                 self.bridges._vtuber_bridge._connect()
 
             self._append_log(f"[VTuber] 桥接已初始化 (enabled={config['vtuber_enabled']})，后端: {config['vtuber_backend_url']}")
-
-        except Exception as e:
-
-            self._append_log(f"[VTuber] 初始化失败: {e}")
-
-
-
-    # ---- 7.8 Assistant Bridge (Step 4+5: VTuber 双脑路由) ----
-
-    def _init_assistant_bridge(self) -> None:
-
-        """启动 AssistantCore + AssistantBridgeServer，供 VTuber 命中关键词后调用。
-
-
-
-        端口: 127.0.0.1:16299 (与 assistant_bridge_server.py 默认一致)
-
-        复用 companion bridge 已读取的 LLM 配置 (MiniMax URL + model)。
-
-        """
-
-        try:
-
-            print("[DEBUG] 正在尝试强制启动 16299 桥接服务...")
-
-            self._append_log("[Bridge] 正在初始化 AssistantCore + Bridge @ 16299...")
-
-            from assistant_core import AssistantCore
-
-            from assistant_bridge_server import AssistantBridgeServer
-
-
-
-            # 读取和 companion bridge 同样的 LLM 配置
-
-            base_url = "http://127.0.0.1:16260/v1"
-
-            api_key = "EMPTY"
-
-            model = "desktop-auto-v1"
-
-            context_cfg_path = USER_DATA_DIR / "context_aware_config.json"
-
-            try:
-
-                import json
-
-                if context_cfg_path.exists():
-
-                    context_cfg = json.loads(context_cfg_path.read_text(encoding="utf-8"))
-
-                    backend_cfg = context_cfg.get("backend", {}) if isinstance(context_cfg, dict) else {}
-
-                    if int(backend_cfg.get("type", 0) or 0) == 1:
-
-                        bu = str(backend_cfg.get("base_url") or "").strip()
-
-                        ak = str(backend_cfg.get("api_key") or "EMPTY").strip() or "EMPTY"
-
-                        md = str(backend_cfg.get("model") or "").strip()
-
-                        if bu and md:
-
-                            base_url = bu
-
-                            api_key = ak
-
-                            model = md
-
-            except Exception:
-
-                pass
-
-
-
-            self._append_log(f"[Bridge] LLM 配置: {base_url}, model={model}")
-
-            self.bridges.assistant_core = AssistantCore(
-
-                base_url=base_url,
-
-                api_key=api_key,
-
-                model=model,
-
-            )
-
-            self.bridges._assistant_bridge = AssistantBridgeServer(
-
-                port=16299,
-
-                core=self.bridges.assistant_core,
-
-            )
-
-            self.bridges._assistant_bridge.start()
-
-            self._append_log("[Bridge] ✓ 16299 桥接服务已启动 (供 VTuber 调用)")
-
-            print("[DEBUG] 桥接服务启动调用已发出。")
-
-        except Exception as e:
-
-            import traceback
-
-            self._append_log(f"[Bridge] ✗ 启动失败: {e}")
-
-            print(f"[DEBUG] Bridge 启动失败: {e}")
-
-            traceback.print_exc()
-
-
-
-    # ---- 7.9 提醒任务 (Phase D) ----
-
-    def _init_reminder_scheduler(self) -> None:
-
-        """启动本地提醒任务轮询。到期只弹 Toast，不静默执行工作流。"""
-
-        try:
-
-            from reminders import init_db
-
-            init_db()
-
-            self.bridges._reminder_timer = QTimer(self)
-
-            self.bridges._reminder_timer.setInterval(60_000)
-
-            self.bridges._reminder_timer.timeout.connect(self._check_due_reminders)
-
-            self.bridges._reminder_timer.start()
-
-            QTimer.singleShot(3000, self._check_due_reminders)
-
-            self._append_log("[Reminder] 提醒调度器已启动")
-
-        except Exception as e:
-
-            self._append_log(f"[Reminder] 初始化失败: {e}")
-
-
-
-        # 注: companion_bridge 已在 __init__ 中调用过 (line 1764), 此处不重复调用
-
-        # 否则会触发 LLM backend 二次初始化 + CompanionBridgeThread 二次 start,
-
-        # 日志里会出现 2 遍 [桥接] LLM backend 已初始化 / config_path
-
-
-
-    def _check_due_reminders(self) -> None:
-
-        try:
-
-            from reminders import get_due_reminders
-
-            dues = get_due_reminders(limit=10)
-
-            for item in dues:
-
-                self._show_reminder_toast(item)
-
-        except Exception as e:
-
-            self._append_log(f"[Reminder] 检查到期提醒失败: {e}")
-
-
-
-    def _show_reminder_toast(self, item: dict) -> None:
-
-        if not hasattr(self, "context_tab") or not self.context_tab:
-
-            return
-
-        try:
-
-            import json
-
-            from context_toast import ToastIntent
-
-            rid = int(item.get("id") or 0)
-
-            content = str(item.get("content") or "提醒")
-
-            action_type = str(item.get("action_type") or "toast")
-
-            workflow_name = str(item.get("workflow_name") or "")
-
-            payload = {"id": rid, "action_type": action_type, "workflow_name": workflow_name}
-
-            suggested_action = "reminder_done"
-
-            message = f"{content}（点击完成，关闭则稍后再提醒）"
-
-            if action_type == "run_workflow" and workflow_name:
-
-                suggested_action = "reminder_run_workflow"
-
-                message = f"{content}（点击运行工作流：{workflow_name}）"
-
-            intent = ToastIntent(
-
-                intent="🔔 提醒",
-
-                message=message,
-
-                suggested_action=suggested_action,
-
-                action_param=json.dumps(payload, ensure_ascii=False),
-
-            )
-            # VTuber 推送提醒
-            self._push_vtuber_notification(f"🔔 {intent.message}")
-
-            self.context_tab._toast_manager.show_toast(intent)
-
-        except Exception as e:
-
-            self._append_log(f"[Reminder] 弹出提醒失败: {e}")
-
-
-
-    def handle_reminder_toast_action(self, action: str, action_param: str) -> bool:
-
-        """由 ContextTab 点击提醒 Toast 按钮后回调。"""
-
-        try:
-
-            import json
-
-            from reminders import update_reminder_status
-
-            payload = json.loads(action_param or "{}")
-
-            rid = int(payload.get("id") or 0)
-
-            workflow_name = str(payload.get("workflow_name") or "")
-
-            if not rid:
-
-                return False
-
-            if action == "reminder_snooze":
-
-                update_reminder_status(rid, "delayed", delay_minutes=10)
-
-                self._append_log(f"[Reminder] 已延后 10 分钟: #{rid}")
-
-                return True
-
-            if action == "reminder_run_workflow" and workflow_name:
-
-                update_reminder_status(rid, "done")
-
-                self._append_log(f"[Reminder] 用户确认运行工作流: {workflow_name}")
-
-                from mcp_embedded import run_workflow_sync
-
-                run_workflow_sync(workflow_name, log_func=self._append_log)
-
-                return True
-
-            update_reminder_status(rid, "done")
-
-            self._append_log(f"[Reminder] 已完成: #{rid}")
-
-            return True
-
-        except Exception as e:
-
-            self._append_log(f"[Reminder] 处理点击失败: {e}")
-
-            return False
-
-
-
-    # ---- 8. 记忆引擎 (Phase A) ----
-
-    def _init_memory_engine(self) -> None:
-
-        """启动活动记录 + 每日复盘调度器
-
-        - DB 位置: ~/桌面自动化助手/activity_log.db
-
-        - 分类器: ~/桌面自动化助手/app_categories.json
-
-        - 全部静默失败：不影响主程序启动
-
-        """
-
-        try:
-
-            from pathlib import Path
-
-            from app_categorizer import init_categorizer
-
-            from memory_engine import MemoryEngineManager
-
-            from daily_diary import DiaryScheduler
-
-
-
-            # 1. 初始化分类器 (生成/加载 JSON)
-
-            try:
-
-                init_categorizer(USER_DATA_DIR)
-
-            except Exception as e:
-
-                self._append_log(f"[Memory] 分类器初始化失败: {e}")
-
-                return
-
-
-
-            # 2. 创建 Manager (还不 start, 等用户启用)
-
-            self.bridges.memory_engine_mgr = MemoryEngineManager(USER_DATA_DIR)
-
-            self.bridges.memory_engine_mgr.paused_changed.connect(self._on_memory_pause_changed)
-
-            self.bridges.memory_engine_mgr.main_poll.chunk_ready.connect(self._on_memory_chunk_ready)
-
-            self._append_log("[Memory] 记忆引擎已加载 (未启动)")
-
-
-
-            # 3. 启动每日复盘调度器 (不依檁采样是否运行)
-
-            first_hour = self._get_config_int("diary_first_hour", 22)
-
-            max_prompts = self._get_config_int("diary_max_prompts", 2)
-
-            self.bridges._diary_scheduler = DiaryScheduler(
-
-                parent=self,
-
-                first_hour=first_hour,
-
-                max_prompts=max_prompts,
-
-            )
-
-            self.bridges._diary_scheduler.trigger_diary_prompt.connect(self._on_diary_prompt)
-
-            self._append_log(f"[Memory] 复盘调度器已启动 (首次提醒={first_hour}:30)")
-
-
-
-        except Exception as e:
-
-            import traceback
-
-            self._append_log(f"[Memory] 初始化失败: {e}")
-
-            traceback.print_exc()
-
-
-
-    def _get_config_int(self, key: str, default: int) -> int:
-
-        """从 config.json 读 int 配置，不存在则默认"""
-
-        try:
-
-            cfg_path = USER_DATA_DIR / "config.json"
-
-            if cfg_path.exists():
-
-                import json
-
-                with open(cfg_path, "r", encoding="utf-8") as f:
-
-                    cfg = json.load(f)
-
-                return int(cfg.get(key, default))
-
-        except Exception:
-
-            pass
-
-        return default
-
-
-
-    def _on_memory_pause_changed(self, paused: bool, info: str) -> None:
-
-        """托盘提示"""
-
-        if self._tray_icon and paused:
-
-            try:
-
-                self._tray_icon.showMessage(
-
-                    "记忆引擎已暂停",
-
-                    info,
-
-                    QSystemTrayIcon.Information,
-
-                    3000,
-
-                )
-
-            except Exception:
-
-                pass
-
-
-
-    def _on_diary_prompt(self, date_str: str) -> None:
-
-        """复盘提醒气泡 - 推送到 context_tab 走统一 toast 体系"""
-
-        if not hasattr(self, "context_tab") or not self.context_tab:
-
-            return
-
-        try:
-
-            from context_toast import ToastIntent
-
-            intent = ToastIntent(
-
-                intent="📝 今日复盘",
-
-                message=f"{date_str} 活动已统计，点此生成 Markdown 日记",
-
-                suggested_action="generate_diary",
-
-                action_param=date_str,
-
-            )
-            # VTuber 推送复盘提醒
-            self._push_vtuber_notification(f"📝 {intent.message}")
-
-            self.context_tab._toast_manager.show_toast(intent)
-
-            self.context_tab.toast_broadcast.emit(intent)
-
-        except Exception as e:
-
-            self._append_log(f"[Memory] 推送复盘提醒失败: {e}")
-
-
-
-    def _on_memory_chunk_ready(self, start_ts: float, end_ts: float, record_count: int) -> None:
-
-        """Phase C: 水桶策略触发中期记忆总结。"""
-
-        try:
-
-            self._append_log(f"[Chunk] 触发中期记忆总结: {record_count} 条记录")
-
-            if not self.bridges.memory_engine_mgr:
-
-                return
-
-            from daily_diary import build_chunk_prompt
-
-            sys_p, user_p, fallback = build_chunk_prompt(self.bridges.memory_engine_mgr.db, start_ts, end_ts)
-
-            self._generate_chunk_async(start_ts, end_ts, sys_p, user_p, fallback)
-
-        except Exception as e:
-
-            self._append_log(f"[Chunk] 启动总结失败: {e}")
-
-
-
-    def memory_pause(self, seconds: int) -> None:
-
-        """公开 API: 暂停 N 秒"""
-
-        if self.bridges.memory_engine_mgr:
-
-            self.bridges.memory_engine_mgr.pause(seconds)
-
-
-
-    def memory_pause_until(self, hour: int) -> None:
-
-        """公开 API: 暂停到指定小时"""
-
-        if self.bridges.memory_engine_mgr:
-
-            self.bridges.memory_engine_mgr.pause_until(hour)
-
-
-
-    def memory_start(self) -> bool:
-
-        """公开 API: 启动采样"""
-
-        if not self.bridges.memory_engine_mgr:
-
-            return False
-
-        self.bridges.memory_engine_mgr.start()
-
-        return True
-
-
-
-    def memory_status(self) -> dict:
-
-        """公开 API: 供 GUI 显示状态"""
-
-        if not self.bridges.memory_engine_mgr:
-
-            return {"running": False, "error": "not_initialized"}
-
-        mp = self.bridges.memory_engine_mgr.main_poll
-
-        return {
-
-            "running": mp._is_running,
-
-            "suspended": mp.is_suspended,
-
-            "manual_pause_until": mp._pause_until,
-
-            "interval": mp.interval,
-
-        }
-
-
-
-    # ---- 系统托盘 ----
-
-    def _setup_system_tray(self) -> None:
-
-        """初始化系统托盘图标 + 右键菜单"""
-
-        if not QSystemTrayIcon.isSystemTrayAvailable():
-
-            self._append_log("[托盘] 系统不支持托盘图标,跳过初始化")
-
-            return
-
-
-
-        # 使用 app_icon.ico
-
-        icon_path = Path(__file__).parent / "app_icon.ico"
-
-        icon = QIcon(str(icon_path)) if icon_path.exists() else self.windowIcon()
-
-        self._tray_icon = QSystemTrayIcon(icon, self)
-
-        self._tray_icon.setToolTip(t("tray_tooltip"))
-
-
-
-        # 右键菜单
-
-        self._tray_menu = QMenu()
-
-
-
-        act_show = QAction("📖  显示主界面", self)
-
-        act_show.triggered.connect(self._show_from_tray)
-
-        self._tray_menu.addAction(act_show)
-
-
-
-        act_hide = QAction("🙈  隐藏到托盘", self)
-
-        act_hide.triggered.connect(self.hide)
-
-        self._tray_menu.addAction(act_hide)
-
-
-
-        self._tray_menu.addSeparator()
-
-
-
-        # 启动 MCP server
-
-        act_mcp = QAction("🤖  启动/重启 MCP Server", self)
-
-        act_mcp.triggered.connect(self._tray_start_mcp)
-
-        self._tray_menu.addAction(act_mcp)
-
-
-
-        # 打开工具页
-
-        act_tools = QAction("🔧  打开【工具】页", self)
-
-        act_tools.triggered.connect(self._tray_open_tools)
-
-        self._tray_menu.addAction(act_tools)
-
-
-
-        # 打开 AI 对话页
-
-        act_chat = QAction("💬  打开【AI对话】页", self)
-
-        act_chat.triggered.connect(self._tray_open_chat)
-
-        self._tray_menu.addAction(act_chat)
-
-
-
-        self._tray_menu.addSeparator()
-
-
-
-        # --- 记忆引擎 (Phase A) ---
-
-        act_mem_start = QAction("🧠  启动记忆引擎", self)
-
-        act_mem_start.triggered.connect(lambda: self._tray_memory_start())
-
-        self._tray_menu.addAction(act_mem_start)
-
-
-
-        act_mem_pause_1h = QAction("🧠  暂停记录 1 小时", self)
-
-        act_mem_pause_1h.triggered.connect(lambda: self.memory_pause(3600))
-
-        self._tray_menu.addAction(act_mem_pause_1h)
-
-
-
-        act_mem_pause_9 = QAction("🧠  暂停到明天 9:00", self)
-
-        act_mem_pause_9.triggered.connect(lambda: self.memory_pause_until(9))
-
-        self._tray_menu.addAction(act_mem_pause_9)
-
-
-
-        act_mem_diary_now = QAction("📝  立即生成今日复盘", self)
-
-        act_mem_diary_now.triggered.connect(self._tray_generate_diary)
-
-        self._tray_menu.addAction(act_mem_diary_now)
-
-
-
-        self._tray_menu.addSeparator()
-
-
-
-        act_quit = QAction("❌  退出", self)
-
-        act_quit.triggered.connect(self._truly_quit_app)
-
-        self._tray_menu.addAction(act_quit)
-
-
-
-        self._tray_icon.setContextMenu(self._tray_menu)
-
-
-
-        # 双击恢复窗口
-
-        self._tray_icon.activated.connect(self._on_tray_activated)
-
-        # 左键单击在 Windows 上是 ActivationReason.Trigger, 也会调 activated
-
-        self._tray_icon.show()
-
-        self._append_log("[托盘] 系统托盘图标已启用")
-
-
-
-    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-
-        """双击托盘图标 → 恢复窗口"""
-
-        if reason in (QSystemTrayIcon.DoubleClick, QSystemTrayIcon.Trigger):
-
-            # Trigger(单击)仅在已隐藏时恢复,避免抢占用户焦点
-
-            if not self.isVisible():
-
-                self._show_from_tray()
-
-            elif reason == QSystemTrayIcon.DoubleClick:
-
-                self._show_from_tray()
-
-
-
-    def _show_from_tray(self) -> None:
-
-        """从托盘恢复主窗口"""
-
-        self.showNormal()
-
-        self.raise_()
-
-        self.activateWindow()
-
-        try:
-
-            import win32gui, win32con
-
-            hwnd = int(self.winId())
-
-            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-
-            win32gui.SetForegroundWindow(hwnd)
-
-        except Exception:
-
-            pass
-
-
-
-    def _truly_quit_app(self) -> None:
-
-        """从托盘菜单真正退出应用"""
-
-        self._truly_quit = True
-
-        self._append_log("[系统] 退出程序...")
-
-        QApplication.quit()
-
-
-
-    def _tray_start_mcp(self) -> None:
-
-        """从托盘启动 MCP server(委托给 tools_tab)"""
-
-        if hasattr(self, "tools_tab") and self.tools_tab:
-
-            self.tools_tab._start_mcp_server()
-
-            # 切换到工具页并显示窗口
-
-            self._show_from_tray()
-
-
-
-    def _tray_open_tools(self) -> None:
-
-        """从托盘打开【工具】页"""
-
-        self._show_from_tray()
-
-        if hasattr(self, "right_tabs"):
-
-            from PySide6.QtWidgets import QTabWidget
-
-            for w in self.findChildren(QTabWidget):
-
-                if w is self.right_tabs:
-
-                    for i in range(w.count()):
-
-                        if "工具" in w.tabText(i):
-
-                            w.setCurrentIndex(i)
-
-                            return
-
-
-
-    def _tray_open_chat(self) -> None:
-
-        """从托盘打开【AI对话】页"""
-
-        self._show_from_tray()
-
-        if hasattr(self, "context_tab"):
-
-            from PySide6.QtWidgets import QTabWidget
-
-            # 切换到 AI 感知标签（父标签）
-
-            for i in range(self.right_tabs.count()):
-
-                if "AI" in self.right_tabs.tabText(i):
-
-                    self.right_tabs.setCurrentIndex(i)
-
-                    break
-
-            # 在 context_tab 中找到子 QTabWidget，切换到「AI 对话」
-
-            for sub in self.context_tab.findChildren(QTabWidget):
-
-                for j in range(sub.count()):
-
-                    if "AI 对话" in sub.tabText(j):
-
-                        sub.setCurrentIndex(j)
-
-                        return
-
-
-
-    def _tray_memory_start(self) -> None:
-
-        """托盘：启动记忆引擎"""
-
-        if self.memory_start():
-
-            self._append_log("[Memory] 已启动")
-
-            if self._tray_icon:
-
-                self._tray_icon.showMessage("记忆引擎", "已启动", QSystemTrayIcon.Information, 2000)
-
-        else:
-
-            self._append_log("[Memory] 启动失败：未初始化")
-
-
-
-    def _tray_generate_diary(self) -> None:
-
-        """托盘：立即生成今日复盘"""
-
-        from datetime import datetime
-
-        from daily_diary import build_diary_prompt
-
-        if not self.bridges.memory_engine_mgr:
-
-            return
-
-        self._show_from_tray()
-
-        try:
-
-            db = self.bridges.memory_engine_mgr.db
-
-            target = datetime.now()
-
-            sys_p, user_p = build_diary_prompt(db, target)
-
-            # 写一个占位文件 + 调 LLM (使用现有的 LLM 后端)
-
-            self._generate_diary_async(target, sys_p, user_p)
-
-        except Exception as e:
-
-            self._append_log(f"[Memory] 复盘生成失败: {e}")
-
-
-
-    def _generate_diary_async(self, target, sys_p, user_p) -> None:
-
-        """调 LLM 生成日记 (交给 context_agent._agent 处理)"""
-
-        from PySide6.QtCore import QThread, Signal
-
-        from datetime import datetime
-
-
-
-        class _DiaryWorker(QThread):
-
-            done = Signal(str)
-
-
-
-            def __init__(self, agent_backend, sys_p, user_p, date_str, out_dir):
-
-                super().__init__()
-
-                self.agent_backend = agent_backend
-
-                self.sys_p = sys_p
-
-                self.user_p = user_p
-
-                self.date_str = date_str
-
-                self.out_dir = out_dir
-
-
-
-            def run(self):
-
-                try:
-
-                    txt = self.agent_backend.infer(
-
-                        system_prompt=self.sys_p,
-
-                        user_text=self.user_p,
-
-                        timeout=60,
-
-                    )
-
-                    # 写入文件
-
-                    out_path = self.out_dir / f"{self.date_str}.md"
-
-                    out_path.write_text(txt or "（LLM 未返回内容）", encoding="utf-8")
-
-
-
-                    # Phase D: 复盘时顺手抽取聊天长期画像，失败不影响日记生成。
-
-                    try:
-
-                        from datetime import datetime
-
-                        from daily_diary import build_profile_memory_prompt
-
-                        from user_profile import apply_memory_actions, parse_json_actions
-
-                        target = datetime.strptime(self.date_str, "%Y-%m-%d")
-
-                        profile_prompt = build_profile_memory_prompt(target)
-
-                        if profile_prompt:
-
-                            p_sys, p_user = profile_prompt
-
-                            raw = self.agent_backend.infer(system_prompt=p_sys, user_text=p_user, timeout=60)
-
-                            apply_memory_actions(parse_json_actions(raw), source="chat")
-
-                    except Exception:
-
-                        pass
-
-
-
-                    self.done.emit(str(out_path))
-
-                except Exception as e:
-
-                    self.done.emit(f"ERROR: {e}")
-
-
-
-        try:
-
-            out_dir = USER_DATA_DIR / "diary"
-
-            out_dir.mkdir(parents=True, exist_ok=True)
-
-            date_str = target.strftime("%Y-%m-%d")
-
-            backend = self.context_tab._agent._backend if hasattr(self, "context_tab") else None
-
-            if not backend:
-
-                self._append_log("[Memory] LLM 后端未就绪")
-
-                return
-
-            self._diary_worker = _DiaryWorker(backend, sys_p, user_p, date_str, out_dir)
-
-            self._diary_worker.done.connect(self._on_diary_done)
-
-            self._diary_worker.start()
-
-            self._append_log(f"[Memory] 复盘生成中... ({date_str})")
-
-        except Exception as e:
-
-            self._append_log(f"[Memory] 启动复盘 worker 失败: {e}")
-
-
-
-    def _generate_chunk_async(self, start_ts, end_ts, sys_p, user_p, fallback_markdown: str) -> None:
-
-        """Phase C: 生成中期记忆 Chunk。LLM 不可用时写本地聚合兜底。"""
-
-        from PySide6.QtCore import QThread, Signal
-
-        from datetime import datetime
-
-
-
-        class _ChunkWorker(QThread):
-
-            done = Signal(str)
-
-
-
-            def __init__(self, agent_backend, sys_p, user_p, fallback_markdown, start_ts, end_ts, out_dir):
-
-                super().__init__()
-
-                self.agent_backend = agent_backend
-
-                self.sys_p = sys_p
-
-                self.user_p = user_p
-
-                self.fallback_markdown = fallback_markdown
-
-                self.start_ts = start_ts
-
-                self.end_ts = end_ts
-
-                self.out_dir = out_dir
-
-
-
-            def run(self):
-
-                try:
-
-                    start = datetime.fromtimestamp(self.start_ts)
-
-                    end = datetime.fromtimestamp(self.end_ts)
-
-                    filename = f"Chunk_{start.strftime('%Y%m%d_%H%M')}_{end.strftime('%H%M')}.md"
-
-                    out_path = self.out_dir / filename
-
-                    txt = ""
-
-                    if self.agent_backend:
-
-                        try:
-
-                            txt = self.agent_backend.infer(
-
-                                system_prompt=self.sys_p,
-
-                                user_text=self.user_p,
-
-                                timeout=60,
-
-                            ) or ""
-
-                        except Exception:
-
-                            txt = ""
-
-                    if not txt.strip():
-
-                        txt = self.fallback_markdown
-
-                    out_path.write_text(txt, encoding="utf-8")
-
-                    self.done.emit(str(out_path))
-
-                except Exception as e:
-
-                    self.done.emit(f"ERROR: {e}")
-
-
-
-        try:
-
-            out_dir = USER_DATA_DIR / "diary" / "chunks"
-
-            out_dir.mkdir(parents=True, exist_ok=True)
-
-            backend = self.context_tab._agent._backend if hasattr(self, "context_tab") else None
-
-            self._chunk_worker = _ChunkWorker(backend, sys_p, user_p, fallback_markdown, start_ts, end_ts, out_dir)
-
-            self._chunk_worker.done.connect(self._on_chunk_done)
-
-            self._chunk_worker.start()
-
-            self._append_log("[Chunk] 中期记忆生成中...")
-
-        except Exception as e:
-
-            self._append_log(f"[Chunk] 启动 worker 失败: {e}")
-
-
-
-    def _on_chunk_done(self, result: str) -> None:
-
-        if result.startswith("ERROR:"):
-
-            self._append_log(f"[Chunk] 中期记忆失败: {result}")
-
-            return
-
-        self._append_log(f"[Chunk] ✅ 中期记忆已生成: {result}")
-
-        if hasattr(self, "context_tab") and self.context_tab:
-
-            from context_toast import ToastIntent
-
-            intent = ToastIntent(
-
-                intent="🧠 中期记忆",
-
-                message=f"已写入 {Path(result).name}",
-
-                suggested_action="open_diary",
-
-                action_param=result,
-
-            )
-            # VTuber 推送中期记忆
-            self._push_vtuber_notification(f"🧠 {intent.message}")
-
-            self.context_tab._toast_manager.show_toast(intent)
-
-
-
-    def _on_diary_done(self, result: str) -> None:
-
-        """复盘生成完成"""
-
-        if result.startswith("ERROR:"):
-
-            self._append_log(f"[Memory] 复盘失败: {result}")
-
-            return
-
-        self._append_log(f"[Memory] ✅ 复盘已生成: {result}")
-
-        # 推气泡
-
-        if hasattr(self, "context_tab") and self.context_tab:
-
-            from context_toast import ToastIntent
-
-            intent = ToastIntent(
-
-                intent="📝 复盘完成",
-
-                message=f"已写入 {Path(result).name}",
-
-                suggested_action="open_diary",
-
-                action_param=result,
-
-            )
-            # VTuber 推送复盘完成
-            self._push_vtuber_notification(f"📝 {intent.message}")
-
-            self.context_tab._toast_manager.show_toast(intent)
-
-
-
-    # ---- 窗口状态持久化 ----
-
-    def _window_state_path(self) -> Path:
-
-        return USER_DATA_DIR / "window_state.json"
-
-
-
-    def _load_window_state(self) -> None:
-
-        """加载窗口位置/大小/默认后台运行设置"""
-
-        path = self._window_state_path()
-
-        if not path.exists():
-
-            return
-
-        try:
-
-            data = json.loads(path.read_text("utf-8"))
-
-        except Exception:
-
-            return
-
-        geom = data.get("geometry")
-
-        if isinstance(geom, list) and len(geom) == 4:
-
-            try:
-
-                self.setGeometry(geom[0], geom[1], geom[2], geom[3])
-
-            except Exception:
-
-                pass
-
-
-
-    def _save_window_state(self) -> None:
-
-        """保存窗口位置/大小"""
-
-        try:
-
-            geom = [self.x(), self.y(), self.width(), self.height()]
-
-            self._window_state_path().write_text(
-
-                json.dumps({"geometry": geom}, ensure_ascii=False, indent=2),
-
-                "utf-8",
-
-            )
-
-        except Exception:
-
-            pass
-
-
-
-    def _capture_coord_for_quick(self):
-
-        """快速启动面板的坐标捕捉: Win+D 显示桌面 -> 3秒倒计时 -> 捕捉"""
-
-        import pyautogui as pa
-
-        from PySide6.QtCore import QTimer
-
-        self.btn_capture_coord.setEnabled(False)
-
-        self.coord_status.setText(t("ql_coord_display_wind"))
-
-        # 先 Win+D
-
-        pa.hotkey('win', 'd')
-
-        # 隐藏主窗口
-
-        self.hide()
-
-        # 800ms 后开始倒计时 (等动画完成)
-
-        QTimer.singleShot(800, lambda: self._quick_capture_countdown(3))
-
-
-
-    def _quick_capture_countdown(self, n):
-
-        from PySide6.QtCore import QTimer
-
-        if n <= 0:
-
-            import pyautogui as pa
-
-            x, y = pa.position()
-
-            self.coord_x.setValue(x)
-
-            self.coord_y.setValue(y)
-
-            self.coord_status.setText(f"✅ 已捕捉: ({x}, {y})")
-
-            self.btn_capture_coord.setEnabled(True)
-
-            # 恢复窗口并强制转到前台
-
-            self.show()
-
-            self.showNormal()  # 确保不被最小化
-
-            self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
-
-            self.raise_()
-
-            self.activateWindow()
-
-            # 闪动状态栏: 设置高亮样式 1.5 秒后还原
-
-            self.coord_status.setStyleSheet("color:#16a34a; font-weight:bold; font-size:12px; background:#dcfce7; padding:2px 6px;")
-
-            QTimer.singleShot(2000, lambda: self.coord_status.setStyleSheet("color:#666; font-size:11px;"))
-
-            return
-
-        self.coord_status.setText(f"⏱ {n} 秒后捕捉...")
-
-        QTimer.singleShot(1000, lambda: self._quick_capture_countdown(n - 1))
-
-
-
-    def _on_worker_log(self, msg: str) -> None:
-
-        self._append_log(msg)
-
-
-
-    def _on_worker_done(self, ok: bool, msg: str) -> None:
-
-        self.btn_run.setEnabled(True)
-
-        self.btn_stop.setEnabled(False)
-
-        self._append_log(("✅ " if ok else "❌ ") + msg)
-
-
-
-    # ---- 7.2 列表操作 ----
-
-    # 状态文件:记录「一键启动」开启的 PID,关闭时只关这些
-
-    STATE_FILE = USER_DATA_DIR / "launch_state.json"
-
-
-
-    def _load_state(self) -> dict:
-
-        # Step 1C-1: 委托给 UIState.load, 保留方法以兼容潜在外部调用
-
-        return UIState.load(self.STATE_FILE).to_dict()
-
-
-
-    def _save_state(self) -> None:
-
-        # Step 1C-1: 委托给 UIState.save
-
-        ok = self.containers.state.save(self.STATE_FILE)
-
-        if not ok:
-
-            self._append_log(f"⚠️ 状态保存失败")
-
-
-
-    def refresh_shortcuts(self) -> None:
-
-        self.list_widget.clear()
-
-        # Step 1C-4: 整体替换, 通过容器 API
-
-        self.containers.shortcuts.replace(scan_desktop_shortcuts())
-
-        for sc in self.containers.shortcuts:
-
-            item = QListWidgetItem(f"{sc.name}   →   {sc.target}")
-
-            item.setToolTip(t("ql_item_tooltip"))
-
-            self.list_widget.addItem(item)
-
-        self._append_log(f"🔍 扫描到 {len(self.containers.shortcuts)} 个快捷方式")
-
-        if self.containers.shortcuts:
-
-            self.list_widget.setCurrentRow(0)
-
-        # 同步到工作流面板
-
-        if hasattr(self, 'workflow_editor'):
-
-            self.workflow_editor.refresh_shortcuts()
-
-
-
-    def _current(self) -> Optional[ShortcutInfo]:
-
-        # 优先返回 launch_by_path 传过来的 override (供工作流调用)
-
-        override = getattr(self, "_current_override", None)
-
-        if override is not None:
-
-            return override
-
-        row = self.list_widget.currentRow()
-
-        # Step 1C-4: 通过容器 API 访问 (边界由 at() 内部处理)
-
-        return self.containers.shortcuts.at(row)
-
-
-
-    def _add_custom_app(self) -> None:
-
-        """弹出对话框添加自定义应用"""
-
-        path, _ = QFileDialog.getOpenFileName(
-
-            self, "选择要添加的应用",
-
-            "C:\\Program Files",
-
-            "可执行文件 (*.exe *.bat *.cmd);;所有文件 (*.*)"
-
-        )
-
-        if not path:
-
-            return
-
-        default_name = Path(path).stem
-
-        name, ok = QInputDialog.getText(self, "应用名称", "应用名称 (留空用文件名):", text=default_name)
-
-        if not ok:
-
-            return
-
-        name = (name or "").strip() or default_name
-
-        try:
-
-            app = add_custom_app(name, path)
-
-            self._append_log(f"✅ 已添加自定义应用: {app['name']} → {app['target']}")
-
-            self.refresh_shortcuts()
-
-        except FileNotFoundError as e:
-
-            QMessageBox.warning(self, "路径不存在", str(e))
-
-        except Exception as e:
-
-            QMessageBox.warning(self, "添加失败", str(e))
-
-
-
-    def _remove_custom_app(self) -> None:
-
-        """删除当前选中的自定义应用 (只能删 lnk_path 为空的)"""
-
-        sc = self._current()
-
-        if not sc:
-
-            QMessageBox.information(self, "提示", "请先选中一个应用")
-
-            return
-
-        if sc.lnk_path:  # 是 .lnk 快捷方式,不是自定义
-
-            QMessageBox.information(self, "提示", "只能删除自定义添加的应用 (桌面快捷方式请直接删除 .lnk 文件)")
-
-            return
-
-        if QMessageBox.question(self, "确认删除", f"删除自定义应用「{sc.name}」?") != QMessageBox.Yes:
-
-            return
-
-        if remove_custom_app(sc.target):
-
-            self._append_log(f"🗑 已删除: {sc.name}")
-
-            self.refresh_shortcuts()
-
-        else:
-
-            QMessageBox.warning(self, "删除失败", "未找到该应用")
-
-
-
-    def _on_select(self) -> None:
-
-        sc = self._current()
-
-        if not sc:
-
-            return
-
-        self.info_label.setText(
-
-            f"<b>{sc.name}</b><br>"
-
-            f"目标: {sc.target}<br>"
-
-            f"工作目录: {sc.work_dir or '(默认)'}<br>"
-
-            f"快捷方式: {sc.lnk_path}<br>"
-
-            f"绑定启动方式: <b style='color:#2563eb;'>{self._mode_name(sc.launch_mode)}</b>"
-
-        )
-
-        # 加载该条目之前保存过的模板：按当前数据目录指针解析 samples。
-
-        sample_dir = _samples_dir()
-
-        if sample_dir.exists():
-
-            sc.icon_samples = [str(p) for p in sample_dir.glob(f"{sc.name}_*.png")]
-
-        self._refresh_samples_label()
-
-        # 如果该快捷方式已绑定 mode,自动选中对应单选;无绑定则默认 direct
-
-        if sc.launch_mode == "desktop":
-
-            self.radio_desktop.setChecked(True)
-
-        elif sc.launch_mode == "direct":
-
-            self.radio_direct.setChecked(True)
-
-        elif sc.launch_mode == "shell":
-
-            self.radio_shellexec.setChecked(True)
-
-        elif sc.launch_mode == "image":
-
-            self.radio_image.setChecked(True)
-
-        else:
-
-            # 无绑定,默认使用直接启动
-
-            self.radio_direct.setChecked(True)
-
-        self._refresh_launch_mode_hint()
-
-
-
-    @staticmethod
-
-    def _mode_name(mode: str) -> str:
-
-        return {
-
-            "": t("ql_mode_unbound"),
-
-            "desktop": t("ql_mode_desktop"),
-
-            "direct": t("ql_mode_direct"),
-
-            "shell": t("ql_mode_shell"),
-
-            "image": t("ql_mode_image"),
-
-        }.get(mode, mode)
-
-
-
-    def _refresh_launch_mode_hint(self) -> None:
-
-        """刷新 "绑定启动方式" 区提示。"""
-
-        sc = self._current()
-
-        if not sc:
-
-            self.lbl_launch_mode_hint.setText(t("ql_info_selected"))
-
-            self.btn_bind_launch_mode.setEnabled(False)
-
-            self.btn_clear_launch_mode.setEnabled(False)
-
-            return
-
-        if sc.launch_mode:
-
-            self.lbl_launch_mode_hint.setText(
-
-                f"「{sc.name}」已绑定: <b>{self._mode_name(sc.launch_mode)}</b>。<br>"
-
-                f"双击/工作流 调用时将使用该 mode，不再受 UI 单选按钮影响。"
-
-            )
-
-        else:
-
-            self.lbl_launch_mode_hint.setText(
-
-                t("ql_launch_unbound", sc=sc.name)
-
-            )
-
-        self.btn_bind_launch_mode.setEnabled(True)
-
-        self.btn_clear_launch_mode.setEnabled(bool(sc.launch_mode))
-
-
-
-    def _bind_launch_mode(self) -> None:
-
-        """把当前 UI 选择的 mode 绑定到本快捷方式，并持久化。"""
-
-        sc = self._current()
-
-        if not sc:
-
-            return
-
-        if self.radio_desktop.isChecked():
-
-            mode = "desktop"
-
-        elif self.radio_direct.isChecked():
-
-            mode = "direct"
-
-        elif self.radio_shellexec.isChecked():
-
-            mode = "shell"
-
-        else:
-
-            mode = "image"
-
-        sc.launch_mode = mode
-
-        meta = load_shortcut_meta()
-
-        meta[_shortcut_key(sc)] = {
-
-            "launch_mode": mode,
-
-            "coord_x": self.coord_x.value(),
-
-            "coord_y": self.coord_y.value(),
-
-            "click_type": self.coord_click_type.currentData() or "left_double",
-
-        }
-
-        save_shortcut_meta(meta)
-
-        self._append_log(f"🔗 已绑定「{sc.name}」启动方式: {self._mode_name(mode)}")
-
-        if self.coord_x.value() > 0 or self.coord_y.value() > 0:
-
-            self._append_log(
-
-                f"   📍 同时保存坐标: ({self.coord_x.value()}, {self.coord_y.value()}) 类型={self.coord_click_type.currentData()}"
-
-            )
-
-        self._refresh_launch_mode_hint()
-
-
-
-    def _save_match_coord(self, info, cx: int, cy: int) -> None:
-
-        """将模板匹配得到的中心坐标保存到元数据,供坐标点击兜底使用。"""
-
-        meta = load_shortcut_meta()
-
-        key = _shortcut_key(info)
-
-        entry = meta.get(key, {})
-
-        entry["coord_x"] = cx
-
-        entry["coord_y"] = cy
-
-        meta[key] = entry
-
-        save_shortcut_meta(meta)
-
-        self._append_log(f"   💾 已保存匹配坐标: ({cx}, {cy})")
-
-
-
-    def _clear_launch_mode(self) -> None:
-
-        """清除本快捷方式的启动方式绑定。"""
-
-        sc = self._current()
-
-        if not sc:
-
-            return
-
-        sc.launch_mode = ""
-
-        meta = load_shortcut_meta()
-
-        key = _shortcut_key(sc)
-
-        if key in meta:
-
-            meta.pop(key)
-
-            save_shortcut_meta(meta)
-
-        self._append_log(f"🗑 已清除「{sc.name}」的启动方式绑定")
-
-        self._refresh_launch_mode_hint()
-
-
-
-    def launch_by_path(self, path: str) -> bool:
-
-        """供工作流调用。根据 path 查找对应 ShortcutInfo 并尊重其 launch_mode 绑定。
-
-        返回 True=已处理, False=未找到对应 sc (由 workflow 走 fallback)。"""
-
-        # 归一化路径
-
-        path_norm = str(Path(path).resolve()) if Path(path).exists() else path
-
-        for sc in self.containers.shortcuts:  # Step 1C-4: 通过容器迭代
-
-            if sc.target == path or sc.target == path_norm:
-
-                self._current_override = sc
-
-                try:
-
-                    self.run_action()
-
-                finally:
-
-                    self._current_override = None
-
-                return True
-
-            if sc.lnk_path and Path(sc.lnk_path).resolve() == Path(path).resolve():
-
-                self._current_override = sc
-
-                try:
-
-                    self.run_action()
-
-                finally:
-
-                    self._current_override = None
-
-                return True
-
-        return False
-
-
-
-    def _refresh_samples_label(self) -> None:
-
-        sc = self._current()
-
-        if not sc or not sc.icon_samples:
-
-            self.samples_label.setText(t("ql_template_none"))
-
-        else:
-
-            names = "\n".join(Path(s).name for s in sc.icon_samples)
-
-            self.samples_label.setText(f"当前模板 ({len(sc.icon_samples)}):\n{names}")
-
-
-
-    # ---- 7.3 模板管理 ----
-
-    def start_snipping(self) -> None:
-
-        sc = self._current()
-
-        if not sc:
-
-            QMessageBox.warning(self, "提示", "请先在左侧选一个快捷方式")
-
-            return
-
-        # 隐藏主窗口并强制 Win+D 显露桌面，避免被截进图。
-
-        self.hide()
-
-        QApplication.processEvents()
-
-        time.sleep(0.2)
-
-        try:
-
-            pyautogui = _get_pyautogui()
-
-            pyautogui.hotkey('win', 'd')
-
-            time.sleep(0.5)
-
-        except Exception as e:
-
-            self._append_log(f"⚠️ Win+D 显示桌面失败，继续截图: {e}")
-
-        self.snipping = SnippingWindow()
-
-        self.snipping.captured.connect(lambda r: self._on_snipped(sc, r))
-
-        self.snipping.show()
-
-        self.snipping.raise_()
-
-        self.snipping.activateWindow()
-
-
-
-    def _on_snipped(self, sc: ShortcutInfo, rect: QRect) -> None:
-
-        self.show()
-
-        self.raise_()
-
-        self.activateWindow()
-
-        if rect.width() < 4 or rect.height() < 4:
-
-            self._append_log("⚠️ 选区太小,已取消")
-
-            return
-
-        sample_dir = _samples_dir()
-
-        sample_dir.mkdir(parents=True, exist_ok=True)
-
-        # 多模板命名: name_idx_timestamp.png
-
-        idx = len(sc.icon_samples)
-
-        out = sample_dir / f"{sc.name}_{idx}_{int(time.time())}.png"
-
-        # 从全屏 pixmap 截一块
-
-        cropped: QImage = self.snipping._full_pixmap.copy(rect).toImage()
-
-        cropped.save(str(out), "PNG")
-
-        sc.icon_samples.append(str(out))
-
-        self._append_log(f"📸 模板已保存: {out}")
-
-        self._refresh_samples_label()
-
-
-
-    def load_samples_from_files(self) -> None:
-
-        sc = self._current()
-
-        if not sc:
-
-            return
-
-        # 确保 samples 目录存在,避免 Win32 对话框在空目录上挂起
-
-        sample_dir = _samples_dir().resolve()
-
-        sample_dir.mkdir(parents=True, exist_ok=True)
-
-        initial = str(sample_dir)
-
-        self._append_log(f"📂 打开文件对话框: {initial}")
-
-        # 走 Qt 内置对话框 (DontUseNativeDialog) 避免 Windows 资源管理器在中文/特殊路径下卡死
-
-        from PySide6.QtWidgets import QFileDialog as QD
-
-        files, _ = QD.getOpenFileNames(
-
-            self, "选择模板图片", initial, "PNG 图片 (*.png)",
-
-            options=QD.DontUseNativeDialog,
-
-        )
-
-        if files:
-
-            sc.icon_samples.extend(files)
-
-            self._append_log(f"📂 已加载 {len(files)} 个模板")
-
-        else:
-
-            self._append_log("📂 未选择任何文件")
-
-        self._refresh_samples_label()
-
-
-
-    # ---- 7.4 执行 / 停止 ----
-
-    def run_action(self) -> None:
-
-        sc = self._current()
-
-        if not sc:
-
-            QMessageBox.warning(self, "提示", "请先选择一个快捷方式")
-
-            return
-
-        self._append_log(f"[启动] 双击: {sc.name} → {sc.target}")
-
-        if self.containers.worker and self.containers.worker.isRunning():
-
-            return
-
-
-
-        # ---- 文档类快捷方式: 自动打开所在目录 ----
-
-        DOC_EXTENSIONS = {
-
-            ".doc", ".docx", ".pdf", ".xls", ".xlsx", ".ppt", ".pptx",
-
-            ".txt", ".csv", ".rtf", ".odt", ".ods", ".odp",
-
-            ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".ico",
-
-            ".mp3", ".mp4", ".avi", ".mkv", ".mov", ".zip", ".rar", ".7z",
-
-        }
-
-        target_path = Path(sc.target)
-
-        if target_path.exists() and target_path.suffix.lower() in DOC_EXTENSIONS:
-
-            self._append_log(f"📂 文档类快捷方式,打开所在目录: {target_path.parent}")
-
-            subprocess.Popen(["explorer", "/select,", str(target_path)])
-
-            return
-
-
-
-        mode = (
-
-            sc.launch_mode if sc.launch_mode
-
-            else (
-
-                "desktop" if self.radio_desktop.isChecked()
-
-                else "direct" if self.radio_direct.isChecked()
-
-                else "shell" if self.radio_shellexec.isChecked()
-
-                else "image"
-
-            )
-
-        )
-
-        if mode == "image" and not sc.icon_samples:
-
-            QMessageBox.warning(self, "提示", "图像识别模式需要先有模板,请用「截图框选」")
-
-            return
-
-        if mode == "coord" and (self.coord_x.value() == 0 and self.coord_y.value() == 0):
-
-            QMessageBox.warning(self, "提示", "坐标点击模式需要先设置有效坐标")
-
-            return
-
-
-
-        self.btn_run.setEnabled(False)
-
-        self.btn_stop.setEnabled(True)
-
-        # coord 优先用 sc 上绑定的，其次 UI 当前值
-
-        coord_x = getattr(sc, "_coord_x", 0) or 0
-
-        coord_y = getattr(sc, "_coord_y", 0) or 0
-
-        if not (coord_x > 0 or coord_y > 0):
-
-            coord_x = self.coord_x.value()
-
-            coord_y = self.coord_y.value()
-
-        # Step 1C-3: 实例移到 self.containers.worker, 通过 @property worker 保持 API 兼容
-
-        self.containers.worker = LaunchWorker(
-
-            sc, mode,
-
-            do_notepad=self.chk_notepad.isChecked(),
-
-            extra_args=self.args_edit.text(),
-
-            coord={
-
-                "x": coord_x,
-
-                "y": coord_y,
-
-                "click_type": getattr(sc, "_click_type", "left_double") or self.coord_click_type.currentData()
-
-            },
-
-            # Step 2-2B: 模板匹配后保存坐标的回调注入到 launch_worker.py, 避免循环 import
-            coord_saver=self._save_match_coord,
-        )
-
-        # (self.scope_all 已被工作流面板取代)
-
-        self.containers.worker.log_signal.connect(self._on_worker_log)
-
-        self.containers.worker.finished_signal.connect(self._on_worker_done)
-
-        self.containers.worker.start()
-
-        self._append_log(f"▶ 启动任务: {sc.name}  (mode={mode})")
-
-
-
-    def stop_action(self) -> None:
-
-        # 先终止 worker 线程 (Step 1C-3)
-
-        if self.containers.worker and self.containers.worker.isRunning():
-
-            self.containers.worker.cancel()
-
-            self.containers.worker.quit()
-
-            self.containers.worker.wait(2000)
-
-            self._append_log("⏹ 已请求停止 worker")
-
-
-
-        # 再杀掉已启动的目标进程
-
-        sc = self._current()
-
-        if sc:
-
-            try:
-
-                # 解析快捷方式找目标进程名
-
-                target_exe = None
-
-                if sc.lnk_path and str(sc.lnk_path).lower().endswith('.lnk'):
-
-                    import win32com.client
-
-                    shell = win32com.client.Dispatch('WScript.Shell')
-
-                    shortcut = shell.CreateShortCut(str(sc.lnk_path))
-
-                    if shortcut.TargetPath:
-
-                        target_exe = Path(shortcut.TargetPath).name.lower()
-
-                elif sc.target:
-
-                    target_exe = Path(sc.target).name.lower()
-
-                else:
-
-                    target_exe = sc.name.lower() + ".exe"
-
-
-
-                import psutil
-
-                killed = []
-
-                for p in psutil.process_iter(['pid', 'name']):
-
-                    if (p.info['name'] or '').lower() == target_exe:
-
-                        try:
-
-                            p.kill()
-
-                            killed.append(p.info['pid'])
-
-                        except Exception:
-
-                            pass
-
-                if killed:
-
-                    self._append_log(f"⏹ 已终止进程: {target_exe}, PID={killed}")
-
-                else:
-
-                    self._append_log(f"⏹ 未找到运行中的进程: {target_exe}")
-
-            except Exception as e:
-
-                self._append_log(f"⚠️ 终止进程失败: {e}")
-
-
-
-        self.btn_run.setEnabled(True)
-
-        self.btn_stop.setEnabled(False)
-
-        self.containers.worker = None  # Step 1C-3: 彻底清理,下次 run 从头开始
-
-
-
-    # ---- 7.5a 清理历史残留进程 ----
-
-    def cleanup_residuals(self) -> None:
-
-        """按进程名关键词 (可多个,空格分隔) 强制 taskkill"""
-
-        kw_text = self.cleanup_kw.text().strip()
-
-        if not kw_text:
-
-            QMessageBox.warning(self, "提示", "请输入至少一个关键词 (例如 aipy  lobe)")
-
-            return
-
-        keywords = [k.strip().lower() for k in kw_text.split() if k.strip()]
-
-
-
-        import psutil
-
-        targets: list[tuple[int, str, str]] = []  # (pid, name, exe)
-
-        for p in psutil.process_iter(['name', 'pid', 'exe']):
-
-            try:
-
-                name = (p.info['name'] or '').lower()
-
-                exe = (p.info['exe'] or '').lower()
-
-                for kw in keywords:
-
-                    if kw in name or kw in exe:
-
-                        targets.append((p.info['pid'], p.info['name'] or '', p.info['exe'] or ''))
-
-                        break
-
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-
-                continue
-
-
-
-        if not targets:
-
-            self._append_log(f"🧹 未发现含 {keywords} 的进程")
-
-            return
-
-
-
-        detail = "\n".join(
-
-            "  • PID={}  name={}  exe={}".format(pid, n, e)
-
-            for pid, n, e in targets
-
-        )
-
-        confirm = QMessageBox.question(
-
-            self, "确认清理",
-
-            f"将 taskkill /F 强制结束 {len(targets)} 个进程:\n{detail}\n\n是否继续?",
-
-        )
-
-        if confirm != QMessageBox.Yes:
-
-            return
-
-
-
-        self.btn_cleanup.setEnabled(False)
-
-        killed = 0
-
-        for pid, name, exe in targets:
-
-            try:
-
-                r = subprocess.run(
-
-                    ['taskkill', '/F', '/T', '/PID', str(pid)],
-
-                    capture_output=True, text=True, timeout=10,
-
-                )
-
-                if r.returncode == 0:
-
-                    killed += 1
-
-                    self._append_log(f"  ✅ 清理 PID={pid} ({name})")
-
-                else:
-
-                    self._append_log(f"  ⚠️ PID={pid} 失败: {r.stderr.strip() or r.stdout.strip()}")
-
-            except Exception as e:
-
-                self._append_log(f"  ❌ PID={pid}: {e}")
-
-
-
-        self._append_log(f"🧹 清理完成: {killed}/{len(targets)} 个")
-
-        self.btn_cleanup.setEnabled(True)
-
-
-
-    # ---- 7.5 一键启停 ----
-
-    def _targets_to_handle(self) -> list[ShortcutInfo]:
-
-        """根据 scope_all 决定作用于全部还是当前选中"""
-
-        if self.scope_all.isChecked():
-
-            return self.containers.shortcuts.items()  # Step 1C-4
-
-        sc = self._current()
-
-        if sc is None:
-
-            QMessageBox.warning(self, "提示", "请先勾选「作用于全部」或在左侧选中一个快捷方式")
-
-        return [sc] if sc else []
-
-
-
-    def onekey_start(self) -> None:
-
-        targets = self._targets_to_handle()
-
-        if not targets:
-
-            return
-
-
-
-        # 跳过无效 target
-
-        valid = [sc for sc in targets if sc.target and Path(sc.target).exists()]
-
-        skipped = len(targets) - len(valid)
-
-        if not valid:
-
-            QMessageBox.warning(self, "提示", "所选项目没有有效的 target 路径")
-
-            return
-
-
-
-        confirm = QMessageBox.question(
-
-            self, "确认启动",
-
-            f"即将启动 {len(valid)} 个程序"
-
-            + (f" (跳过 {skipped} 个无效)" if skipped else "")
-
-            + "\n是否继续?",
-
-        )
-
-        if confirm != QMessageBox.Yes:
-
-            return
-
-
-
-        self.btn_onekey_start.setEnabled(False)
-
-        self._append_log(f"🚀 一键启动 {len(valid)} 个程序")
-
-
-
-        pids: list[int] = []
-
-        names: list[str] = []
-
-        use_shell = self.radio_shellexec.isChecked()
-
-        for sc in valid:
-
-            try:
-
-                cwd = sc.work_dir if sc.work_dir and Path(sc.work_dir).is_dir() else str(Path(sc.target).parent)
-
-                if use_shell:
-
-                    cmd_str = 'cd /d "{}" && start "" "{}"'.format(cwd, sc.target)
-
-                    proc = subprocess.Popen(
-
-                        ["cmd", "/c", cmd_str],
-
-                        creationflags=0x08000000,
-
-                    )
-
-                else:
-
-                    proc = subprocess.Popen(
-
-                        [sc.target],
-
-                        cwd=cwd,
-
-                        creationflags=0x08000000,
-
-                    )
-
-                pids.append(proc.pid)
-
-                names.append(sc.name)
-
-                self._append_log("  ✅ {}  (PID={}, mode={})".format(sc.name, proc.pid, "shell" if use_shell else "direct"))
-
-            except Exception as e:
-
-                self._append_log("  ❌ {}: {}".format(sc.name, e))
-
-
-
-        # 记忆,供一键关闭用 (Step 1C-1: UIState 替代裸 dict)
-
-        self.containers.state.pids = pids
-
-        self.containers.state.names = names
-
-        self.containers.state.ts = int(time.time())
-
-        self._save_state()
-
-        self._append_log(f"📝 已记录本次启动 {len(pids)} 个 PID")
-
-        self.btn_onekey_start.setEnabled(True)
-
-
-
-    def onekey_stop(self) -> None:
-
-        # Step 1C-1: UIState 字段直接访问 (替代 self.state.get)
-
-        pids: list[int] = list(self.containers.state.pids)
-
-        names: list[str] = list(self.containers.state.names)
-
-
-
-        # 额外补刀:有些进程会派生子进程,这里同时按可执行文件名扫一遍
-
-        all_pids = self._expand_running_pids(pids)
-
-
-
-        if not all_pids:
-
-            QMessageBox.information(self, "提示", "没有可关闭的进程 (state 为空或进程已退出)")
-
-            return
-
-
-
-        detail = "\n".join(f"  • {n} (PID={p})" for n, p in zip(names, pids))
-
-        confirm = QMessageBox.question(
-
-            self, "确认关闭",
-
-            f"将关闭以下 {len(all_pids)} 个进程:\n{detail}\n\n是否继续?",
-
-        )
-
-        if confirm != QMessageBox.Yes:
-
-            return
-
-
-
-        self.btn_onekey_stop.setEnabled(False)
-
-        killed = 0
-
-        for pid in all_pids:
-
-            try:
-
-                # /F 强制 /T 连带子进程
-
-                subprocess.run(
-
-                    ["taskkill", "/F", "/T", "/PID", str(pid)],
-
-                    check=False, capture_output=True, text=True, timeout=10,
-
-                )
-
-                killed += 1
-
-            except Exception as e:
-
-                self._append_log(f"  ⚠️ PID {pid}: {e}")
-
-
-
-        self._append_log(f"🛑 已尝试关闭 {killed}/{len(all_pids)} 个进程")
-
-        # 清理状态 (Step 1C-1)
-
-        self.containers.state.clear()
-
-        self._save_state()
-
-        self.btn_onekey_stop.setEnabled(True)
-
-
-
-    def _expand_running_pids(self, root_pids: list[int]) -> list[int]:
-
-        """按 PID 列表 + 当前选中项的 target,合并出实际还活着的 PID 集合"""
-
-        import psutil  # 局部导入,允许缺失时报错
-
-        alive: set[int] = set()
-
-        # 1) 记录中的 PID 仍然存活 -> 加入
-
-        for pid in root_pids:
-
-            try:
-
-                if psutil.pid_exists(pid):
-
-                    alive.add(pid)
-
-            except Exception:
-
-                pass
-
-        # 2) 对当前所有 target,按可执行文件名匹配同进程
-
-        for sc in self.containers.shortcuts:  # Step 1C-4
-
-            if not sc.target:
-
-                continue
-
-            exe_name = Path(sc.target).name.lower()
-
-            for p in psutil.process_iter(["pid", "name"]):
-
-                try:
-
-                    if (p.info["name"] or "").lower() == exe_name:
-
-                        alive.add(p.info["pid"])
-
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-
-                    continue
-
-        return sorted(alive)
-
-
-
-
-
-# ---------------------------------------------------------------------------
-
-# 8. 入口
-
-# ---------------------------------------------------------------------------
-
-def _maybe_relaunch_in_pythonw() -> None:
-
-    """如果是用 python.exe 启动的,重起到 pythonw.exe 避免黑控制台窗口
-
-
-
-    检测: sys.stdout 关联到控制台 (Windows 上 python.exe 启动会有 tty,pythonw.exe 没有)
-
-    """
-
-    if sys.platform != "win32":
-
-        return
-
-    # 跳过 MCP/单实例转发 模式
-
-    if any(a in sys.argv for a in ("--mcp", "--close-main")):
-
-        return
-
-    # 跳过 --replace 模式 (该模式依赖 print 输出调试)
-
-    if "--replace" in sys.argv:
-
-        return
-
-    # 检测是否有控制台
-
-    try:
-
-        import ctypes
-
-        kernel32 = ctypes.windll.kernel32
-
-        # ATTACH_PARENT_PROCESS = -1 (ATTACH_CONSOLE)
-
-        # 如果已附加到控制台,则 kernel32.GetConsoleWindow() 不为 0
-
-        has_console = kernel32.GetConsoleWindow() != 0
-
-    except Exception:
-
-        return
-
-    if not has_console:
-
-        return  # 本身是 pythonw.exe 启动的,不用重起
-
-    # 重起到 pythonw.exe
-
-    pyw = Path(sys.executable).with_name("pythonw.exe")
-
-    if not pyw.exists():
-
-        return
-
-    import subprocess
-
-    subprocess.Popen(
-
-        [str(pyw), __file__, *sys.argv[1:]],
-
-        cwd=str(Path(__file__).parent),
-
-        creationflags=0x08000000,  # DETACHED_PROCESS
-
-    )
-
-    sys.exit(0)
-
-
-
-def _silence_qt_warnings() -> None:
-
-    """屏蔽 Qt 在 Windows 上发到 stderr 的 DPI/字体警告
-
-
-
-    PySide6 6.x 在 Win10/11 上会试加载 MS Sans Serif / Modern / Roman / Script 等
-
-    几 95 时代老字体,找不到会发 DirectWrite 警告。这些是良性的,
-
-    装 PySide6 的应用控制台会被刷屏。用 qInstallMessageHandler 过滤掉。
-
-    """
-
-    try:
-
-        from PySide6.QtCore import qInstallMessageHandler, QtMsgType
-
-
-
-        _QUIET_PREFIXES = (
-
-            "qt.qpa.fonts: DirectWrite: CreateFontFaceFromHDC",
-
-            "qt.qpa.window: SetProcessDpiAwarenessContext",
-
-            "qt.qpa.fonts: QFont::setPointSize",
-
-        )
-
-
-
-        def _handler(mode, ctx, msg):
-
-            try:
-
-                m = str(msg)
-
-            except Exception:
-
-                return
-
-            for p in _QUIET_PREFIXES:
-
-                if m.startswith(p):
-
-                    return
-
-            # 其余警告 (QtWarningMsg / QtCriticalMsg) 仍然正常输出
-
-            try:
-
-                import sys as _sys
-
-                _sys.stderr.write(f"[Qt] {m}\n")
-
-                _sys.stderr.flush()
-
-            except Exception:
-
-                pass
-
-
-
-        qInstallMessageHandler(_handler)
-
-    except Exception:
-
-        pass
-
-
-
-def main() -> int:
-
-    # 如果是用 python.exe 启动的,重起到 pythonw.exe (避免黑控制台窗口)
-
-    _maybe_relaunch_in_pythonw()
-
-
-
-    # MCP 模式: 不显示 GUI,作为 stdio server 运行
-
-    if "--mcp" in sys.argv:
-
-        return _run_mcp_only()
-
-
-
-    # --replace: 关闭旧实例后启动新 GUI(不进行单实例检查,由 --replace 自行处理关闭旧实例)
-
-    if "--replace" in sys.argv:
-
-        print("[单实例] --replace 模式: 关闭旧实例后启动新 GUI")
-
-        _forward_to_running_instance([sys.executable, "--close-main"])
-
-        print("[单实例] 已发送关闭命令, 等待旧实例退出...")
-
-        time.sleep(0.8)
-
-        print("[单实例] 等待完毕, 准备启动新 GUI")
-
-    elif not _try_acquire_single_instance():
-
-        print("[单实例] 已有实例在运行, 通过 IPC 转发任务...")
-
-        _forward_to_running_instance(sys.argv)
-
-        print("[单实例] 任务已转发, 当前进程退出")
-
-        sys.exit(0)
-
-
-
-    app = QApplication(sys.argv)
-
-    app.setApplicationName("桌面自动化助手")
-
-    # 屏蔽 Qt 的 DPI/字体警告 (PySide6 6.x 在 Win10+ 会刷屏)
-
-    _silence_qt_warnings()
-
-    # 如果托盘可用,不要在最后一个窗口关闭时退出应用(避免关闭主窗口后进程退出)
-
-    if QSystemTrayIcon.isSystemTrayAvailable():
-
-        app.setQuitOnLastWindowClosed(False)
-
-    # 设置应用图标
-
-    icon_path = Path(__file__).parent / "app_icon.ico"
-
-    if icon_path.exists():
-
-        from PySide6.QtGui import QIcon
-
-        app.setWindowIcon(QIcon(str(icon_path)))
-
-
-
-    # 显式设置默认字体: 避免 Qt 去加载缺失的 "MS Sans Serif" 而报 DirectWrite 警告
-
-    from PySide6.QtGui import QFont
-
-    app.setFont(QFont("Segoe UI", 10))
-
-
-
-    # 统一 QSS 风格(浅色)
-
-    app.setStyleSheet("""
-
-        QPushButton { padding: 4px 10px; min-height: 18px; }
-
-        QGroupBox { font-weight: bold; margin-top: 14px; }
-
-        QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 6px; }
-
-        QCheckBox, QRadioButton { padding: 2px 0; }
-
-        QLineEdit { padding: 4px; }
-
-        QLabel { padding: 2px 0; }
-
-    """)
-
-
-
-    # 启动进度画面
-
-    _show_splash(app, [
-
-        "正在创建用户数据目录…",
-
-        "正在迁移旧配置文件…",
-
-        "正在加载后端配置…",
-
-        "正在初始化传感器…",
-
-        "正在启动 AI 感知…",
-
-        "启动完成，即将显示主窗口…",
-
-    ])
-
-
-
-    win = MainWindow()
-
-    # 订阅全局日志总线 (主窗口)
-
-    win._setup_global_log_bus()
-
-    # 设置工作流 StepExecutor 的 launcher 回调 (尊重快捷方式的 launch_mode 绑定)
-
-    try:
-
-        from workflow_panel import StepExecutor
-
-        StepExecutor.set_launcher(win.launch_by_path)
-
-    except Exception:
-
-        pass
-
-    # 判断是否需要默认后台运行
-
-    start_in_background = "--background" in sys.argv or _is_default_background()
-
-    if not start_in_background:
-
-        win.show()
-
-    else:
-
-        # 后台运行: 不显示窗口,仅托盘图标
-
-        win._tray_hint_shown = True  # 跳过“已隐藏”提示
-
-        # 仍是创建窗口,只是不 showNormal;需要时 _show_from_tray 会显示
-
-        print("[启动] 默认后台运行,窗口已隐藏,可在托盘恢复")
-
-    return app.exec()
-
-
-
-
-
-def _show_splash(app: QApplication, steps: list[str]) -> None:
-
-    """显示启动进度画面，每步自动推进，保证最低显示时间。"""
-
-    import time as _time
-
-    pd = QProgressDialog(steps[0], None, 0, len(steps), None)
-
-    pd.setWindowTitle("桌面自动化助手 - 启动中")
-
-    pd.setWindowFlags(pd.windowFlags() | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
-
-    pd.setModal(True)
-
-    pd.resize(420, 90)
-
-    screen_geo = app.primaryScreen().geometry()
-
-    pd.move(screen_geo.center() - pd.rect().center())
-
-    pd.show()
-
-    app.processEvents()
-
-    start = _time.time()
-
-    min_dur = 1.5
-
-    for i, step in enumerate(steps):
-
-        pd.setLabelText(step)
-
-        pd.setValue(i + 1)
-
-        app.processEvents()
-
-        elapsed = _time.time() - start
-
-        step_dur = min_dur / len(steps)
-
-        remaining = step_dur - (elapsed - i * step_dur)
-
-        if remaining > 0:
-
-            _time.sleep(remaining)
-
-    pd.close()
-
-    pd.deleteLater()
-
-
-
-
-
-def _is_default_background() -> bool:
-
-    """检查 config.json 中是否设置了默认后台运行"""
-
-    cfg_path = USER_DATA_DIR / "config.json"
-
-    if not cfg_path.exists():
-
-        return False
-
-    try:
-
-        data = json.loads(cfg_path.read_text("utf-8"))
-
-        return bool(data.get("start_in_background", False))
-
-    except Exception:
-
-        return False
-
-
-
-
-
-def _run_mcp_only() -> int:
-
-    """只运行 MCP server,不显示 GUI (用于 AI 客户端调用)"""
-
-    import asyncio
-
-    import json
-
-
-
-    # MCP 模式才应用兼容补丁/导入 MCP 依赖,避免普通 GUI 启动被 MCP 依赖拖崩。
-
-    try:
-
-        from mcp_patch import patch_jsonschema_specifications
-
-        patch_jsonschema_specifications()
-
-    except Exception as e:
-
-        print(f"[WARN] MCP 兼容补丁失败: {e}", file=sys.stderr)
-
-
-
-    from mcp_embedded import scan_desktop_shortcuts, load_workflows, run_workflow_sync, launch_shortcut_sync
-
-    from search_panel import search_everything
-
-    from mcp_file_tools import FILE_TOOL_NAMES, FILE_TOOL_SCHEMAS, handle_file_tool
-
-
-
-    try:
-
-        from mcp.server import Server
-
-        from mcp.server.stdio import stdio_server
-
-        from mcp.types import Tool, TextContent
-
-    except ImportError as e:
-
-        print(f"[ERR] MCP 依赖缺失: {e}", file=sys.stderr)
-
-        print("[ERR] 需要安装: pip install mcp", file=sys.stderr)
-
-        return 1
-
-
-
-    async def serve():
-
-        server = Server("desktop-auto")
-
-        @server.list_tools()
-
-        async def list_tools():
-
-            tools = [
-
-                Tool(name="list_workflows", description="列出所有工作流", inputSchema={"type": "object", "properties": {"name": {"type": "string"}}}),
-
-                Tool(name="list_shortcuts", description="列出桌面快捷方式", inputSchema={"type": "object", "properties": {}}),
-
-                Tool(name="run_workflow", description="执行工作流", inputSchema={"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}),
-
-                Tool(name="launch_shortcut", description="启动快捷方式", inputSchema={"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}),
-
-                Tool(name="search_local_files", description="Everything 全盘搜索 (支持通配符 *.py / 文件名 4月明细 / 大小 size:>10MB / 日期 dm:today)", inputSchema={"type": "object", "properties": {
-
-                    "query": {"type": "string", "description": "搜索词,如: 4月明细"},
-
-                    "limit": {"type": "number", "description": "返回结果数,默认50"},
-
-                    "path": {"type": "string", "description": "限定目录,如 C:\\Users\\Public"},
-
-                    "sort": {"type": "string", "description": "排序: name/date/size,默认 date"},
-
-                }, "required": ["query"]}),
-
-            ]
-
-            for schema in FILE_TOOL_SCHEMAS:
-
-                tools.append(Tool(name=schema["name"], description=schema["description"], inputSchema=schema["inputSchema"]))
-
-            return tools
-
-        @server.call_tool()
-
-        async def call_tool(name, arguments):
-
-            try:
-
-                if name in FILE_TOOL_NAMES:
-
-                    def stdio_logger(msg):
-
-                        print(f"[MCP-FileTool] {msg}", file=sys.stderr)
-
-
-
-                    result = handle_file_tool(name, arguments, log_cb=stdio_logger)
-
-                    return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
-
-
-
-                if name == "list_workflows":
-
-                    wfs = load_workflows()
-
-                    target = arguments.get("name", "")
-
-                    if target:
-
-                        wf = wfs.get(target)
-
-                        if not wf: return [TextContent(type="text", text=json.dumps({"ok": False, "error": f"不存在: {target}"}, ensure_ascii=False))]
-
-                        return [TextContent(type="text", text=json.dumps({"ok": True, "workflow": wf}, ensure_ascii=False, indent=2))]
-
-                    summary = {n: {"description": wf.get("description", ""), "step_count": len(wf.get("steps", []))} for n, wf in wfs.items()}
-
-                    return [TextContent(type="text", text=json.dumps({"ok": True, "workflows": summary}, ensure_ascii=False, indent=2))]
-
-                elif name == "list_shortcuts":
-
-                    scs = scan_desktop_shortcuts()
-
-                    return [TextContent(type="text", text=json.dumps({"ok": True, "count": len(scs), "shortcuts": scs}, ensure_ascii=False, indent=2))]
-
-                elif name == "run_workflow":
-
-                    n = arguments.get("name", "")
-
-                    logs = []
-
-                    result = run_workflow_sync(n, logs.append)
-
-                    result["logs"] = logs
-
-                    return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
-
-                elif name == "launch_shortcut":
-
-                    n = arguments.get("name", "")
-
-                    return [TextContent(type="text", text=json.dumps(launch_shortcut_sync(n), ensure_ascii=False))]
-
-                elif name == "search_local_files":
-
-                    q = arguments.get("query", "")
-
-                    limit = int(arguments.get("limit", 50))
-
-                    path = arguments.get("path", "")
-
-                    sort = arguments.get("sort", "date")
-
-                    result = search_everything(q, path=path, limit=limit, sort=sort)
-
-                    return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
-
-                return [TextContent(type="text", text=json.dumps({"ok": False, "error": f"未知: {name}"}, ensure_ascii=False))]
-
-            except Exception as e:
-
-                return [TextContent(type="text", text=json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))]
-
-
-
-        async with stdio_server() as (read_stream, write_stream):
-
-            await server.run(read_stream, write_stream, server.create_initialization_options())
-
-
-
-    asyncio.run(serve())
-
-    return 0
-
-
-
-
-
-
-
-
-
-if __name__ == "__main__":
-
-    sys.exit(main())
-
+
+        except Exception as e:
+
+            self._append_log(f"[VTuber] 初始化失败: {e}")
+
+
+
+    # ---- 7.8 Assistant Bridge (Step 4+5: VTuber 双脑路由) ----
+
+    def _init_assistant_bridge(self) -> None:
+
+        """启动 AssistantCore + AssistantBridgeServer，供 VTuber 命中关键词后调用。
+
+
+
+        端口: 127.0.0.1:16299 (与 assistant_bridge_server.py 默认一致)
+
+        复用 companion bridge 已读取的 LLM 配置 (MiniMax URL + model)。
+
+        """
+
+        try:
+
+            print("[DEBUG] 正在尝试强制启动 16299 桥接服务...")
+
+            self._append_log("[Bridge] 正在初始化 AssistantCore + Bridge @ 16299...")
+
+            from assistant_core import AssistantCore
+
+            from assistant_bridge_server import AssistantBridgeServer
+
+
+
+            # 读取和 companion bridge 同样的 LLM 配置
+
+            base_url = "http://127.0.0.1:16260/v1"
+
+            api_key = "EMPTY"
+
+            model = "desktop-auto-v1"
+
+            context_cfg_path = USER_DATA_DIR / "context_aware_config.json"
+
+            try:
+
+                import json
+
+                if context_cfg_path.exists():
+
+                    context_cfg = json.loads(context_cfg_path.read_text(encoding="utf-8"))
+
+                    backend_cfg = context_cfg.get("backend", {}) if isinstance(context_cfg, dict) else {}
+
+                    if int(backend_cfg.get("type", 0) or 0) == 1:
+
+                        bu = str(backend_cfg.get("base_url") or "").strip()
+
+                        ak = str(backend_cfg.get("api_key") or "EMPTY").strip() or "EMPTY"
+
+                        md = str(backend_cfg.get("model") or "").strip()
+
+                        if bu and md:
+
+                            base_url = bu
+
+                            api_key = ak
+
+                            model = md
+
+            except Exception:
+
+                pass
+
+
+
+            self._append_log(f"[Bridge] LLM 配置: {base_url}, model={model}")
+
+            self.bridges.assistant_core = AssistantCore(
+
+                base_url=base_url,
+
+                api_key=api_key,
+
+                model=model,
+
+            )
+
+            self.bridges._assistant_bridge = AssistantBridgeServer(
+
+                port=16299,
+
+                core=self.bridges.assistant_core,
+
+            )
+
+            self.bridges._assistant_bridge.start()
+
+            self._append_log("[Bridge] ✓ 16299 桥接服务已启动 (供 VTuber 调用)")
+
+            print("[DEBUG] 桥接服务启动调用已发出。")
+
+        except Exception as e:
+
+            import traceback
+
+            self._append_log(f"[Bridge] ✗ 启动失败: {e}")
+
+            print(f"[DEBUG] Bridge 启动失败: {e}")
+
+            traceback.print_exc()
+
+
+
+    # ---- 7.9 提醒任务 (Phase D) ----
+
+    def _init_reminder_scheduler(self) -> None:
+
+        """启动本地提醒任务轮询。到期只弹 Toast，不静默执行工作流。"""
+
+        try:
+
+            from reminders import init_db
+
+            init_db()
+
+            self.bridges._reminder_timer = QTimer(self)
+
+            self.bridges._reminder_timer.setInterval(60_000)
+
+            self.bridges._reminder_timer.timeout.connect(self._check_due_reminders)
+
+            self.bridges._reminder_timer.start()
+
+            QTimer.singleShot(3000, self._check_due_reminders)
+
+            self._append_log("[Reminder] 提醒调度器已启动")
+
+        except Exception as e:
+
+            self._append_log(f"[Reminder] 初始化失败: {e}")
+
+
+
+        # 注: companion_bridge 已在 __init__ 中调用过 (line 1764), 此处不重复调用
+
+        # 否则会触发 LLM backend 二次初始化 + CompanionBridgeThread 二次 start,
+
+        # 日志里会出现 2 遍 [桥接] LLM backend 已初始化 / config_path
+
+
+
+    def _check_due_reminders(self) -> None:
+
+        try:
+
+            from reminders import get_due_reminders
+
+            dues = get_due_reminders(limit=10)
+
+            for item in dues:
+
+                self._show_reminder_toast(item)
+
+        except Exception as e:
+
+            self._append_log(f"[Reminder] 检查到期提醒失败: {e}")
+
+
+
+    def _show_reminder_toast(self, item: dict) -> None:
+
+        if not hasattr(self, "context_tab") or not self.context_tab:
+
+            return
+
+        try:
+
+            import json
+
+            from context_toast import ToastIntent
+
+            rid = int(item.get("id") or 0)
+
+            content = str(item.get("content") or "提醒")
+
+            action_type = str(item.get("action_type") or "toast")
+
+            workflow_name = str(item.get("workflow_name") or "")
+
+            payload = {"id": rid, "action_type": action_type, "workflow_name": workflow_name}
+
+            suggested_action = "reminder_done"
+
+            message = f"{content}（点击完成，关闭则稍后再提醒）"
+
+            if action_type == "run_workflow" and workflow_name:
+
+                suggested_action = "reminder_run_workflow"
+
+                message = f"{content}（点击运行工作流：{workflow_name}）"
+
+            intent = ToastIntent(
+
+                intent="🔔 提醒",
+
+                message=message,
+
+                suggested_action=suggested_action,
+
+                action_param=json.dumps(payload, ensure_ascii=False),
+
+            )
+            # VTuber 推送提醒
+            self._push_vtuber_notification(f"🔔 {intent.message}")
+
+            self.context_tab._toast_manager.show_toast(intent)
+
+        except Exception as e:
+
+            self._append_log(f"[Reminder] 弹出提醒失败: {e}")
+
+
+
+    def handle_reminder_toast_action(self, action: str, action_param: str) -> bool:
+
+        """由 ContextTab 点击提醒 Toast 按钮后回调。"""
+
+        try:
+
+            import json
+
+            from reminders import update_reminder_status
+
+            payload = json.loads(action_param or "{}")
+
+            rid = int(payload.get("id") or 0)
+
+            workflow_name = str(payload.get("workflow_name") or "")
+
+            if not rid:
+
+                return False
+
+            if action == "reminder_snooze":
+
+                update_reminder_status(rid, "delayed", delay_minutes=10)
+
+                self._append_log(f"[Reminder] 已延后 10 分钟: #{rid}")
+
+                return True
+
+            if action == "reminder_run_workflow" and workflow_name:
+
+                update_reminder_status(rid, "done")
+
+                self._append_log(f"[Reminder] 用户确认运行工作流: {workflow_name}")
+
+                from mcp_embedded import run_workflow_sync
+
+                run_workflow_sync(workflow_name, log_func=self._append_log)
+
+                return True
+
+            update_reminder_status(rid, "done")
+
+            self._append_log(f"[Reminder] 已完成: #{rid}")
+
+            return True
+
+        except Exception as e:
+
+            self._append_log(f"[Reminder] 处理点击失败: {e}")
+
+            return False
+
+
+
+    # ---- 8. 记忆引擎 (Phase A) ----
+
+    def _init_memory_engine(self) -> None:
+
+        """启动活动记录 + 每日复盘调度器
+
+        - DB 位置: ~/桌面自动化助手/activity_log.db
+
+        - 分类器: ~/桌面自动化助手/app_categories.json
+
+        - 全部静默失败：不影响主程序启动
+
+        """
+
+        try:
+
+            from pathlib import Path
+
+            from app_categorizer import init_categorizer
+
+            from memory_engine import MemoryEngineManager
+
+            from daily_diary import DiaryScheduler
+
+
+
+            # 1. 初始化分类器 (生成/加载 JSON)
+
+            try:
+
+                init_categorizer(USER_DATA_DIR)
+
+            except Exception as e:
+
+                self._append_log(f"[Memory] 分类器初始化失败: {e}")
+
+                return
+
+
+
+            # 2. 创建 Manager (还不 start, 等用户启用)
+
+            self.bridges.memory_engine_mgr = MemoryEngineManager(USER_DATA_DIR)
+
+            self.bridges.memory_engine_mgr.paused_changed.connect(self._on_memory_pause_changed)
+
+            self.bridges.memory_engine_mgr.main_poll.chunk_ready.connect(self._on_memory_chunk_ready)
+
+            self._append_log("[Memory] 记忆引擎已加载 (未启动)")
+
+
+
+            # 3. 启动每日复盘调度器 (不依檁采样是否运行)
+
+            first_hour = self._get_config_int("diary_first_hour", 22)
+
+            max_prompts = self._get_config_int("diary_max_prompts", 2)
+
+            self.bridges._diary_scheduler = DiaryScheduler(
+
+                parent=self,
+
+                first_hour=first_hour,
+
+                max_prompts=max_prompts,
+
+            )
+
+            self.bridges._diary_scheduler.trigger_diary_prompt.connect(self._on_diary_prompt)
+
+            self._append_log(f"[Memory] 复盘调度器已启动 (首次提醒={first_hour}:30)")
+
+
+
+        except Exception as e:
+
+            import traceback
+
+            self._append_log(f"[Memory] 初始化失败: {e}")
+
+            traceback.print_exc()
+
+
+
+    def _get_config_int(self, key: str, default: int) -> int:
+
+        """从 config.json 读 int 配置，不存在则默认"""
+
+        try:
+
+            cfg_path = USER_DATA_DIR / "config.json"
+
+            if cfg_path.exists():
+
+                import json
+
+                with open(cfg_path, "r", encoding="utf-8") as f:
+
+                    cfg = json.load(f)
+
+                return int(cfg.get(key, default))
+
+        except Exception:
+
+            pass
+
+        return default
+
+
+
+    def _on_memory_pause_changed(self, paused: bool, info: str) -> None:
+
+        """托盘提示"""
+
+        if self._tray_icon and paused:
+
+            try:
+
+                self._tray_icon.showMessage(
+
+                    "记忆引擎已暂停",
+
+                    info,
+
+                    QSystemTrayIcon.Information,
+
+                    3000,
+
+                )
+
+            except Exception:
+
+                pass
+
+
+
+    def _on_diary_prompt(self, date_str: str) -> None:
+
+        """复盘提醒气泡 - 推送到 context_tab 走统一 toast 体系"""
+
+        if not hasattr(self, "context_tab") or not self.context_tab:
+
+            return
+
+        try:
+
+            from context_toast import ToastIntent
+
+            intent = ToastIntent(
+
+                intent="📝 今日复盘",
+
+                message=f"{date_str} 活动已统计，点此生成 Markdown 日记",
+
+                suggested_action="generate_diary",
+
+                action_param=date_str,
+
+            )
+            # VTuber 推送复盘提醒
+            self._push_vtuber_notification(f"📝 {intent.message}")
+
+            self.context_tab._toast_manager.show_toast(intent)
+
+            self.context_tab.toast_broadcast.emit(intent)
+
+        except Exception as e:
+
+            self._append_log(f"[Memory] 推送复盘提醒失败: {e}")
+
+
+
+    def _on_memory_chunk_ready(self, start_ts: float, end_ts: float, record_count: int) -> None:
+
+        """Phase C: 水桶策略触发中期记忆总结。"""
+
+        try:
+
+            self._append_log(f"[Chunk] 触发中期记忆总结: {record_count} 条记录")
+
+            if not self.bridges.memory_engine_mgr:
+
+                return
+
+            from daily_diary import build_chunk_prompt
+
+            sys_p, user_p, fallback = build_chunk_prompt(self.bridges.memory_engine_mgr.db, start_ts, end_ts)
+
+            self._generate_chunk_async(start_ts, end_ts, sys_p, user_p, fallback)
+
+        except Exception as e:
+
+            self._append_log(f"[Chunk] 启动总结失败: {e}")
+
+
+
+    def memory_pause(self, seconds: int) -> None:
+
+        """公开 API: 暂停 N 秒"""
+
+        if self.bridges.memory_engine_mgr:
+
+            self.bridges.memory_engine_mgr.pause(seconds)
+
+
+
+    def memory_pause_until(self, hour: int) -> None:
+
+        """公开 API: 暂停到指定小时"""
+
+        if self.bridges.memory_engine_mgr:
+
+            self.bridges.memory_engine_mgr.pause_until(hour)
+
+
+
+    def memory_start(self) -> bool:
+
+        """公开 API: 启动采样"""
+
+        if not self.bridges.memory_engine_mgr:
+
+            return False
+
+        self.bridges.memory_engine_mgr.start()
+
+        return True
+
+
+
+    def memory_status(self) -> dict:
+
+        """公开 API: 供 GUI 显示状态"""
+
+        if not self.bridges.memory_engine_mgr:
+
+            return {"running": False, "error": "not_initialized"}
+
+        mp = self.bridges.memory_engine_mgr.main_poll
+
+        return {
+
+            "running": mp._is_running,
+
+            "suspended": mp.is_suspended,
+
+            "manual_pause_until": mp._pause_until,
+
+            "interval": mp.interval,
+
+        }
+
+
+
+    # ---- 系统托盘 ----
+
+    def _setup_system_tray(self) -> None:
+
+        """初始化系统托盘图标 + 右键菜单"""
+
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+
+            self._append_log("[托盘] 系统不支持托盘图标,跳过初始化")
+
+            return
+
+
+
+        # 使用 app_icon.ico
+
+        icon_path = Path(__file__).parent / "app_icon.ico"
+
+        icon = QIcon(str(icon_path)) if icon_path.exists() else self.windowIcon()
+
+        self._tray_icon = QSystemTrayIcon(icon, self)
+
+        self._tray_icon.setToolTip(t("tray_tooltip"))
+
+
+
+        # 右键菜单
+
+        self._tray_menu = QMenu()
+
+
+
+        act_show = QAction("📖  显示主界面", self)
+
+        act_show.triggered.connect(self._show_from_tray)
+
+        self._tray_menu.addAction(act_show)
+
+
+
+        act_hide = QAction("🙈  隐藏到托盘", self)
+
+        act_hide.triggered.connect(self.hide)
+
+        self._tray_menu.addAction(act_hide)
+
+
+
+        self._tray_menu.addSeparator()
+
+
+
+        # 启动 MCP server
+
+        act_mcp = QAction("🤖  启动/重启 MCP Server", self)
+
+        act_mcp.triggered.connect(self._tray_start_mcp)
+
+        self._tray_menu.addAction(act_mcp)
+
+
+
+        # 打开工具页
+
+        act_tools = QAction("🔧  打开【工具】页", self)
+
+        act_tools.triggered.connect(self._tray_open_tools)
+
+        self._tray_menu.addAction(act_tools)
+
+
+
+        # 打开 AI 对话页
+
+        act_chat = QAction("💬  打开【AI对话】页", self)
+
+        act_chat.triggered.connect(self._tray_open_chat)
+
+        self._tray_menu.addAction(act_chat)
+
+
+
+        self._tray_menu.addSeparator()
+
+
+
+        # --- 记忆引擎 (Phase A) ---
+
+        act_mem_start = QAction("🧠  启动记忆引擎", self)
+
+        act_mem_start.triggered.connect(lambda: self._tray_memory_start())
+
+        self._tray_menu.addAction(act_mem_start)
+
+
+
+        act_mem_pause_1h = QAction("🧠  暂停记录 1 小时", self)
+
+        act_mem_pause_1h.triggered.connect(lambda: self.memory_pause(3600))
+
+        self._tray_menu.addAction(act_mem_pause_1h)
+
+
+
+        act_mem_pause_9 = QAction("🧠  暂停到明天 9:00", self)
+
+        act_mem_pause_9.triggered.connect(lambda: self.memory_pause_until(9))
+
+        self._tray_menu.addAction(act_mem_pause_9)
+
+
+
+        act_mem_diary_now = QAction("📝  立即生成今日复盘", self)
+
+        act_mem_diary_now.triggered.connect(self._tray_generate_diary)
+
+        self._tray_menu.addAction(act_mem_diary_now)
+
+
+
+        self._tray_menu.addSeparator()
+
+
+
+        act_quit = QAction("❌  退出", self)
+
+        act_quit.triggered.connect(self._truly_quit_app)
+
+        self._tray_menu.addAction(act_quit)
+
+
+
+        self._tray_icon.setContextMenu(self._tray_menu)
+
+
+
+        # 双击恢复窗口
+
+        self._tray_icon.activated.connect(self._on_tray_activated)
+
+        # 左键单击在 Windows 上是 ActivationReason.Trigger, 也会调 activated
+
+        self._tray_icon.show()
+
+        self._append_log("[托盘] 系统托盘图标已启用")
+
+
+
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+
+        """双击托盘图标 → 恢复窗口"""
+
+        if reason in (QSystemTrayIcon.DoubleClick, QSystemTrayIcon.Trigger):
+
+            # Trigger(单击)仅在已隐藏时恢复,避免抢占用户焦点
+
+            if not self.isVisible():
+
+                self._show_from_tray()
+
+            elif reason == QSystemTrayIcon.DoubleClick:
+
+                self._show_from_tray()
+
+
+
+    def _show_from_tray(self) -> None:
+
+        """从托盘恢复主窗口"""
+
+        self.showNormal()
+
+        self.raise_()
+
+        self.activateWindow()
+
+        try:
+
+            import win32gui, win32con
+
+            hwnd = int(self.winId())
+
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+
+            win32gui.SetForegroundWindow(hwnd)
+
+        except Exception:
+
+            pass
+
+
+
+    def _truly_quit_app(self) -> None:
+
+        """从托盘菜单真正退出应用"""
+
+        self._truly_quit = True
+
+        self._append_log("[系统] 退出程序...")
+
+        QApplication.quit()
+
+
+
+    def _tray_start_mcp(self) -> None:
+
+        """从托盘启动 MCP server(委托给 tools_tab)"""
+
+        if hasattr(self, "tools_tab") and self.tools_tab:
+
+            self.tools_tab._start_mcp_server()
+
+            # 切换到工具页并显示窗口
+
+            self._show_from_tray()
+
+
+
+    def _tray_open_tools(self) -> None:
+
+        """从托盘打开【工具】页"""
+
+        self._show_from_tray()
+
+        if hasattr(self, "right_tabs"):
+
+            from PySide6.QtWidgets import QTabWidget
+
+            for w in self.findChildren(QTabWidget):
+
+                if w is self.right_tabs:
+
+                    for i in range(w.count()):
+
+                        if "工具" in w.tabText(i):
+
+                            w.setCurrentIndex(i)
+
+                            return
+
+
+
+    def _tray_open_chat(self) -> None:
+
+        """从托盘打开【AI对话】页"""
+
+        self._show_from_tray()
+
+        if hasattr(self, "context_tab"):
+
+            from PySide6.QtWidgets import QTabWidget
+
+            # 切换到 AI 感知标签（父标签）
+
+            for i in range(self.right_tabs.count()):
+
+                if "AI" in self.right_tabs.tabText(i):
+
+                    self.right_tabs.setCurrentIndex(i)
+
+                    break
+
+            # 在 context_tab 中找到子 QTabWidget，切换到「AI 对话」
+
+            for sub in self.context_tab.findChildren(QTabWidget):
+
+                for j in range(sub.count()):
+
+                    if "AI 对话" in sub.tabText(j):
+
+                        sub.setCurrentIndex(j)
+
+                        return
+
+
+
+    def _tray_memory_start(self) -> None:
+
+        """托盘：启动记忆引擎"""
+
+        if self.memory_start():
+
+            self._append_log("[Memory] 已启动")
+
+            if self._tray_icon:
+
+                self._tray_icon.showMessage("记忆引擎", "已启动", QSystemTrayIcon.Information, 2000)
+
+        else:
+
+            self._append_log("[Memory] 启动失败：未初始化")
+
+
+
+    def _tray_generate_diary(self) -> None:
+
+        """托盘：立即生成今日复盘"""
+
+        from datetime import datetime
+
+        from daily_diary import build_diary_prompt
+
+        if not self.bridges.memory_engine_mgr:
+
+            return
+
+        self._show_from_tray()
+
+        try:
+
+            db = self.bridges.memory_engine_mgr.db
+
+            target = datetime.now()
+
+            sys_p, user_p = build_diary_prompt(db, target)
+
+            # 写一个占位文件 + 调 LLM (使用现有的 LLM 后端)
+
+            self._generate_diary_async(target, sys_p, user_p)
+
+        except Exception as e:
+
+            self._append_log(f"[Memory] 复盘生成失败: {e}")
+
+
+
+    def _generate_diary_async(self, target, sys_p, user_p) -> None:
+
+        """调 LLM 生成日记 (交给 context_agent._agent 处理)"""
+
+        from PySide6.QtCore import QThread, Signal
+
+        from datetime import datetime
+
+
+
+        class _DiaryWorker(QThread):
+
+            done = Signal(str)
+
+
+
+            def __init__(self, agent_backend, sys_p, user_p, date_str, out_dir):
+
+                super().__init__()
+
+                self.agent_backend = agent_backend
+
+                self.sys_p = sys_p
+
+                self.user_p = user_p
+
+                self.date_str = date_str
+
+                self.out_dir = out_dir
+
+
+
+            def run(self):
+
+                try:
+
+                    txt = self.agent_backend.infer(
+
+                        system_prompt=self.sys_p,
+
+                        user_text=self.user_p,
+
+                        timeout=60,
+
+                    )
+
+                    # 写入文件
+
+                    out_path = self.out_dir / f"{self.date_str}.md"
+
+                    out_path.write_text(txt or "（LLM 未返回内容）", encoding="utf-8")
+
+
+
+                    # Phase D: 复盘时顺手抽取聊天长期画像，失败不影响日记生成。
+
+                    try:
+
+                        from datetime import datetime
+
+                        from daily_diary import build_profile_memory_prompt
+
+                        from user_profile import apply_memory_actions, parse_json_actions
+
+                        target = datetime.strptime(self.date_str, "%Y-%m-%d")
+
+                        profile_prompt = build_profile_memory_prompt(target)
+
+                        if profile_prompt:
+
+                            p_sys, p_user = profile_prompt
+
+                            raw = self.agent_backend.infer(system_prompt=p_sys, user_text=p_user, timeout=60)
+
+                            apply_memory_actions(parse_json_actions(raw), source="chat")
+
+                    except Exception:
+
+                        pass
+
+
+
+                    self.done.emit(str(out_path))
+
+                except Exception as e:
+
+                    self.done.emit(f"ERROR: {e}")
+
+
+
+        try:
+
+            out_dir = USER_DATA_DIR / "diary"
+
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            date_str = target.strftime("%Y-%m-%d")
+
+            backend = self.context_tab._agent._backend if hasattr(self, "context_tab") else None
+
+            if not backend:
+
+                self._append_log("[Memory] LLM 后端未就绪")
+
+                return
+
+            self._diary_worker = _DiaryWorker(backend, sys_p, user_p, date_str, out_dir)
+
+            self._diary_worker.done.connect(self._on_diary_done)
+
+            self._diary_worker.start()
+
+            self._append_log(f"[Memory] 复盘生成中... ({date_str})")
+
+        except Exception as e:
+
+            self._append_log(f"[Memory] 启动复盘 worker 失败: {e}")
+
+
+
+    def _generate_chunk_async(self, start_ts, end_ts, sys_p, user_p, fallback_markdown: str) -> None:
+
+        """Phase C: 生成中期记忆 Chunk。LLM 不可用时写本地聚合兜底。"""
+
+        from PySide6.QtCore import QThread, Signal
+
+        from datetime import datetime
+
+
+
+        class _ChunkWorker(QThread):
+
+            done = Signal(str)
+
+
+
+            def __init__(self, agent_backend, sys_p, user_p, fallback_markdown, start_ts, end_ts, out_dir):
+
+                super().__init__()
+
+                self.agent_backend = agent_backend
+
+                self.sys_p = sys_p
+
+                self.user_p = user_p
+
+                self.fallback_markdown = fallback_markdown
+
+                self.start_ts = start_ts
+
+                self.end_ts = end_ts
+
+                self.out_dir = out_dir
+
+
+
+            def run(self):
+
+                try:
+
+                    start = datetime.fromtimestamp(self.start_ts)
+
+                    end = datetime.fromtimestamp(self.end_ts)
+
+                    filename = f"Chunk_{start.strftime('%Y%m%d_%H%M')}_{end.strftime('%H%M')}.md"
+
+                    out_path = self.out_dir / filename
+
+                    txt = ""
+
+                    if self.agent_backend:
+
+                        try:
+
+                            txt = self.agent_backend.infer(
+
+                                system_prompt=self.sys_p,
+
+                                user_text=self.user_p,
+
+                                timeout=60,
+
+                            ) or ""
+
+                        except Exception:
+
+                            txt = ""
+
+                    if not txt.strip():
+
+                        txt = self.fallback_markdown
+
+                    out_path.write_text(txt, encoding="utf-8")
+
+                    self.done.emit(str(out_path))
+
+                except Exception as e:
+
+                    self.done.emit(f"ERROR: {e}")
+
+
+
+        try:
+
+            out_dir = USER_DATA_DIR / "diary" / "chunks"
+
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            backend = self.context_tab._agent._backend if hasattr(self, "context_tab") else None
+
+            self._chunk_worker = _ChunkWorker(backend, sys_p, user_p, fallback_markdown, start_ts, end_ts, out_dir)
+
+            self._chunk_worker.done.connect(self._on_chunk_done)
+
+            self._chunk_worker.start()
+
+            self._append_log("[Chunk] 中期记忆生成中...")
+
+        except Exception as e:
+
+            self._append_log(f"[Chunk] 启动 worker 失败: {e}")
+
+
+
+    def _on_chunk_done(self, result: str) -> None:
+
+        if result.startswith("ERROR:"):
+
+            self._append_log(f"[Chunk] 中期记忆失败: {result}")
+
+            return
+
+        self._append_log(f"[Chunk] ✅ 中期记忆已生成: {result}")
+
+        if hasattr(self, "context_tab") and self.context_tab:
+
+            from context_toast import ToastIntent
+
+            intent = ToastIntent(
+
+                intent="🧠 中期记忆",
+
+                message=f"已写入 {Path(result).name}",
+
+                suggested_action="open_diary",
+
+                action_param=result,
+
+            )
+            # VTuber 推送中期记忆
+            self._push_vtuber_notification(f"🧠 {intent.message}")
+
+            self.context_tab._toast_manager.show_toast(intent)
+
+
+
+    def _on_diary_done(self, result: str) -> None:
+
+        """复盘生成完成"""
+
+        if result.startswith("ERROR:"):
+
+            self._append_log(f"[Memory] 复盘失败: {result}")
+
+            return
+
+        self._append_log(f"[Memory] ✅ 复盘已生成: {result}")
+
+        # 推气泡
+
+        if hasattr(self, "context_tab") and self.context_tab:
+
+            from context_toast import ToastIntent
+
+            intent = ToastIntent(
+
+                intent="📝 复盘完成",
+
+                message=f"已写入 {Path(result).name}",
+
+                suggested_action="open_diary",
+
+                action_param=result,
+
+            )
+            # VTuber 推送复盘完成
+            self._push_vtuber_notification(f"📝 {intent.message}")
+
+            self.context_tab._toast_manager.show_toast(intent)
+
+
+
+    # ---- 窗口状态持久化 ----
+
+    def _window_state_path(self) -> Path:
+
+        return USER_DATA_DIR / "window_state.json"
+
+
+
+    def _load_window_state(self) -> None:
+
+        """加载窗口位置/大小/默认后台运行设置"""
+
+        path = self._window_state_path()
+
+        if not path.exists():
+
+            return
+
+        try:
+
+            data = json.loads(path.read_text("utf-8"))
+
+        except Exception:
+
+            return
+
+        geom = data.get("geometry")
+
+        if isinstance(geom, list) and len(geom) == 4:
+
+            try:
+
+                self.setGeometry(geom[0], geom[1], geom[2], geom[3])
+
+            except Exception:
+
+                pass
+
+
+
+    def _save_window_state(self) -> None:
+
+        """保存窗口位置/大小"""
+
+        try:
+
+            geom = [self.x(), self.y(), self.width(), self.height()]
+
+            self._window_state_path().write_text(
+
+                json.dumps({"geometry": geom}, ensure_ascii=False, indent=2),
+
+                "utf-8",
+
+            )
+
+        except Exception:
+
+            pass
+
+
+
+    def _capture_coord_for_quick(self):
+
+        """快速启动面板的坐标捕捉: Win+D 显示桌面 -> 3秒倒计时 -> 捕捉"""
+
+        import pyautogui as pa
+
+        from PySide6.QtCore import QTimer
+
+        self.btn_capture_coord.setEnabled(False)
+
+        self.coord_status.setText(t("ql_coord_display_wind"))
+
+        # 先 Win+D
+
+        pa.hotkey('win', 'd')
+
+        # 隐藏主窗口
+
+        self.hide()
+
+        # 800ms 后开始倒计时 (等动画完成)
+
+        QTimer.singleShot(800, lambda: self._quick_capture_countdown(3))
+
+
+
+    def _quick_capture_countdown(self, n):
+
+        from PySide6.QtCore import QTimer
+
+        if n <= 0:
+
+            import pyautogui as pa
+
+            x, y = pa.position()
+
+            self.coord_x.setValue(x)
+
+            self.coord_y.setValue(y)
+
+            self.coord_status.setText(f"✅ 已捕捉: ({x}, {y})")
+
+            self.btn_capture_coord.setEnabled(True)
+
+            # 恢复窗口并强制转到前台
+
+            self.show()
+
+            self.showNormal()  # 确保不被最小化
+
+            self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
+
+            self.raise_()
+
+            self.activateWindow()
+
+            # 闪动状态栏: 设置高亮样式 1.5 秒后还原
+
+            self.coord_status.setStyleSheet("color:#16a34a; font-weight:bold; font-size:12px; background:#dcfce7; padding:2px 6px;")
+
+            QTimer.singleShot(2000, lambda: self.coord_status.setStyleSheet("color:#666; font-size:11px;"))
+
+            return
+
+        self.coord_status.setText(f"⏱ {n} 秒后捕捉...")
+
+        QTimer.singleShot(1000, lambda: self._quick_capture_countdown(n - 1))
+
+
+
+    def _on_worker_log(self, msg: str) -> None:
+
+        self._append_log(msg)
+
+
+
+    def _on_worker_done(self, ok: bool, msg: str) -> None:
+
+        self.btn_run.setEnabled(True)
+
+        self.btn_stop.setEnabled(False)
+
+        self._append_log(("✅ " if ok else "❌ ") + msg)
+
+
+
+    # ---- 7.2 列表操作 ----
+
+    # 状态文件:记录「一键启动」开启的 PID,关闭时只关这些
+
+    STATE_FILE = USER_DATA_DIR / "launch_state.json"
+
+
+
+    def _load_state(self) -> dict:
+
+        # Step 1C-1: 委托给 UIState.load, 保留方法以兼容潜在外部调用
+
+        return UIState.load(self.STATE_FILE).to_dict()
+
+
+
+    def _save_state(self) -> None:
+
+        # Step 1C-1: 委托给 UIState.save
+
+        ok = self.containers.state.save(self.STATE_FILE)
+
+        if not ok:
+
+            self._append_log(f"⚠️ 状态保存失败")
+
+
+
+    def refresh_shortcuts(self) -> None:
+
+        self.list_widget.clear()
+
+        # Step 1C-4: 整体替换, 通过容器 API
+
+        self.containers.shortcuts.replace(scan_desktop_shortcuts())
+
+        for sc in self.containers.shortcuts:
+
+            item = QListWidgetItem(f"{sc.name}   →   {sc.target}")
+
+            item.setToolTip(t("ql_item_tooltip"))
+
+            self.list_widget.addItem(item)
+
+        self._append_log(f"🔍 扫描到 {len(self.containers.shortcuts)} 个快捷方式")
+
+        if self.containers.shortcuts:
+
+            self.list_widget.setCurrentRow(0)
+
+        # 同步到工作流面板
+
+        if hasattr(self, 'workflow_editor'):
+
+            self.workflow_editor.refresh_shortcuts()
+
+
+
+    def _current(self) -> Optional[ShortcutInfo]:
+
+        # 优先返回 launch_by_path 传过来的 override (供工作流调用)
+
+        override = getattr(self, "_current_override", None)
+
+        if override is not None:
+
+            return override
+
+        row = self.list_widget.currentRow()
+
+        # Step 1C-4: 通过容器 API 访问 (边界由 at() 内部处理)
+
+        return self.containers.shortcuts.at(row)
+
+
+
+    def _add_custom_app(self) -> None:
+
+        """弹出对话框添加自定义应用"""
+
+        path, _ = QFileDialog.getOpenFileName(
+
+            self, "选择要添加的应用",
+
+            "C:\\Program Files",
+
+            "可执行文件 (*.exe *.bat *.cmd);;所有文件 (*.*)"
+
+        )
+
+        if not path:
+
+            return
+
+        default_name = Path(path).stem
+
+        name, ok = QInputDialog.getText(self, "应用名称", "应用名称 (留空用文件名):", text=default_name)
+
+        if not ok:
+
+            return
+
+        name = (name or "").strip() or default_name
+
+        try:
+
+            app = add_custom_app(name, path)
+
+            self._append_log(f"✅ 已添加自定义应用: {app['name']} → {app['target']}")
+
+            self.refresh_shortcuts()
+
+        except FileNotFoundError as e:
+
+            QMessageBox.warning(self, "路径不存在", str(e))
+
+        except Exception as e:
+
+            QMessageBox.warning(self, "添加失败", str(e))
+
+
+
+    def _remove_custom_app(self) -> None:
+
+        """删除当前选中的自定义应用 (只能删 lnk_path 为空的)"""
+
+        sc = self._current()
+
+        if not sc:
+
+            QMessageBox.information(self, "提示", "请先选中一个应用")
+
+            return
+
+        if sc.lnk_path:  # 是 .lnk 快捷方式,不是自定义
+
+            QMessageBox.information(self, "提示", "只能删除自定义添加的应用 (桌面快捷方式请直接删除 .lnk 文件)")
+
+            return
+
+        if QMessageBox.question(self, "确认删除", f"删除自定义应用「{sc.name}」?") != QMessageBox.Yes:
+
+            return
+
+        if remove_custom_app(sc.target):
+
+            self._append_log(f"🗑 已删除: {sc.name}")
+
+            self.refresh_shortcuts()
+
+        else:
+
+            QMessageBox.warning(self, "删除失败", "未找到该应用")
+
+
+
+    def _on_select(self) -> None:
+
+        sc = self._current()
+
+        if not sc:
+
+            return
+
+        self.info_label.setText(
+
+            f"<b>{sc.name}</b><br>"
+
+            f"目标: {sc.target}<br>"
+
+            f"工作目录: {sc.work_dir or '(默认)'}<br>"
+
+            f"快捷方式: {sc.lnk_path}<br>"
+
+            f"绑定启动方式: <b style='color:#2563eb;'>{self._mode_name(sc.launch_mode)}</b>"
+
+        )
+
+        # 加载该条目之前保存过的模板：按当前数据目录指针解析 samples。
+
+        sample_dir = _samples_dir()
+
+        if sample_dir.exists():
+
+            sc.icon_samples = [str(p) for p in sample_dir.glob(f"{sc.name}_*.png")]
+
+        self._refresh_samples_label()
+
+        # 如果该快捷方式已绑定 mode,自动选中对应单选;无绑定则默认 direct
+
+        if sc.launch_mode == "desktop":
+
+            self.radio_desktop.setChecked(True)
+
+        elif sc.launch_mode == "direct":
+
+            self.radio_direct.setChecked(True)
+
+        elif sc.launch_mode == "shell":
+
+            self.radio_shellexec.setChecked(True)
+
+        elif sc.launch_mode == "image":
+
+            self.radio_image.setChecked(True)
+
+        else:
+
+            # 无绑定,默认使用直接启动
+
+            self.radio_direct.setChecked(True)
+
+        self._refresh_launch_mode_hint()
+
+
+
+    @staticmethod
+
+    def _mode_name(mode: str) -> str:
+
+        return {
+
+            "": t("ql_mode_unbound"),
+
+            "desktop": t("ql_mode_desktop"),
+
+            "direct": t("ql_mode_direct"),
+
+            "shell": t("ql_mode_shell"),
+
+            "image": t("ql_mode_image"),
+
+        }.get(mode, mode)
+
+
+
+    def _refresh_launch_mode_hint(self) -> None:
+
+        """刷新 "绑定启动方式" 区提示。"""
+
+        sc = self._current()
+
+        if not sc:
+
+            self.lbl_launch_mode_hint.setText(t("ql_info_selected"))
+
+            self.btn_bind_launch_mode.setEnabled(False)
+
+            self.btn_clear_launch_mode.setEnabled(False)
+
+            return
+
+        if sc.launch_mode:
+
+            self.lbl_launch_mode_hint.setText(
+
+                f"「{sc.name}」已绑定: <b>{self._mode_name(sc.launch_mode)}</b>。<br>"
+
+                f"双击/工作流 调用时将使用该 mode，不再受 UI 单选按钮影响。"
+
+            )
+
+        else:
+
+            self.lbl_launch_mode_hint.setText(
+
+                t("ql_launch_unbound", sc=sc.name)
+
+            )
+
+        self.btn_bind_launch_mode.setEnabled(True)
+
+        self.btn_clear_launch_mode.setEnabled(bool(sc.launch_mode))
+
+
+
+    def _bind_launch_mode(self) -> None:
+
+        """把当前 UI 选择的 mode 绑定到本快捷方式，并持久化。"""
+
+        sc = self._current()
+
+        if not sc:
+
+            return
+
+        if self.radio_desktop.isChecked():
+
+            mode = "desktop"
+
+        elif self.radio_direct.isChecked():
+
+            mode = "direct"
+
+        elif self.radio_shellexec.isChecked():
+
+            mode = "shell"
+
+        else:
+
+            mode = "image"
+
+        sc.launch_mode = mode
+
+        meta = load_shortcut_meta()
+
+        meta[_shortcut_key(sc)] = {
+
+            "launch_mode": mode,
+
+            "coord_x": self.coord_x.value(),
+
+            "coord_y": self.coord_y.value(),
+
+            "click_type": self.coord_click_type.currentData() or "left_double",
+
+        }
+
+        save_shortcut_meta(meta)
+
+        self._append_log(f"🔗 已绑定「{sc.name}」启动方式: {self._mode_name(mode)}")
+
+        if self.coord_x.value() > 0 or self.coord_y.value() > 0:
+
+            self._append_log(
+
+                f"   📍 同时保存坐标: ({self.coord_x.value()}, {self.coord_y.value()}) 类型={self.coord_click_type.currentData()}"
+
+            )
+
+        self._refresh_launch_mode_hint()
+
+
+
+    def _save_match_coord(self, info, cx: int, cy: int) -> None:
+
+        """将模板匹配得到的中心坐标保存到元数据,供坐标点击兜底使用。"""
+
+        meta = load_shortcut_meta()
+
+        key = _shortcut_key(info)
+
+        entry = meta.get(key, {})
+
+        entry["coord_x"] = cx
+
+        entry["coord_y"] = cy
+
+        meta[key] = entry
+
+        save_shortcut_meta(meta)
+
+        self._append_log(f"   💾 已保存匹配坐标: ({cx}, {cy})")
+
+
+
+    def _clear_launch_mode(self) -> None:
+
+        """清除本快捷方式的启动方式绑定。"""
+
+        sc = self._current()
+
+        if not sc:
+
+            return
+
+        sc.launch_mode = ""
+
+        meta = load_shortcut_meta()
+
+        key = _shortcut_key(sc)
+
+        if key in meta:
+
+            meta.pop(key)
+
+            save_shortcut_meta(meta)
+
+        self._append_log(f"🗑 已清除「{sc.name}」的启动方式绑定")
+
+        self._refresh_launch_mode_hint()
+
+
+
+    def launch_by_path(self, path: str) -> bool:
+
+        """供工作流调用。根据 path 查找对应 ShortcutInfo 并尊重其 launch_mode 绑定。
+
+        返回 True=已处理, False=未找到对应 sc (由 workflow 走 fallback)。"""
+
+        # 归一化路径
+
+        path_norm = str(Path(path).resolve()) if Path(path).exists() else path
+
+        for sc in self.containers.shortcuts:  # Step 1C-4: 通过容器迭代
+
+            if sc.target == path or sc.target == path_norm:
+
+                self._current_override = sc
+
+                try:
+
+                    self.run_action()
+
+                finally:
+
+                    self._current_override = None
+
+                return True
+
+            if sc.lnk_path and Path(sc.lnk_path).resolve() == Path(path).resolve():
+
+                self._current_override = sc
+
+                try:
+
+                    self.run_action()
+
+                finally:
+
+                    self._current_override = None
+
+                return True
+
+        return False
+
+
+
+    def _refresh_samples_label(self) -> None:
+
+        sc = self._current()
+
+        if not sc or not sc.icon_samples:
+
+            self.samples_label.setText(t("ql_template_none"))
+
+        else:
+
+            names = "\n".join(Path(s).name for s in sc.icon_samples)
+
+            self.samples_label.setText(f"当前模板 ({len(sc.icon_samples)}):\n{names}")
+
+
+
+    # ---- 7.3 模板管理 ----
+
+    def start_snipping(self) -> None:
+
+        sc = self._current()
+
+        if not sc:
+
+            QMessageBox.warning(self, "提示", "请先在左侧选一个快捷方式")
+
+            return
+
+        # 隐藏主窗口并强制 Win+D 显露桌面，避免被截进图。
+
+        self.hide()
+
+        QApplication.processEvents()
+
+        time.sleep(0.2)
+
+        try:
+
+            pyautogui = _get_pyautogui()
+
+            pyautogui.hotkey('win', 'd')
+
+            time.sleep(0.5)
+
+        except Exception as e:
+
+            self._append_log(f"⚠️ Win+D 显示桌面失败，继续截图: {e}")
+
+        self.snipping = SnippingWindow()
+
+        self.snipping.captured.connect(lambda r: self._on_snipped(sc, r))
+
+        self.snipping.show()
+
+        self.snipping.raise_()
+
+        self.snipping.activateWindow()
+
+
+
+    def _on_snipped(self, sc: ShortcutInfo, rect: QRect) -> None:
+
+        self.show()
+
+        self.raise_()
+
+        self.activateWindow()
+
+        if rect.width() < 4 or rect.height() < 4:
+
+            self._append_log("⚠️ 选区太小,已取消")
+
+            return
+
+        sample_dir = _samples_dir()
+
+        sample_dir.mkdir(parents=True, exist_ok=True)
+
+        # 多模板命名: name_idx_timestamp.png
+
+        idx = len(sc.icon_samples)
+
+        out = sample_dir / f"{sc.name}_{idx}_{int(time.time())}.png"
+
+        # 从全屏 pixmap 截一块
+
+        cropped: QImage = self.snipping._full_pixmap.copy(rect).toImage()
+
+        cropped.save(str(out), "PNG")
+
+        sc.icon_samples.append(str(out))
+
+        self._append_log(f"📸 模板已保存: {out}")
+
+        self._refresh_samples_label()
+
+
+
+    def load_samples_from_files(self) -> None:
+
+        sc = self._current()
+
+        if not sc:
+
+            return
+
+        # 确保 samples 目录存在,避免 Win32 对话框在空目录上挂起
+
+        sample_dir = _samples_dir().resolve()
+
+        sample_dir.mkdir(parents=True, exist_ok=True)
+
+        initial = str(sample_dir)
+
+        self._append_log(f"📂 打开文件对话框: {initial}")
+
+        # 走 Qt 内置对话框 (DontUseNativeDialog) 避免 Windows 资源管理器在中文/特殊路径下卡死
+
+        from PySide6.QtWidgets import QFileDialog as QD
+
+        files, _ = QD.getOpenFileNames(
+
+            self, "选择模板图片", initial, "PNG 图片 (*.png)",
+
+            options=QD.DontUseNativeDialog,
+
+        )
+
+        if files:
+
+            sc.icon_samples.extend(files)
+
+            self._append_log(f"📂 已加载 {len(files)} 个模板")
+
+        else:
+
+            self._append_log("📂 未选择任何文件")
+
+        self._refresh_samples_label()
+
+
+
+    # ---- 7.4 执行 / 停止 ----
+
+    def run_action(self) -> None:
+
+        sc = self._current()
+
+        if not sc:
+
+            QMessageBox.warning(self, "提示", "请先选择一个快捷方式")
+
+            return
+
+        self._append_log(f"[启动] 双击: {sc.name} → {sc.target}")
+
+        if self.containers.worker and self.containers.worker.isRunning():
+
+            return
+
+
+
+        # ---- 文档类快捷方式: 自动打开所在目录 ----
+
+        DOC_EXTENSIONS = {
+
+            ".doc", ".docx", ".pdf", ".xls", ".xlsx", ".ppt", ".pptx",
+
+            ".txt", ".csv", ".rtf", ".odt", ".ods", ".odp",
+
+            ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".ico",
+
+            ".mp3", ".mp4", ".avi", ".mkv", ".mov", ".zip", ".rar", ".7z",
+
+        }
+
+        target_path = Path(sc.target)
+
+        if target_path.exists() and target_path.suffix.lower() in DOC_EXTENSIONS:
+
+            self._append_log(f"📂 文档类快捷方式,打开所在目录: {target_path.parent}")
+
+            subprocess.Popen(["explorer", "/select,", str(target_path)])
+
+            return
+
+
+
+        mode = (
+
+            sc.launch_mode if sc.launch_mode
+
+            else (
+
+                "desktop" if self.radio_desktop.isChecked()
+
+                else "direct" if self.radio_direct.isChecked()
+
+                else "shell" if self.radio_shellexec.isChecked()
+
+                else "image"
+
+            )
+
+        )
+
+        if mode == "image" and not sc.icon_samples:
+
+            QMessageBox.warning(self, "提示", "图像识别模式需要先有模板,请用「截图框选」")
+
+            return
+
+        if mode == "coord" and (self.coord_x.value() == 0 and self.coord_y.value() == 0):
+
+            QMessageBox.warning(self, "提示", "坐标点击模式需要先设置有效坐标")
+
+            return
+
+
+
+        self.btn_run.setEnabled(False)
+
+        self.btn_stop.setEnabled(True)
+
+        # coord 优先用 sc 上绑定的，其次 UI 当前值
+
+        coord_x = getattr(sc, "_coord_x", 0) or 0
+
+        coord_y = getattr(sc, "_coord_y", 0) or 0
+
+        if not (coord_x > 0 or coord_y > 0):
+
+            coord_x = self.coord_x.value()
+
+            coord_y = self.coord_y.value()
+
+        # Step 1C-3: 实例移到 self.containers.worker, 通过 @property worker 保持 API 兼容
+
+        self.containers.worker = LaunchWorker(
+
+            sc, mode,
+
+            do_notepad=self.chk_notepad.isChecked(),
+
+            extra_args=self.args_edit.text(),
+
+            coord={
+
+                "x": coord_x,
+
+                "y": coord_y,
+
+                "click_type": getattr(sc, "_click_type", "left_double") or self.coord_click_type.currentData()
+
+            },
+
+            # Step 2-2B: 模板匹配后保存坐标的回调注入到 launch_worker.py, 避免循环 import
+            coord_saver=self._save_match_coord,
+        )
+
+        # (self.scope_all 已被工作流面板取代)
+
+        self.containers.worker.log_signal.connect(self._on_worker_log)
+
+        self.containers.worker.finished_signal.connect(self._on_worker_done)
+
+        self.containers.worker.start()
+
+        self._append_log(f"▶ 启动任务: {sc.name}  (mode={mode})")
+
+
+
+    def stop_action(self) -> None:
+
+        # 先终止 worker 线程 (Step 1C-3)
+
+        if self.containers.worker and self.containers.worker.isRunning():
+
+            self.containers.worker.cancel()
+
+            self.containers.worker.quit()
+
+            self.containers.worker.wait(2000)
+
+            self._append_log("⏹ 已请求停止 worker")
+
+
+
+        # 再杀掉已启动的目标进程
+
+        sc = self._current()
+
+        if sc:
+
+            try:
+
+                # 解析快捷方式找目标进程名
+
+                target_exe = None
+
+                if sc.lnk_path and str(sc.lnk_path).lower().endswith('.lnk'):
+
+                    import win32com.client
+
+                    shell = win32com.client.Dispatch('WScript.Shell')
+
+                    shortcut = shell.CreateShortCut(str(sc.lnk_path))
+
+                    if shortcut.TargetPath:
+
+                        target_exe = Path(shortcut.TargetPath).name.lower()
+
+                elif sc.target:
+
+                    target_exe = Path(sc.target).name.lower()
+
+                else:
+
+                    target_exe = sc.name.lower() + ".exe"
+
+
+
+                import psutil
+
+                killed = []
+
+                for p in psutil.process_iter(['pid', 'name']):
+
+                    if (p.info['name'] or '').lower() == target_exe:
+
+                        try:
+
+                            p.kill()
+
+                            killed.append(p.info['pid'])
+
+                        except Exception:
+
+                            pass
+
+                if killed:
+
+                    self._append_log(f"⏹ 已终止进程: {target_exe}, PID={killed}")
+
+                else:
+
+                    self._append_log(f"⏹ 未找到运行中的进程: {target_exe}")
+
+            except Exception as e:
+
+                self._append_log(f"⚠️ 终止进程失败: {e}")
+
+
+
+        self.btn_run.setEnabled(True)
+
+        self.btn_stop.setEnabled(False)
+
+        self.containers.worker = None  # Step 1C-3: 彻底清理,下次 run 从头开始
+
+
+
+    # ---- 7.5a 清理历史残留进程 ----
+
+    def cleanup_residuals(self) -> None:
+
+        """按进程名关键词 (可多个,空格分隔) 强制 taskkill"""
+
+        kw_text = self.cleanup_kw.text().strip()
+
+        if not kw_text:
+
+            QMessageBox.warning(self, "提示", "请输入至少一个关键词 (例如 aipy  lobe)")
+
+            return
+
+        keywords = [k.strip().lower() for k in kw_text.split() if k.strip()]
+
+
+
+        import psutil
+
+        targets: list[tuple[int, str, str]] = []  # (pid, name, exe)
+
+        for p in psutil.process_iter(['name', 'pid', 'exe']):
+
+            try:
+
+                name = (p.info['name'] or '').lower()
+
+                exe = (p.info['exe'] or '').lower()
+
+                for kw in keywords:
+
+                    if kw in name or kw in exe:
+
+                        targets.append((p.info['pid'], p.info['name'] or '', p.info['exe'] or ''))
+
+                        break
+
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+
+                continue
+
+
+
+        if not targets:
+
+            self._append_log(f"🧹 未发现含 {keywords} 的进程")
+
+            return
+
+
+
+        detail = "\n".join(
+
+            "  • PID={}  name={}  exe={}".format(pid, n, e)
+
+            for pid, n, e in targets
+
+        )
+
+        confirm = QMessageBox.question(
+
+            self, "确认清理",
+
+            f"将 taskkill /F 强制结束 {len(targets)} 个进程:\n{detail}\n\n是否继续?",
+
+        )
+
+        if confirm != QMessageBox.Yes:
+
+            return
+
+
+
+        self.btn_cleanup.setEnabled(False)
+
+        killed = 0
+
+        for pid, name, exe in targets:
+
+            try:
+
+                r = subprocess.run(
+
+                    ['taskkill', '/F', '/T', '/PID', str(pid)],
+
+                    capture_output=True, text=True, timeout=10,
+
+                )
+
+                if r.returncode == 0:
+
+                    killed += 1
+
+                    self._append_log(f"  ✅ 清理 PID={pid} ({name})")
+
+                else:
+
+                    self._append_log(f"  ⚠️ PID={pid} 失败: {r.stderr.strip() or r.stdout.strip()}")
+
+            except Exception as e:
+
+                self._append_log(f"  ❌ PID={pid}: {e}")
+
+
+
+        self._append_log(f"🧹 清理完成: {killed}/{len(targets)} 个")
+
+        self.btn_cleanup.setEnabled(True)
+
+
+
+    # ---- 7.5 一键启停 ----
+
+    def _targets_to_handle(self) -> list[ShortcutInfo]:
+
+        """根据 scope_all 决定作用于全部还是当前选中"""
+
+        if self.scope_all.isChecked():
+
+            return self.containers.shortcuts.items()  # Step 1C-4
+
+        sc = self._current()
+
+        if sc is None:
+
+            QMessageBox.warning(self, "提示", "请先勾选「作用于全部」或在左侧选中一个快捷方式")
+
+        return [sc] if sc else []
+
+
+
+    def onekey_start(self) -> None:
+
+        targets = self._targets_to_handle()
+
+        if not targets:
+
+            return
+
+
+
+        # 跳过无效 target
+
+        valid = [sc for sc in targets if sc.target and Path(sc.target).exists()]
+
+        skipped = len(targets) - len(valid)
+
+        if not valid:
+
+            QMessageBox.warning(self, "提示", "所选项目没有有效的 target 路径")
+
+            return
+
+
+
+        confirm = QMessageBox.question(
+
+            self, "确认启动",
+
+            f"即将启动 {len(valid)} 个程序"
+
+            + (f" (跳过 {skipped} 个无效)" if skipped else "")
+
+            + "\n是否继续?",
+
+        )
+
+        if confirm != QMessageBox.Yes:
+
+            return
+
+
+
+        self.btn_onekey_start.setEnabled(False)
+
+        self._append_log(f"🚀 一键启动 {len(valid)} 个程序")
+
+
+
+        pids: list[int] = []
+
+        names: list[str] = []
+
+        use_shell = self.radio_shellexec.isChecked()
+
+        for sc in valid:
+
+            try:
+
+                cwd = sc.work_dir if sc.work_dir and Path(sc.work_dir).is_dir() else str(Path(sc.target).parent)
+
+                if use_shell:
+
+                    cmd_str = 'cd /d "{}" && start "" "{}"'.format(cwd, sc.target)
+
+                    proc = subprocess.Popen(
+
+                        ["cmd", "/c", cmd_str],
+
+                        creationflags=0x08000000,
+
+                    )
+
+                else:
+
+                    proc = subprocess.Popen(
+
+                        [sc.target],
+
+                        cwd=cwd,
+
+                        creationflags=0x08000000,
+
+                    )
+
+                pids.append(proc.pid)
+
+                names.append(sc.name)
+
+                self._append_log("  ✅ {}  (PID={}, mode={})".format(sc.name, proc.pid, "shell" if use_shell else "direct"))
+
+            except Exception as e:
+
+                self._append_log("  ❌ {}: {}".format(sc.name, e))
+
+
+
+        # 记忆,供一键关闭用 (Step 1C-1: UIState 替代裸 dict)
+
+        self.containers.state.pids = pids
+
+        self.containers.state.names = names
+
+        self.containers.state.ts = int(time.time())
+
+        self._save_state()
+
+        self._append_log(f"📝 已记录本次启动 {len(pids)} 个 PID")
+
+        self.btn_onekey_start.setEnabled(True)
+
+
+
+    def onekey_stop(self) -> None:
+
+        # Step 1C-1: UIState 字段直接访问 (替代 self.state.get)
+
+        pids: list[int] = list(self.containers.state.pids)
+
+        names: list[str] = list(self.containers.state.names)
+
+
+
+        # 额外补刀:有些进程会派生子进程,这里同时按可执行文件名扫一遍
+
+        all_pids = self._expand_running_pids(pids)
+
+
+
+        if not all_pids:
+
+            QMessageBox.information(self, "提示", "没有可关闭的进程 (state 为空或进程已退出)")
+
+            return
+
+
+
+        detail = "\n".join(f"  • {n} (PID={p})" for n, p in zip(names, pids))
+
+        confirm = QMessageBox.question(
+
+            self, "确认关闭",
+
+            f"将关闭以下 {len(all_pids)} 个进程:\n{detail}\n\n是否继续?",
+
+        )
+
+        if confirm != QMessageBox.Yes:
+
+            return
+
+
+
+        self.btn_onekey_stop.setEnabled(False)
+
+        killed = 0
+
+        for pid in all_pids:
+
+            try:
+
+                # /F 强制 /T 连带子进程
+
+                subprocess.run(
+
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+
+                    check=False, capture_output=True, text=True, timeout=10,
+
+                )
+
+                killed += 1
+
+            except Exception as e:
+
+                self._append_log(f"  ⚠️ PID {pid}: {e}")
+
+
+
+        self._append_log(f"🛑 已尝试关闭 {killed}/{len(all_pids)} 个进程")
+
+        # 清理状态 (Step 1C-1)
+
+        self.containers.state.clear()
+
+        self._save_state()
+
+        self.btn_onekey_stop.setEnabled(True)
+
+
+
+    def _expand_running_pids(self, root_pids: list[int]) -> list[int]:
+
+        """按 PID 列表 + 当前选中项的 target,合并出实际还活着的 PID 集合"""
+
+        import psutil  # 局部导入,允许缺失时报错
+
+        alive: set[int] = set()
+
+        # 1) 记录中的 PID 仍然存活 -> 加入
+
+        for pid in root_pids:
+
+            try:
+
+                if psutil.pid_exists(pid):
+
+                    alive.add(pid)
+
+            except Exception:
+
+                pass
+
+        # 2) 对当前所有 target,按可执行文件名匹配同进程
+
+        for sc in self.containers.shortcuts:  # Step 1C-4
+
+            if not sc.target:
+
+                continue
+
+            exe_name = Path(sc.target).name.lower()
+
+            for p in psutil.process_iter(["pid", "name"]):
+
+                try:
+
+                    if (p.info["name"] or "").lower() == exe_name:
+
+                        alive.add(p.info["pid"])
+
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+
+                    continue
+
+        return sorted(alive)
+
+
+
+
+
+# ---------------------------------------------------------------------------
+
+# 8. 入口
+
+# ---------------------------------------------------------------------------
+
+def _maybe_relaunch_in_pythonw() -> None:
+
+    """如果是用 python.exe 启动的,重起到 pythonw.exe 避免黑控制台窗口
+
+
+
+    检测: sys.stdout 关联到控制台 (Windows 上 python.exe 启动会有 tty,pythonw.exe 没有)
+
+    """
+
+    if sys.platform != "win32":
+
+        return
+
+    # 跳过 MCP/单实例转发 模式
+
+    if any(a in sys.argv for a in ("--mcp", "--close-main")):
+
+        return
+
+    # 跳过 --replace 模式 (该模式依赖 print 输出调试)
+
+    if "--replace" in sys.argv:
+
+        return
+
+    # 检测是否有控制台
+
+    try:
+
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+
+        # ATTACH_PARENT_PROCESS = -1 (ATTACH_CONSOLE)
+
+        # 如果已附加到控制台,则 kernel32.GetConsoleWindow() 不为 0
+
+        has_console = kernel32.GetConsoleWindow() != 0
+
+    except Exception:
+
+        return
+
+    if not has_console:
+
+        return  # 本身是 pythonw.exe 启动的,不用重起
+
+    # 重起到 pythonw.exe
+
+    pyw = Path(sys.executable).with_name("pythonw.exe")
+
+    if not pyw.exists():
+
+        return
+
+    import subprocess
+
+    subprocess.Popen(
+
+        [str(pyw), __file__, *sys.argv[1:]],
+
+        cwd=str(Path(__file__).parent),
+
+        creationflags=0x08000000,  # DETACHED_PROCESS
+
+    )
+
+    sys.exit(0)
+
+
+
+def _silence_qt_warnings() -> None:
+
+    """屏蔽 Qt 在 Windows 上发到 stderr 的 DPI/字体警告
+
+
+
+    PySide6 6.x 在 Win10/11 上会试加载 MS Sans Serif / Modern / Roman / Script 等
+
+    几 95 时代老字体,找不到会发 DirectWrite 警告。这些是良性的,
+
+    装 PySide6 的应用控制台会被刷屏。用 qInstallMessageHandler 过滤掉。
+
+    """
+
+    try:
+
+        from PySide6.QtCore import qInstallMessageHandler, QtMsgType
+
+
+
+        _QUIET_PREFIXES = (
+
+            "qt.qpa.fonts: DirectWrite: CreateFontFaceFromHDC",
+
+            "qt.qpa.window: SetProcessDpiAwarenessContext",
+
+            "qt.qpa.fonts: QFont::setPointSize",
+
+        )
+
+
+
+        def _handler(mode, ctx, msg):
+
+            try:
+
+                m = str(msg)
+
+            except Exception:
+
+                return
+
+            for p in _QUIET_PREFIXES:
+
+                if m.startswith(p):
+
+                    return
+
+            # 其余警告 (QtWarningMsg / QtCriticalMsg) 仍然正常输出
+
+            try:
+
+                import sys as _sys
+
+                _sys.stderr.write(f"[Qt] {m}\n")
+
+                _sys.stderr.flush()
+
+            except Exception:
+
+                pass
+
+
+
+        qInstallMessageHandler(_handler)
+
+    except Exception:
+
+        pass
+
+
+
+def main() -> int:
+
+    # 如果是用 python.exe 启动的,重起到 pythonw.exe (避免黑控制台窗口)
+
+    _maybe_relaunch_in_pythonw()
+
+
+
+    # MCP 模式: 不显示 GUI,作为 stdio server 运行
+
+    if "--mcp" in sys.argv:
+
+        return _run_mcp_only()
+
+
+
+    # --replace: 关闭旧实例后启动新 GUI(不进行单实例检查,由 --replace 自行处理关闭旧实例)
+
+    if "--replace" in sys.argv:
+
+        print("[单实例] --replace 模式: 关闭旧实例后启动新 GUI")
+
+        _forward_to_running_instance([sys.executable, "--close-main"])
+
+        print("[单实例] 已发送关闭命令, 等待旧实例退出...")
+
+        time.sleep(0.8)
+
+        print("[单实例] 等待完毕, 准备启动新 GUI")
+
+    elif not _try_acquire_single_instance():
+
+        print("[单实例] 已有实例在运行, 通过 IPC 转发任务...")
+
+        _forward_to_running_instance(sys.argv)
+
+        print("[单实例] 任务已转发, 当前进程退出")
+
+        sys.exit(0)
+
+
+
+    app = QApplication(sys.argv)
+
+    app.setApplicationName("桌面自动化助手")
+
+    # 屏蔽 Qt 的 DPI/字体警告 (PySide6 6.x 在 Win10+ 会刷屏)
+
+    _silence_qt_warnings()
+
+    # 如果托盘可用,不要在最后一个窗口关闭时退出应用(避免关闭主窗口后进程退出)
+
+    if QSystemTrayIcon.isSystemTrayAvailable():
+
+        app.setQuitOnLastWindowClosed(False)
+
+    # 设置应用图标
+
+    icon_path = Path(__file__).parent / "app_icon.ico"
+
+    if icon_path.exists():
+
+        from PySide6.QtGui import QIcon
+
+        app.setWindowIcon(QIcon(str(icon_path)))
+
+
+
+    # 显式设置默认字体: 避免 Qt 去加载缺失的 "MS Sans Serif" 而报 DirectWrite 警告
+
+    from PySide6.QtGui import QFont
+
+    app.setFont(QFont("Segoe UI", 10))
+
+
+
+    # 统一 QSS 风格(浅色)
+
+    app.setStyleSheet("""
+
+        QPushButton { padding: 4px 10px; min-height: 18px; }
+
+        QGroupBox { font-weight: bold; margin-top: 14px; }
+
+        QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 6px; }
+
+        QCheckBox, QRadioButton { padding: 2px 0; }
+
+        QLineEdit { padding: 4px; }
+
+        QLabel { padding: 2px 0; }
+
+    """)
+
+
+
+    # 启动进度画面
+
+    _show_splash(app, [
+
+        "正在创建用户数据目录…",
+
+        "正在迁移旧配置文件…",
+
+        "正在加载后端配置…",
+
+        "正在初始化传感器…",
+
+        "正在启动 AI 感知…",
+
+        "启动完成，即将显示主窗口…",
+
+    ])
+
+
+
+    win = MainWindow()
+
+    # 订阅全局日志总线 (主窗口)
+
+    win._setup_global_log_bus()
+
+    # 设置工作流 StepExecutor 的 launcher 回调 (尊重快捷方式的 launch_mode 绑定)
+
+    try:
+
+        from workflow_panel import StepExecutor
+
+        StepExecutor.set_launcher(win.launch_by_path)
+
+    except Exception:
+
+        pass
+
+    # 判断是否需要默认后台运行
+
+    start_in_background = "--background" in sys.argv or _is_default_background()
+
+    if not start_in_background:
+
+        win.show()
+
+    else:
+
+        # 后台运行: 不显示窗口,仅托盘图标
+
+        win._tray_hint_shown = True  # 跳过“已隐藏”提示
+
+        # 仍是创建窗口,只是不 showNormal;需要时 _show_from_tray 会显示
+
+        print("[启动] 默认后台运行,窗口已隐藏,可在托盘恢复")
+
+    return app.exec()
+
+
+
+
+
+def _show_splash(app: QApplication, steps: list[str]) -> None:
+
+    """显示启动进度画面，每步自动推进，保证最低显示时间。"""
+
+    import time as _time
+
+    pd = QProgressDialog(steps[0], None, 0, len(steps), None)
+
+    pd.setWindowTitle("桌面自动化助手 - 启动中")
+
+    pd.setWindowFlags(pd.windowFlags() | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
+
+    pd.setModal(True)
+
+    pd.resize(420, 90)
+
+    screen_geo = app.primaryScreen().geometry()
+
+    pd.move(screen_geo.center() - pd.rect().center())
+
+    pd.show()
+
+    app.processEvents()
+
+    start = _time.time()
+
+    min_dur = 1.5
+
+    for i, step in enumerate(steps):
+
+        pd.setLabelText(step)
+
+        pd.setValue(i + 1)
+
+        app.processEvents()
+
+        elapsed = _time.time() - start
+
+        step_dur = min_dur / len(steps)
+
+        remaining = step_dur - (elapsed - i * step_dur)
+
+        if remaining > 0:
+
+            _time.sleep(remaining)
+
+    pd.close()
+
+    pd.deleteLater()
+
+
+
+
+
+def _is_default_background() -> bool:
+
+    """检查 config.json 中是否设置了默认后台运行"""
+
+    cfg_path = USER_DATA_DIR / "config.json"
+
+    if not cfg_path.exists():
+
+        return False
+
+    try:
+
+        data = json.loads(cfg_path.read_text("utf-8"))
+
+        return bool(data.get("start_in_background", False))
+
+    except Exception:
+
+        return False
+
+
+
+
+
+def _run_mcp_only() -> int:
+
+    """只运行 MCP server,不显示 GUI (用于 AI 客户端调用)"""
+
+    import asyncio
+
+    import json
+
+
+
+    # MCP 模式才应用兼容补丁/导入 MCP 依赖,避免普通 GUI 启动被 MCP 依赖拖崩。
+
+    try:
+
+        from mcp_patch import patch_jsonschema_specifications
+
+        patch_jsonschema_specifications()
+
+    except Exception as e:
+
+        print(f"[WARN] MCP 兼容补丁失败: {e}", file=sys.stderr)
+
+
+
+    from mcp_embedded import scan_desktop_shortcuts, load_workflows, run_workflow_sync, launch_shortcut_sync
+
+    from search_panel import search_everything
+
+    from mcp_file_tools import FILE_TOOL_NAMES, FILE_TOOL_SCHEMAS, handle_file_tool
+
+
+
+    try:
+
+        from mcp.server import Server
+
+        from mcp.server.stdio import stdio_server
+
+        from mcp.types import Tool, TextContent
+
+    except ImportError as e:
+
+        print(f"[ERR] MCP 依赖缺失: {e}", file=sys.stderr)
+
+        print("[ERR] 需要安装: pip install mcp", file=sys.stderr)
+
+        return 1
+
+
+
+    async def serve():
+
+        server = Server("desktop-auto")
+
+        @server.list_tools()
+
+        async def list_tools():
+
+            tools = [
+
+                Tool(name="list_workflows", description="列出所有工作流", inputSchema={"type": "object", "properties": {"name": {"type": "string"}}}),
+
+                Tool(name="list_shortcuts", description="列出桌面快捷方式", inputSchema={"type": "object", "properties": {}}),
+
+                Tool(name="run_workflow", description="执行工作流", inputSchema={"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}),
+
+                Tool(name="launch_shortcut", description="启动快捷方式", inputSchema={"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}),
+
+                Tool(name="search_local_files", description="Everything 全盘搜索 (支持通配符 *.py / 文件名 4月明细 / 大小 size:>10MB / 日期 dm:today)", inputSchema={"type": "object", "properties": {
+
+                    "query": {"type": "string", "description": "搜索词,如: 4月明细"},
+
+                    "limit": {"type": "number", "description": "返回结果数,默认50"},
+
+                    "path": {"type": "string", "description": "限定目录,如 C:\\Users\\Public"},
+
+                    "sort": {"type": "string", "description": "排序: name/date/size,默认 date"},
+
+                }, "required": ["query"]}),
+
+            ]
+
+            for schema in FILE_TOOL_SCHEMAS:
+
+                tools.append(Tool(name=schema["name"], description=schema["description"], inputSchema=schema["inputSchema"]))
+
+            return tools
+
+        @server.call_tool()
+
+        async def call_tool(name, arguments):
+
+            try:
+
+                if name in FILE_TOOL_NAMES:
+
+                    def stdio_logger(msg):
+
+                        print(f"[MCP-FileTool] {msg}", file=sys.stderr)
+
+
+
+                    result = handle_file_tool(name, arguments, log_cb=stdio_logger)
+
+                    return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+
+
+
+                if name == "list_workflows":
+
+                    wfs = load_workflows()
+
+                    target = arguments.get("name", "")
+
+                    if target:
+
+                        wf = wfs.get(target)
+
+                        if not wf: return [TextContent(type="text", text=json.dumps({"ok": False, "error": f"不存在: {target}"}, ensure_ascii=False))]
+
+                        return [TextContent(type="text", text=json.dumps({"ok": True, "workflow": wf}, ensure_ascii=False, indent=2))]
+
+                    summary = {n: {"description": wf.get("description", ""), "step_count": len(wf.get("steps", []))} for n, wf in wfs.items()}
+
+                    return [TextContent(type="text", text=json.dumps({"ok": True, "workflows": summary}, ensure_ascii=False, indent=2))]
+
+                elif name == "list_shortcuts":
+
+                    scs = scan_desktop_shortcuts()
+
+                    return [TextContent(type="text", text=json.dumps({"ok": True, "count": len(scs), "shortcuts": scs}, ensure_ascii=False, indent=2))]
+
+                elif name == "run_workflow":
+
+                    n = arguments.get("name", "")
+
+                    logs = []
+
+                    result = run_workflow_sync(n, logs.append)
+
+                    result["logs"] = logs
+
+                    return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+
+                elif name == "launch_shortcut":
+
+                    n = arguments.get("name", "")
+
+                    return [TextContent(type="text", text=json.dumps(launch_shortcut_sync(n), ensure_ascii=False))]
+
+                elif name == "search_local_files":
+
+                    q = arguments.get("query", "")
+
+                    limit = int(arguments.get("limit", 50))
+
+                    path = arguments.get("path", "")
+
+                    sort = arguments.get("sort", "date")
+
+                    result = search_everything(q, path=path, limit=limit, sort=sort)
+
+                    return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+
+                return [TextContent(type="text", text=json.dumps({"ok": False, "error": f"未知: {name}"}, ensure_ascii=False))]
+
+            except Exception as e:
+
+                return [TextContent(type="text", text=json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))]
+
+
+
+        async with stdio_server() as (read_stream, write_stream):
+
+            await server.run(read_stream, write_stream, server.create_initialization_options())
+
+
+
+    asyncio.run(serve())
+
+    return 0
+
+
+
+
+
+
+
+
+
+if __name__ == "__main__":
+
+    sys.exit(main())
+
