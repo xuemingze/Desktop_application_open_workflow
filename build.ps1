@@ -92,14 +92,6 @@ try {
         $size = "{0:N1}" -f ($_.Length / 1MB)
         Write-Host "  $($_.Name)  ($size MB)"
     }
-
-    if ($CopyToDesktop) {
-        $dest = [Environment]::GetFolderPath("Desktop")
-        if (Test-Path $dest) {
-            Copy-Item -Force $Output (Join-Path $dest "$ExeName.exe")
-            Write-Host "[OK] Copied to desktop: $ExeName.exe" -ForegroundColor Green
-        }
-    }
 }
 finally {
     Pop-Location

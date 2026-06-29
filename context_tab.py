@@ -154,7 +154,7 @@ class ContextTab(QWidget):
         self._sensor_manager.captured.connect(self._behavior_matcher.on_capsule)
         self._toast_manager.toast_clicked.connect(self._on_toast_clicked)
         # AI agent 推荐 → 走 toast + 广播到 AI 对话页 (同步)
-        self._agent.intent_ready.connect(self._toast_manager.show_toast)
+        self._agent.intent_ready.connect(self._show_toast_gated)
         self._agent.intent_ready.connect(self.toast_broadcast.emit)
         self._agent.log_signal.connect(self._append_log)
         self._behavior_matcher.log_signal.connect(self._append_log)
@@ -203,7 +203,7 @@ class ContextTab(QWidget):
         # 同步 AI 主动推送 (气泡) 到对话页
         self.toast_broadcast.connect(self.context_chat_tab.on_intent)
         # 同步 AI chat 气泡事件到 toast 管理器（仅本地显示，不广播避免循环）
-        self.context_chat_tab.toast_broadcast.connect(self._toast_manager.show_toast)
+        self.context_chat_tab.toast_broadcast.connect(self._show_toast_gated)
         # 同步用户点击气泡
         self._toast_manager.toast_clicked.connect(self.context_chat_tab.on_toast_clicked)
         sub.addTab(self.context_chat_tab, t("ctx_tab_chat"))
@@ -934,18 +934,20 @@ class ContextTab(QWidget):
                         suggested_action="open_file",
                         action_param=result.path,
                     )
-                    self._toast_manager.show_toast(intent)
+                    if self._should_show_local_toast():
+                        self._toast_manager.show_toast(intent)
                     self.toast_broadcast.emit(intent)
                     self._push_vtuber_notification(f"📝 {intent.message}")
                 else:
                     self._append_log("[MEM] 复盘生成失败")
                     intent = ToastIntent(
-                        intent="\U0001f4dd 复盘失败",
+                        intent="复盘失败",
                         message="复盘生成失败，请检查 AI 后端是否可用",
                         suggested_action="",
                         action_param=None,
                     )
-                    self._toast_manager.show_toast(intent)
+                    if self._should_show_local_toast():
+                        self._toast_manager.show_toast(intent)
 
             thread = threading.Thread(target=_thread_target, daemon=True)
             thread.start()
@@ -1217,12 +1219,12 @@ class ContextTab(QWidget):
                 suggested_action=sug,
                 action_param=param,
             )
-            self._toast_manager.show_toast(intent)
+            self._show_toast_gated(intent)
             self._push_vtuber_notification(intent.message)
         # 延迟 4 秒,给 LLM 先推的机会(LLM 需 3-11 秒)
         QTimer.singleShot(4000, _show)
 
-    def _learning_text_preview(self, text: str, max_len: int = 90) -> str:
+    def _learning_text_preview(self, text: str, max_len: int = 300) -> str:
         clean = " ".join((text or "").split())
         if len(clean) <= max_len:
             return clean
@@ -1264,9 +1266,9 @@ class ContextTab(QWidget):
                 suggested_action="ai_prompt",
                 action_param=data["prompt"],
             )
-            self._toast_manager.show_toast(intent)
+            self._show_toast_gated(intent)
             self.toast_broadcast.emit(intent)
-            self._push_vtuber_notification(f"📘 {intent.message}")
+            self._push_vtuber_notification(intent.message)
             timer.deleteLater()
 
         timer.timeout.connect(_show)
@@ -1294,6 +1296,12 @@ class ContextTab(QWidget):
 
     def _on_toast_clicked(self, intent: ToastIntent):
         """用户点击了气泡 → 打开小聊天窗，并同步 AI 对话标签页记录"""
+        # 文件日志：点击到达 context_tab
+        try:
+            with open(r"D:\项目\控制电脑\_toast_debug.log", "a", encoding="utf-8") as _f:
+                _f.write(f"[{__import__('datetime').datetime.now():%H:%M:%S}] _on_toast_clicked action={intent.suggested_action}\n")
+        except Exception:
+            pass
         self._append_log(f"[点击] 用户点击气泡: {intent.suggested_action}({intent.action_param})")
         action = getattr(intent, "suggested_action", "") or ""
         if action == "open_file":
@@ -1318,8 +1326,15 @@ class ContextTab(QWidget):
             if prompt:
                 QTimer.singleShot(150, lambda p=prompt: self.context_chat_tab.send_text(p))
             return
-        if hasattr(self, "context_chat_tab"):
-            self.context_chat_tab.on_action_executed(intent)
+        # VTuber 通知点击: action 通常为空,on_action_executed 会抛异常吞掉,直接打开小聊天窗
+        if not action and getattr(intent, "intent", "") == "VTuber 通知":
+            self._open_mini_chat(None)
+            return
+        try:
+            if hasattr(self, "context_chat_tab"):
+                self.context_chat_tab.on_action_executed(intent)
+        except Exception as e:
+            self._append_log(f"[点击] on_action_executed 异常(忽略): {e}")
         self._open_mini_chat(intent)
 
     # ---- 测试 ----
@@ -1346,7 +1361,7 @@ class ContextTab(QWidget):
             action_param="toast test",
         )
         self._append_log("[Toast] 手动测试气泡")
-        self._toast_manager.show_toast(intent)
+        self._show_toast_gated(intent)
 
     # ---- VTuber 桥接推送辅助 ----
 
@@ -1375,6 +1390,11 @@ class ContextTab(QWidget):
         except Exception:
             pass
         return True
+
+    def _show_toast_gated(self, intent) -> None:
+        """统一入口:遵循桌面气泡开关;关闭时仍广播给 AI 对话页(由 intent_ready 直连保证)。"""
+        if self._should_show_local_toast():
+            self._toast_manager.show_toast(intent)
 
     # ---- 路径管理 ----
     def _on_add_path(self):
@@ -1716,7 +1736,7 @@ class ContextTab(QWidget):
                     suggested_action="proactive_question",
                     action_param=q.category,
                 )
-                self._toast_manager.show_toast(intent)
+                self._show_toast_gated(intent)
                 self._push_vtuber_notification(intent.message)
                 return
 

@@ -1400,6 +1400,11 @@ exit /b 0
         cfg = self._load_global_config()
         cfg["vtuber_show_local_toast"] = bool(checked)
         self._save_global_config(cfg)
+        try:
+            from log_bus import log_bus
+            log_bus.emit(f"[VTuber] 桌面气泡 {'已启用' if checked else '已禁用'}")
+        except Exception:
+            pass
 
     def _on_vtuber_url_changed(self, text: str) -> None:
         cfg = self._load_global_config()

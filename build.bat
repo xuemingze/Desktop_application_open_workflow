@@ -73,21 +73,3 @@ echo.
 echo Current dist\ contents:
 dir /b dist\*.exe 2>nul
 echo.
-
-REM Optional: copy to desktop
-set "DESKTOP=%USERPROFILE%\Desktop"
-if exist "%DESKTOP%" (
-    echo [COPY] Copy to Desktop?
-    set /p "CHOICE=Press Y to copy, other keys to skip: "
-    if /I "%CHOICE%"=="Y" (
-        copy /y "dist\%EXE_NAME%.exe" "%DESKTOP%\%EXE_NAME%.exe" >nul
-        if errorlevel 1 (
-            echo [ERR] Copy failed
-        ) else (
-            echo [OK] Copied to %DESKTOP%\%EXE_NAME%.exe
-        )
-    )
-)
-
-echo.
-pause

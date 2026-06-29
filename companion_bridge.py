@@ -302,17 +302,27 @@ class CompanionAPIHandler(BaseHTTPRequestHandler):
     def _handle_toast_click(self) -> None:
         """浏览器通知弹窗被点击 → 触发桌面助手的 AI 小对话"""
         cb = CompanionAPIHandler.toast_click_callback
+        _log(f"[toast_click] callback set={cb is not None}")
+        # 文件日志(调试用)
+        try:
+            with open(r"D:\项目\控制电脑\_toast_debug.log", "a", encoding="utf-8") as _f:
+                _f.write(f"[{__import__('datetime').datetime.now():%H:%M:%S}] _handle_toast_click cb={cb is not None}\n")
+        except Exception:
+            pass
         if cb:
             try:
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("utf-8")
                 import json as _json
                 data = _json.loads(body) if body.strip() else {}
                 text = data.get("text", "")
-            except Exception:
+                _log(f"[toast_click] text={text[:50]}")
+            except Exception as e:
+                _log(f"[toast_click] parse error: {e}")
                 text = ""
             cb(text)
             self._send_json(200, {"ok": True})
         else:
+            _log("[toast_click] callback not set")
             self._send_json(200, {"ok": False, "error": "toast_click_callback not set"})
 
     def _handle_chat_completions(self) -> None:
