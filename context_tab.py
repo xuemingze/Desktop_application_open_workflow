@@ -1161,8 +1161,7 @@ class ContextTab(QWidget):
         self._mini_chat_dialog.show()
         self._mini_chat_dialog.raise_()
         self._mini_chat_dialog.activateWindow()
-        if intent is not None:
-            self.context_chat_tab.on_toast_clicked(intent)
+        # on_toast_clicked 已由信号连接(self._toast_manager.toast_clicked → on_toast_clicked)触发,这里不再重复调用
 
     def _fallback_toast_by_rule(self, capsule: ContextCapsule, rule_name: str) -> None:
         """兑底: 根据嗅探规则名直接弹一条气泡,不依赖 LLM
