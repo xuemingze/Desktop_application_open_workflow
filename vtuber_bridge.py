@@ -1,8 +1,19 @@
 """
-vtuber_bridge.py - Open-LLM-VTuber 桥接模块
+vtuber_bridge.py - Open-LLM-VTuber 桥接模块（助理模式）
 
 通过 WebSocket 连接到 Open-LLM-VTuber 后端 (ws://127.0.0.1:12393/client-ws)
-发送 text-input 消息触发 AI 对话。
+以"助理模式"工作: 本系统(Desktop-Auto Assistant)作为 AI 大脑,
+VTuber 作为前端渲染层。
+
+协议说明 (Assistant Mode):
+  - speak(text):   发送 text-input → VTuber 走完整对话管线
+                    → 调用本系统的 AssistantBridge (port 16299)
+                    → VTuber 前端显示气泡 + TTS + Live2D
+  - push_notification(text): 发送 assistant-message
+                    只写 VTuber chat history,不触发 LLM,不显示气泡
+                    (配合本地 ToastBubble 使用)
+  - acknowledge_ai_message(text): 发送 assistant-message
+                    举手发言专用,与 push_notification 同协议,语义不同
 
 后端默认端口: 12393
 """
@@ -10,7 +21,6 @@ import json
 import logging
 import threading
 import time
-import asyncio
 
 log = logging.getLogger("vtuber_bridge")
 
@@ -24,7 +34,7 @@ except ImportError:
 
 class VTuberBridge:
     """
-    通过 WebSocket 连接到 Open-LLM-VTuber 的桥接器。
+    通过 WebSocket 连接到 Open-LLM-VTuber 的桥接器(助理模式)。
 
     Open-LLM-VTuber 后端端口: 12393 (conf.yaml 中配置)
     WebSocket 端点: ws://<host>:<port>/client-ws
@@ -47,7 +57,7 @@ class VTuberBridge:
         self._max_retries = 3
 
     def _connect(self) -> bool:
-        """在新线程中建立 WebSocket 连接"""
+        """在新线程中建立 WebSocket 连接（自动重连: VTuber 后端随时启动均可连接）"""
         if not HAS_WS:
             log.warning("[VTuberBridge] websocket-client 未安装")
             return False
@@ -64,9 +74,13 @@ class VTuberBridge:
             )
             self._ws = ws
             self._running = True
-            self._thread = threading.Thread(target=ws.run_forever, daemon=True)
+            self._thread = threading.Thread(
+                target=ws.run_forever,
+                kwargs={"reconnect": 5},  # 断线后每 5 秒自动重连
+                daemon=True,
+            )
             self._thread.start()
-            log.info(f"[VTuberBridge] WebSocket 连接线程已启动: {self.backend_url}")
+            log.info(f"[VTuberBridge] WebSocket 连接线程已启动(自动重连): {self.backend_url}")
             return True
         except Exception as e:
             log.warning(f"[VTuberBridge] WebSocket 连接失败: {e}")
@@ -127,39 +141,27 @@ class VTuberBridge:
             return self._connect()
         return False
 
-    def notify_event(self, message: str) -> bool:
+    # =================================================================
+    # 助理模式核心 API
+    # =================================================================
+
+    def speak(self, text: str) -> bool:
         """
-        向桌宠推送感知事件，触发 AI 主动回复 + TTS + 动画。
-        通过 bubble-event 类型发送，后端会广播 full-text 给所有 WS 客户端，
-        前端浏览器收到后显示气泡并触发 TTS 朗读。
+        让桌宠说话——通过标准 text-input 协议触发完整对话管线。
+
+        执行流程:
+          1. 发送 text-input → VTuber 后端
+          2. VTuber 调用 LLM 后端(即本系统的 AssistantBridge :16299)
+          3. AssistantBridge 生成回复
+          4. VTuber 前端显示气泡 + TTS + Live2D
+
+        注意: text 会以"用户消息"身份进入 VTuber chat,但回复由我们的
+        助理桥接器控制,最终气泡显示的是助理的回复内容。
+
+        适用场景: 助理主动发起的对话(主动嗅探结果、定时提醒等)
         """
-        if not self._ensure_connected():
+        if not text:
             return False
-        ok = self._send({
-            "type": "bubble-event",
-            "content": message,
-        })
-        if ok:
-            log.debug(f"[VTuberBridge] 已发送: {message[:50]}")
-        return ok
-
-    def send_user_message(self, text: str) -> bool:
-        """DEPRECATED: 此方法把文本伪装成 user 输入,会污染 AI 上下文。
-
-        替代方案:
-          - notify_event():广播气泡(纯显示,不写 VTuber 后端 history)
-          - speak():触发后端 LLM 主动生成发言(走 ai-speak-signal)
-          - acknowledge_ai_message():把指定文本以 AI 身份写入 history(举手发言用)
-
-        此方法保留一个版本以提示迁移,后续版本删除。
-        """
-        import warnings
-        warnings.warn(
-            "send_user_message 已弃用 —— 会把文本伪装成 user 输入污染 AI 上下文。"
-            "请改用 notify_event / speak / acknowledge_ai_message。",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         if not self._ensure_connected():
             return False
         ok = self._send({
@@ -167,11 +169,37 @@ class VTuberBridge:
             "text": text,
         })
         if ok:
-            log.debug(f"[VTuberBridge] text-input sent: {text[:50]}")
+            log.debug(f"[VTuberBridge] speak(text-input) sent: {text[:50]}")
+        return ok
+
+    def push_notification(self, text: str) -> bool:
+        """
+        推送主动发言——通过 ai-speak-signal 协议让 VTuber 主动说话。
+
+        VTuber 后端 _handle_conversation_trigger (已修复):
+          1. 使用 data["text"] 作为 LLM user_input(不再忽略)
+          2. 先发 full-text 到前端(气泡即时显示)
+          3. 调用 LLM 后端(本系统的 AssistantBridge :16299)
+          4. 助理桥接器回复 → 前端气泡 + TTS + Live2D
+
+        适用场景: 主动嗅探结果、工作流执行状态、后台通知等需要展示在
+        VTuber 前端的气泡内容。
+        """
+        if not text:
+            return False
+        if not self._ensure_connected():
+            return False
+        ok = self._send({
+            "type": "ai-speak-signal",
+            "text": text,
+        })
+        if ok:
+            log.debug(f"[VTuberBridge] push_notification(ai-speak-signal) sent: {text[:50]}")
         return ok
 
     def acknowledge_ai_message(self, text: str) -> bool:
-        """举手发言:把指定文本以 AI 身份写入 VTuber 后端 chat history。
+        """
+        举手发言:把指定文本以 AI 身份写入 VTuber 后端 chat history。
 
         适用场景:用户点击主动嗅探推送的气泡 = "举手" = 把气泡文案作为
         AI 已说过的话写入历史,让后续 LLM 推理能引用"我刚才问了这个问题"。
@@ -179,7 +207,6 @@ class VTuberBridge:
         关键契约:
           - 发 type='assistant-message'(对应后端 assistant-message 协议)
           - 不触发新一轮 LLM(否则用户没说话 AI 也会续说)
-          - 不调 notify_event / send_user_message(避免污染或重复广播)
           - 失败时返回 False,不抛异常(降级不影响主流程)
         """
         if not text:
@@ -194,14 +221,9 @@ class VTuberBridge:
             log.debug(f"[VTuberBridge] assistant-message sent: {text[:50]}")
         return ok
 
-    def speak(self, text: str) -> bool:
-        """直接让桌宠说一段话"""
-        if not self._ensure_connected():
-            return False
-        return self._send({
-            "type": "ai-speak-signal",
-            "text": text,
-        })
+    # =================================================================
+    # 其他控制 API
+    # =================================================================
 
     def set_expression(self, expression: str) -> bool:
         """设置桌宠表情"""

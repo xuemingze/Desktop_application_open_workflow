@@ -1,19 +1,19 @@
 """
-气泡-举手-发言 护栏测试(Step 2-3A,B+A 方案)
+气泡-举手-发言 护栏测试(Step 2-3A,B+A 方案 — 助理模式)
 
-目标行为(B+A):
-  - 主动嗅探触发气泡时,只广播,不写 VTuber 后端 chat history
+目标行为(Assistant Mode):
+  - 主动嗅探触发气泡时,用 push_notification 写 VTuber history
   - 用户点击气泡(举手)= 把气泡文案以 AI 身份写入 VTuber 后端 chat history
   - UI 区分:已举手气泡显示"已举手 ✓"标记
-  - 新协议:assistant-message(后端加,客户端发)
-  - send_user_message 被标记 DeprecationWarning(留迁移期,后续版本删除)
+  - 新协议:assistant-message(后端已支持,前端用 push_notification)
+  - notify_event / send_user_message 已移除
 
 锁住的核心契约:
-  T1. _on_behavior_question 不调 send_user_message,只调 notify_event
+  T1. _on_behavior_question 不调 send_user_message,只调 push_notification
   T2. on_toast_clicked 调 acknowledge_ai_message(intent.message)
-  T3. acknowledge_ai_message 发 assistant-message 协议,不动 notify_event/send_user_message
+  T3. acknowledge_ai_message 发 assistant-message 协议,不动 push_notification/speak
   T4. _append_assistant 文本包含"已举手 ✓"标记
-  T5. send_user_message 被调用时打 DeprecationWarning(留出迁移期)
+  T5. notify_event / send_user_message 已从 vtuber_bridge 移除
 """
 from __future__ import annotations
 
@@ -42,8 +42,8 @@ def _read(path: Path) -> str:
 
 
 def _method_body(src: str, name: str) -> str:
-    """提取方法体直到下一个 def/class 或文件末尾,容错处理末尾方法"""
-    pattern = rf"def {name}\(self[^)]*\):(.*?)(?=\n    def |\nclass |\Z)"
+    """提取方法体直到下一个 def/class 或文件末尾或注释分隔线,容错处理末尾方法"""
+    pattern = rf"def {name}\(self[^)]*\)[^:]*:(.*?)(?=\n    def |\nclass |\n    # =+|\Z)"
     m = re.search(pattern, src, re.DOTALL)
     if not m:
         return ""
@@ -51,7 +51,7 @@ def _method_body(src: str, name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# T1. _on_behavior_question 不调 send_user_message
+# T1. _on_behavior_question 不调 send_user_message,调 push_notification
 # ---------------------------------------------------------------------------
 
 class TestNoPollutionOnProactiveSniff:
@@ -66,12 +66,21 @@ class TestNoPollutionOnProactiveSniff:
             "这会污染 VTuber 后端 chat history(把主动嗅探当 user 输入)"
         )
 
-    def test_on_behavior_question_calls_notify_event(self):
+    def test_on_behavior_question_calls_push_notification(self):
         src = _read(CONTEXT_TAB)
         body = _method_body(src, "_on_behavior_question")
         assert body
-        assert "notify_event" in body, (
-            "_on_behavior_question 必须保留 notify_event 广播气泡"
+        assert "push_notification" in body, (
+            "_on_behavior_question 必须调 push_notification 写 VTuber history"
+        )
+
+    def test_on_behavior_question_does_not_call_notify_event(self):
+        """助理模式:notify_event 已移除,用 push_notification 替代"""
+        src = _read(CONTEXT_TAB)
+        body = _method_body(src, "_on_behavior_question")
+        assert body
+        assert "notify_event" not in body, (
+            "notify_event 已移除,应使用 push_notification"
         )
 
 
@@ -134,8 +143,15 @@ class TestAcknowledgeAiMessageContract:
         assert "send_user_message" not in body, (
             "acknowledge_ai_message 不能调 send_user_message(那是污染源)"
         )
+        # 助理模式:不会出现 ai-speak-signal / notify_event / speak
         assert "ai-speak-signal" not in body, (
             "acknowledge_ai_message 不能发 ai-speak-signal(会触发后端 LLM 重新生成内容)"
+        )
+        assert "speak" not in body, (
+            "acknowledge_ai_message 不能调 speak(会触发 text-input 管线)"
+        )
+        assert "push_notification" not in body, (
+            "acknowledge_ai_message 不能调 push_notification(语义冲突)"
         )
 
 
@@ -156,20 +172,22 @@ class TestRaiseHandUIFeedback:
 
 
 # ---------------------------------------------------------------------------
-# T5. send_user_message 迁移期警告
+# T5. notify_event / send_user_message 已从 vtuber_bridge 移除
 # ---------------------------------------------------------------------------
 
-class TestSendUserMessageDeprecation:
-    """send_user_message 已弃用;若被调用应打 DeprecationWarning(留迁移期)"""
+class TestOldProtocolsRemoved:
+    """notify_event 和 send_user_message 已在助理模式中移除"""
 
-    def test_send_user_message_warns_when_called(self):
+    def test_notify_event_not_in_vtuber_bridge(self):
         src = _read(VTUBER_BRIDGE)
-        if "def send_user_message" not in src:
-            pytest.skip("send_user_message 已彻底删除(可选行为)")
-        body = _method_body(src, "send_user_message")
-        assert body
-        assert "DeprecationWarning" in body or "warnings.warn" in body, (
-            "send_user_message 已弃用,必须打 DeprecationWarning"
+        assert "def notify_event" not in src, (
+            "notify_event 已移除(ai-speak-signal 协议会丢失文本),请用 push_notification"
+        )
+
+    def test_send_user_message_not_in_vtuber_bridge(self):
+        src = _read(VTUBER_BRIDGE)
+        assert "def send_user_message" not in src, (
+            "send_user_message 已过迁移期,已被删除"
         )
 
 

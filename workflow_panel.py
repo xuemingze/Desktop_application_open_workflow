@@ -1570,14 +1570,14 @@ class WorkflowEditor(QWidget):
         else:
             self._fire_toast(t("wf_toast_failed", wf_name=wf_name, msg=msg), intent_name=t("wf_toast_intent_failed"))
 
-        # VTuber 桥接：工作流执行结果推送
+        # VTuber 桥接：工作流执行结果推送（助理模式 — 静默通知,气泡由本地 Toast 显示）
         if self.parent_window and hasattr(self.parent_window, '_vtuber_bridge'):
             vb = getattr(self.parent_window, '_vtuber_bridge')
             if vb and getattr(vb, 'enabled', False):
                 if ok:
-                    vb.notify_event(f"✅ 工作流 [{wf_name}] 执行成功")
+                    vb.push_notification(f"✅ 工作流 [{wf_name}] 执行成功")
                 else:
-                    vb.notify_event(f"❌ 工作流 [{wf_name}] 执行失败: {msg}")
+                    vb.push_notification(f"❌ 工作流 [{wf_name}] 执行失败: {msg}")
 
     def _push_workflow_toast(self, msg: str):
         """过滤并推送重要的执行日志到气泡。"""

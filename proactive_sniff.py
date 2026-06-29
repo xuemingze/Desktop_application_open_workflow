@@ -461,13 +461,15 @@ class ProactiveScheduler(QObject):
 # 与 Toast 系统打通
 # ---------------------------------------------------------------------------
 class ProactiveRunner(QObject):
-    """把调度器生成的问题转成 Toast 展示"""
+    """把调度器生成的问题转成 Toast 展示 + VTuber 推送"""
 
     def __init__(self, scheduler: ProactiveScheduler,
-                 toast_manager: ToastManager, parent=None):
+                 toast_manager: ToastManager,
+                 vtuber_push_callback=None, parent=None):
         super().__init__(parent)
         self._scheduler = scheduler
         self._toast_manager = toast_manager
+        self._vtuber_push_callback = vtuber_push_callback
         scheduler.triggered.connect(self._on_question)
 
     @Slot(object)
@@ -483,6 +485,10 @@ class ProactiveRunner(QObject):
             action_param=q.category,
         )
         self._toast_manager.show_toast(intent)
+        # VTuber 推送
+        if self._vtuber_push_callback:
+            icon = icon_map.get(q.category, "💬")
+            self._vtuber_push_callback(f"{icon} {q.text}")
 
 
 # ---------------------------------------------------------------------------

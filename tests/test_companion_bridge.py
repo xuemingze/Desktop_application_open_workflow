@@ -302,10 +302,10 @@ class TestConsumerInvariants:
         src_bytes = (REPO_ROOT / "context_tab.py").read_bytes()
         assert b"16260" in src_bytes or b"companion" in src_bytes.lower() or "vtuber" in src_bytes.decode("utf-8", errors="replace").lower()
 
-    def test_context_tab_calls_notify_event(self):
-        """context_tab 应调用 notify_event (推送气泡入口)"""
+    def test_context_tab_calls_push_notification(self):
+        """context_tab 应调用 push_notification (助理模式推送入口)"""
         text = (REPO_ROOT / "context_tab.py").read_text(encoding="utf-8", errors="replace")
-        assert "notify_event" in text
+        assert "push_notification" in text
 
     def test_build_spec_includes_companion_bridge(self):
         src = self._load("build.spec")
@@ -315,21 +315,31 @@ class TestConsumerInvariants:
 # ---------- TestBubbleEventKey (for bug fix verification) ----------
 
 class TestBubbleEventKey:
-    """为 '气泡进入 VTuber 聊天上下文' bug 修复预留不变量"""
+    """为 '气泡推送失败 — ai-speak-signal 忽略 text 字段' 根源修复预留不变量"""
 
-    def test_vtuber_bridge_has_notify_event(self):
-        """vtuber_bridge 提供 notify_event (气泡事件推送, 不进 chat context)"""
+    def test_vtuber_bridge_has_speak(self):
+        """vtuber_bridge 提供 speak (text-input → 标准对话管线)"""
         import vtuber_bridge
-        assert hasattr(vtuber_bridge.VTuberBridge, "notify_event")
+        assert hasattr(vtuber_bridge.VTuberBridge, "speak")
 
-    def test_vtuber_bridge_should_have_send_user_message(self):
-        """新增: 气泡修复后必须存在 send_user_message (text-input 类型, 进 chat context)"""
+    def test_vtuber_bridge_has_push_notification(self):
+        """vtuber_bridge 提供 push_notification (assistant-message → 写 history)"""
         import vtuber_bridge
-        assert hasattr(vtuber_bridge.VTuberBridge, "send_user_message"), \
-            "BUG 修复未到位: vtuber_bridge 缺 send_user_message 方法, 气泡无法进入 VTuber 聊天上下文"
+        assert hasattr(vtuber_bridge.VTuberBridge, "push_notification")
 
-    def test_context_tab_should_call_send_user_message(self):
-        """新增: context_tab 推送气泡时也应调用 send_user_message"""
-        text = (REPO_ROOT / "context_tab.py").read_text(encoding="utf-8", errors="replace")
-        assert "send_user_message" in text, \
-            "BUG 修复未到位: context_tab 未调用 send_user_message, 气泡不进 VTuber 聊天上下文"
+    def test_vtuber_bridge_has_acknowledge_ai_message(self):
+        """vtuber_bridge 提供 acknowledge_ai_message (举手协议)"""
+        import vtuber_bridge
+        assert hasattr(vtuber_bridge.VTuberBridge, "acknowledge_ai_message")
+
+    def test_vtuber_bridge_no_notify_event(self):
+        """notify_event 已移除(ai-speak-signal 忽略 text 字段)"""
+        import vtuber_bridge
+        assert not hasattr(vtuber_bridge.VTuberBridge, "notify_event"), \
+            "notify_event 已移除,请用 speak() 或 push_notification()"
+
+    def test_vtuber_bridge_no_send_user_message(self):
+        """send_user_message 已过迁移期,已删除"""
+        import vtuber_bridge
+        assert not hasattr(vtuber_bridge.VTuberBridge, "send_user_message"), \
+            "send_user_message 已过迁移期,已被删除"

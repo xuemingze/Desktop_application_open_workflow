@@ -129,7 +129,11 @@ class ContextTab(QWidget):
         self._proactive_scheduler = ProactiveScheduler(
             self._proactive_generator, self._proactive_history, parent=self
         )
-        self._proactive_runner = ProactiveRunner(self._proactive_scheduler, self._toast_manager, parent=self)
+        self._proactive_runner = ProactiveRunner(
+            self._proactive_scheduler, self._toast_manager,
+            vtuber_push_callback=self._push_vtuber_notification,
+            parent=self,
+        )
         # 行为兴趣触发器——检测到匹配关键词时立即推送
         self._behavior_matcher = BehaviorInterestMatcher(
             self._proactive_generator, self._proactive_history, parent=self
@@ -932,6 +936,7 @@ class ContextTab(QWidget):
                     )
                     self._toast_manager.show_toast(intent)
                     self.toast_broadcast.emit(intent)
+                    self._push_vtuber_notification(f"📝 {intent.message}")
                 else:
                     self._append_log("[MEM] 复盘生成失败")
                     intent = ToastIntent(
@@ -1130,16 +1135,18 @@ class ContextTab(QWidget):
         self._toast_manager.show_toast(intent)
         self.toast_broadcast.emit(intent)
 
-        # VTuber 桥接事件转发（主动嗅探结果）
+        # VTuber 桥接事件转发（主动嗅探结果 — 助理模式）
+        # 使用 push_notification(assistant-message) 写入 VTuber chat history,
+        # 不触发 LLM,不污染 user 上下文。气泡显示由本地 ToastBubble 负责。
         self._append_log(f"[主动嗅探VTuber] category={q.category}, text={q.text[:30]}")
         win = self.window()
         has_bridge = hasattr(win, "_vtuber_bridge")
         bridge = getattr(win, "_vtuber_bridge", None) if has_bridge else None
         self._append_log(f"[主动嗅探VTuber] has_bridge={has_bridge}, bridge={bridge is not None}, enabled={getattr(bridge, 'enabled', 'N/A')}, running={getattr(bridge, '_running', 'N/A')}")
         if has_bridge and bridge and getattr(bridge, 'enabled', False):
-            ok = bridge.notify_event(f"主动嗅探 - {q.category}: {q.text}")
-            self._append_log(f"[主动嗅探VTuber] notify_event OK={ok}")
-            # 修复:主动嗅探只发 notify_event(bubble-event/TTS),不污染 VTuber chat context
+            ok = bridge.push_notification(f"主动嗅探 - {q.category}: {q.text}")
+            self._append_log(f"[主动嗅探VTuber] push_notification OK={ok}")
+            # 助理模式:push_notification 只写 history,不触发 LLM
             # (举手由用户在气泡点击时通过 acknowledge_ai_message 单独写入 assistant 角色)
         else:
             self._append_log("[主动嗅探VTuber] 桥接未就绪，跳过")
@@ -1211,6 +1218,7 @@ class ContextTab(QWidget):
                 action_param=param,
             )
             self._toast_manager.show_toast(intent)
+            self._push_vtuber_notification(intent.message)
         # 延迟 4 秒,给 LLM 先推的机会(LLM 需 3-11 秒)
         QTimer.singleShot(4000, _show)
 
@@ -1258,6 +1266,7 @@ class ContextTab(QWidget):
             )
             self._toast_manager.show_toast(intent)
             self.toast_broadcast.emit(intent)
+            self._push_vtuber_notification(f"📘 {intent.message}")
             timer.deleteLater()
 
         timer.timeout.connect(_show)
@@ -1338,6 +1347,21 @@ class ContextTab(QWidget):
         )
         self._append_log("[Toast] 手动测试气泡")
         self._toast_manager.show_toast(intent)
+
+    # ---- VTuber 桥接推送辅助 ----
+
+    def _push_vtuber_notification(self, text: str) -> bool:
+        """如果 VTuber 桥接已启用,推送通知气泡到 VTuber 前端"""
+        win = self.window()
+        if not win:
+            return False
+        bridge = getattr(win, "_vtuber_bridge", None)
+        if bridge and getattr(bridge, "enabled", False):
+            ok = bridge.push_notification(text)
+            if not ok:
+                self._append_log(f"[VTuber] push_notification 失败: {text[:30]}")
+            return ok
+        return False
 
     # ---- 路径管理 ----
     def _on_add_path(self):
@@ -1680,6 +1704,7 @@ class ContextTab(QWidget):
                     action_param=q.category,
                 )
                 self._toast_manager.show_toast(intent)
+                self._push_vtuber_notification(intent.message)
                 return
 
     def _on_proactive_clear(self):

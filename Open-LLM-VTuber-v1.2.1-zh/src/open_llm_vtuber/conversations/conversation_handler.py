@@ -33,35 +33,31 @@ async def handle_conversation_trigger(
     metadata = None
 
     if msg_type == "ai-speak-signal":
-        try:
-            # Get proactive speak prompt from config
-            prompt_name = "proactive_speak_prompt"
-            prompt_file = context.system_config.tool_prompts.get(prompt_name)
-            if prompt_file:
-                user_input = prompt_loader.load_util(prompt_file)
-            else:
-                logger.warning("Proactive speak prompt not configured, using default")
-                user_input = "Please say something."
-        except Exception as e:
-            logger.error(f"Error loading proactive speak prompt: {e}")
+        # 使用客户端推送的 text 作为 LLM user_input,不再从配置加载提示词
+        user_input = data.get("text", "").strip()
+        if not user_input:
+            logger.warning("ai-speak-signal: text 为空,使用默认提示")
             user_input = "Please say something."
 
         # Add metadata to indicate this is a proactive speak request
-        # that should be skipped in both memory and history
         metadata = {
             "proactive_speak": True,
-            "skip_memory": True,  # Skip storing in AI's internal memory
-            "skip_history": True,  # Skip storing in local conversation history
+            "skip_memory": True,
+            "skip_history": True,  # 不写入 DB history,避免产生多余的对话记录
         }
 
-        await websocket.send_text(
-            json.dumps(
-                {
-                    "type": "full-text",
-                    "text": "AI wants to speak something...",
-                }
-            )
-        )
+        # 广播 assistant-notification 到所有客户端(触发浏览器通知弹窗)
+        client_count = len(client_connections)
+        logger.info(f"ai-speak-signal: 广播通知到 {client_count} 个客户端")
+        notification = json.dumps({"type": "assistant-notification", "text": user_input})
+        send_tasks = []
+        for uid, ws in list(client_connections.items()):
+            try:
+                send_tasks.append(ws.send_text(notification))
+            except Exception as e:
+                logger.warning(f"ai-speak-signal: 发送到 {uid} 失败: {e}")
+        if send_tasks:
+            await asyncio.gather(*send_tasks, return_exceptions=True)
     elif msg_type == "text-input":
         user_input = data.get("text", "")
     elif msg_type == "assistant-message":
