@@ -1636,14 +1636,23 @@ class ContextTab(QWidget):
         # 保留 _save_proactive_config 写入的 proactive 段，避免保存后端/规则时把用户档案覆盖掉
         cfg = dict(self._config) if isinstance(self._config, dict) else {}
         cfg.update({
-            "blacklist_extra": self._gatekeeper.get_blacklist(),
+            "ai_sense": {
+                "enabled": self.master_switch.isChecked() if hasattr(self, "master_switch") else False,
+                "modes": {
+                    "clipboard": self.chk_clipboard.isChecked() if hasattr(self, "chk_clipboard") else False,
+                    "window": self.chk_window.isChecked() if hasattr(self, "chk_window") else False,
+                    "file": self.chk_file.isChecked() if hasattr(self, "chk_file") else False,
+                    "process": self.chk_process.isChecked() if hasattr(self, "chk_process") else False,
+                } if hasattr(self, "chk_clipboard") else {},
+            },
+            "blacklist_extra": self._gatekeeper.get_blacklist() if hasattr(self, "_gatekeeper") else [],
             "rule_overrides": [
                 {"name": r.name, "enabled": r.enabled}
                 for r in self._gatekeeper.get_rules()
-            ],
+            ] if hasattr(self, "_gatekeeper") else [],
             "learning": {
                 "default_translate_lang": self.default_translate_lang_input.text().strip() or "中文",
-            },
+            } if hasattr(self, "default_translate_lang_input") else {},
             "backend": {
                 "type": self.backend_combo.currentIndex(),
                 "base_url": self.base_url_input.text(),
@@ -1651,7 +1660,7 @@ class ContextTab(QWidget):
                 "model": self.model_input.currentText(),
                 "timeout": self.timeout_spin.value(),
                 "tavily_api_key": self.tavily_key_input.text().strip(),
-            },
+            } if hasattr(self, "backend_combo") else {},
         })
         self._config = cfg
         try:
