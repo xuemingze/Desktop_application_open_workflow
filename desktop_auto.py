@@ -2801,12 +2801,14 @@ class MainWindow(QMainWindow):
 
         if not hasattr(self, "context_tab") or not self.context_tab:
 
+            self._append_log(f"[Reminder] context_tab 未就绪,跳过提醒 #{item.get('id')}")
             return
 
         try:
 
             import json
 
+            from reminders import update_reminder_status
             from context_toast import ToastIntent
 
             rid = int(item.get("id") or 0)
@@ -2844,6 +2846,10 @@ class MainWindow(QMainWindow):
             self._push_vtuber_notification(f"🔔 {intent.message}")
 
             self.context_tab._toast_manager.show_toast(intent)
+
+            # 标记为已完成，避免每分钟重复弹出
+            update_reminder_status(rid, "done")
+            self._append_log(f"[Reminder] 已弹出提醒 #{rid}: {content}")
 
         except Exception as e:
 
@@ -3279,6 +3285,30 @@ class MainWindow(QMainWindow):
 
 
 
+        self._tray_menu.addSeparator()
+
+
+
+        # --- VTuber 后端 ---
+
+        act_vt_start = QAction("🎤  启动 VTuber 后端", self)
+
+        act_vt_start.triggered.connect(self._tray_start_vtuber)
+
+        self._tray_menu.addAction(act_vt_start)
+
+
+
+        act_vt_stop = QAction("🎤  停止 VTuber 后端", self)
+
+        act_vt_stop.triggered.connect(self._tray_stop_vtuber)
+
+        self._tray_menu.addAction(act_vt_stop)
+
+
+
+        self._tray_menu.addSeparator()
+
 
 
         act_quit = QAction("❌  退出", self)
@@ -3565,6 +3595,56 @@ class MainWindow(QMainWindow):
         except Exception as e:
 
             self._append_log(f"[Memory] 复盘生成失败: {e}")
+
+
+
+    # ---- VTuber 后端托盘快速控制 ----
+
+    def _tray_start_vtuber(self) -> None:
+        """从托盘启动 VTuber 后端"""
+        try:
+            from vtuber_backend_manager import get_manager
+            from data_paths import USER_DATA_DIR
+            from pathlib import Path
+            import json
+            mgr = get_manager()
+            if mgr.is_running():
+                self._tray_show_msg("VTuber 后端", f"后端已在运行 (PID={mgr.get_status().get('pid')})")
+                return
+            # 直接从 config.json 读取已保存的后端路径
+            cfg_path = USER_DATA_DIR / "config.json"
+            path = ""
+            if cfg_path.exists():
+                cfg = json.loads(cfg_path.read_text("utf-8"))
+                path = cfg.get("vtuber_backend_path", "")
+            if not path:
+                self._tray_show_msg("VTuber 后端", "请先在【工具】页设置 Open-LLM-VTuber 目录路径")
+                return
+            ok, msg = mgr.start(path)
+            self._tray_show_msg("VTuber 后端", msg if ok else f"❌ {msg}", error=not ok)
+        except Exception as e:
+            self._append_log(f"[VTuber] 托盘启动失败: {e}")
+
+    def _tray_stop_vtuber(self) -> None:
+        """从托盘停止 VTuber 后端"""
+        try:
+            from vtuber_backend_manager import get_manager
+            mgr = get_manager()
+            if not mgr.is_running():
+                self._tray_show_msg("VTuber 后端", "后端未运行")
+                return
+            ok, msg = mgr.stop()
+            self._tray_show_msg("VTuber 后端", msg if ok else f"❌ {msg}", error=not ok)
+        except Exception as e:
+            self._append_log(f"[VTuber] 托盘停止失败: {e}")
+
+    def _tray_show_msg(self, title: str, msg: str, error: bool = False) -> None:
+        """托盘气泡消息"""
+        self._append_log(f"[托盘] {title}: {msg}")
+        if self._tray_icon:
+            from PySide6.QtWidgets import QSystemTrayIcon
+            icon = QSystemTrayIcon.Critical if error else QSystemTrayIcon.Information
+            self._tray_icon.showMessage(title, msg, icon, 3000)
 
 
 

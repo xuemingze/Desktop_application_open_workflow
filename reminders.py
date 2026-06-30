@@ -53,8 +53,8 @@ def init_db() -> None:
         conn.commit()
 
 
-def _now() -> _dt.datetime:
-    return _dt.datetime.now().replace(microsecond=0)
+# _now() 已在上方定义（CST 时区感知，防止 Windows BIOS=UTC 导致时间偏差）
+# 这里不再重复定义，以保持时区一致性
 
 
 def _safe_text(value: str, limit: int = 500) -> str:

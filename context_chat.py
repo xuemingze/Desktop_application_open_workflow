@@ -197,28 +197,75 @@ def tool_search_local_files(query: str, limit: int = 10, path: str = "") -> dict
 
 
 def tool_web_search(query: str, limit: int = 5) -> dict:
+    """联网搜索 - 自动尝试多个后端，确保返回结果"""
     if not _WEB_ENABLED:
         return {"ok": False, "error": "联网开关未开启,请在 AI 对话页上方开启【联网】"}
+    
+    # 按优先级依次尝试: Tavily → Bing → DuckDuckGo
+    last_error = ""
+    
     if _TAVILY_API_KEY:
         tavily_result = _tool_tavily_search(query, limit)
         if tavily_result.get("ok"):
             return tavily_result
-        bing_result = _tool_bing_search(query, limit)
-        if bing_result.get("ok"):
-            auth_note = "Tavily Key 未授权/无效" if tavily_result.get("auth_error") else f"Tavily 失败：{tavily_result.get('error', '')}"
-            bing_result["note"] = f"{auth_note}；已改用 Bing 增强搜索"
+        last_error = f"Tavily: {tavily_result.get('error', '')}"
+    
+    bing_result = _tool_bing_search(query, limit)
+    if bing_result.get("ok") and bing_result.get("results"):
+        note_parts = []
+        if last_error:
+            note_parts.append(last_error)
+        bing_result["note"] = "；".join(note_parts + ["已改用 Bing 搜索"]) if note_parts else ""
         return bing_result
-    return _tool_bing_search(query, limit)
+    last_error = f"Bing: {bing_result.get('error', bing_result.get('note', '失败'))}"
+    
+    # Bing 也没结果 → DuckDuckGo 兜底
+    ddg_result = _tool_duckduckgo_search(query, limit)
+    if ddg_result.get("ok"):
+        ddg_result["note"] = f"{last_error}；已改用 DuckDuckGo 搜索"
+        return ddg_result
+    
+    # 全部失败
+    return {"ok": False, "error": f"所有搜索后端均失败: {last_error}; DuckDuckGo: {ddg_result.get('error', '')}"}
 
 
 def _enhance_web_query(query: str) -> str:
+    """通用查询增强：自动识别查询类型并补充上下文关键词，无需硬编码游戏名。
+
+    规则：
+    - 含"材料"/"攻略"/"培养"/"配队"/"突破"/"技能"等词 → 游戏/角色类查询
+    - 含"报错"/"修复"/"安装"/"配置"等词 → 技术类查询
+    - 含"新闻"/"最新"/"今天"等词 → 时效类查询
+    - 统一过滤百科词典类低质量页面
+    """
     q = (query or "").strip()
-    if "异环" in q or "娜娜莉" in q or "娜娜莉" in q:
-        extras = ["Neverness to Everness", "NTE", "攻略", "培养", "配队", "弧盘", "空幕", "游民星空", "TapTap", "51WAN", "NTE Guide"]
-        for word in extras:
-            if word not in q:
-                q += f" {word}"
-        q += " -百度百科 -汉典 -汉语 -字典"
+    lowered = q.lower()
+
+    # ---- 通用低质量站点过滤（适用于所有查询） ----
+    exclude_sites = " -百度百科 -汉典 -汉语 -字典 -词典 -wikipedia"
+
+    # ---- 游戏/角色培养类查询：含材料/攻略/培养类关键词 ----
+    game_hints = ["材料", "攻略", "培养", "配队", "突破", "技能", "升级", "资源", "怎么练"]
+    is_game_query = any(h in q for h in game_hints)
+
+    # 也可能是角色名(2~4字中文) + 材料/攻略 的组合
+    import re as _re
+    has_char_name = bool(_re.search(r'[\u4e00-\u9fff]{2,4}(的)?(材料|攻略|培养|技能|突破)', q))
+
+    if is_game_query or has_char_name:
+        general_game_tags = ["攻略", "培养", "材料"]
+        for tag in general_game_tags:
+            if tag not in q:
+                q += f" {tag}"
+        # 排除游戏无关的低质站点
+        q += exclude_sites
+        return q
+
+    # ---- 技术故障排查类 ----
+    tech_hints = ["报错", "错误", "修复", "安装", "配置", "异常", "崩溃", "闪退", "失败", "解决"]
+    if any(h in q for h in tech_hints):
+        q += exclude_sites
+
     return q
 
 
@@ -236,20 +283,6 @@ def _dedupe_search_results(results: list[dict], limit: int = 5) -> list[dict]:
         if len(deduped) >= limit:
             break
     return deduped
-
-
-def _curated_game_results(query: str) -> list[dict]:
-    q = (query or "").lower()
-    if "异环" in q and ("娜娜莉" in q or "nanally" in q or "nanali" in q):
-        return [
-            {
-                "title": "《异环》娜娜莉培养一图流 - 游民星空",
-                "url": "https://www.gamersky.com/handbook/202604/2129360.shtml",
-                "snippet": "娜娜莉定位灵属性主力输出。推荐森林萤火之心卡带，优先普攻与极轨终结；弧盘优先专武预备备，配队推荐娜娜莉+主角+九原+早雾。",
-                "source_hint": "curated",
-            }
-        ]
-    return []
 
 
 def _is_low_quality_search_result(title: str, url: str, snippet: str) -> bool:
@@ -282,7 +315,7 @@ def _tool_tavily_search(query: str, limit: int = 5) -> dict:
             snippet = str(item.get("content", item.get("snippet", "")))[:500]
             if not _is_low_quality_search_result(title, url, snippet):
                 results.append({"title": title, "url": url, "snippet": snippet, "score": item.get("score")})
-        results = _dedupe_search_results(_curated_game_results(query) + results, limit)
+        results = _dedupe_search_results(results, limit)
         return {"ok": True, "count": len(results), "results": results, "source": "Tavily"}
     except Exception as e:
         try:
@@ -319,16 +352,44 @@ def _tool_bing_search(query: str, limit: int = 5) -> dict:
                 results.append({"title": title[:200], "url": href, "snippet": snippet[:300]})
             if len(results) >= limit: break
         
-        curated = _curated_game_results(query)
-        merged_results = _dedupe_search_results(curated + results, limit)
+        merged_results = _dedupe_search_results(results, limit)
         if not merged_results:
             return {"ok": True, "count": 0, "results": [], "source": "Bing", "query": enhanced_query, "note": "未解析出高质量结果"}
-        return {"ok": True, "count": len(merged_results), "results": merged_results, "source": "Bing+Curated" if curated else "Bing", "query": enhanced_query}
+        return {"ok": True, "count": len(merged_results), "results": merged_results, "source": "Bing", "query": enhanced_query}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
-_WEB_ENABLED = False
+def _tool_duckduckgo_search(query: str, limit: int = 5) -> dict:
+    """DuckDuckGo HTML 搜索（免 key，作为第三后备）"""
+    try:
+        import urllib.request, urllib.parse, re as _re, html as _html
+        q = urllib.parse.quote(query)
+        req = urllib.request.Request(
+            f"https://html.duckduckgo.com/html/?q={q}",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            html = r.read().decode("utf-8", errors="ignore")
+        results = []
+        # DDG 结果在 <a rel="nofollow" class="result__a" href="..."> 中
+        for item in _re.findall(r'<a rel="nofollow" class="result__a" href="([^"]+)">(.*?)</a>', html)[:limit]:
+            href = _html.unescape(item[0])
+            title = _html.unescape(_re.sub(r"<[^>]+>", "", item[1])).strip()
+            # snippet 在紧随的 <a class="result__snippet" ...> 中
+            snippet_match = _re.search(
+                r'<a class="result__snippet"[^>]*>(.*?)</a>',
+                html[html.find(f'href="{_html.escape(item[0])}"'):],
+                _re.DOTALL
+            )
+            snippet = _html.unescape(_re.sub(r"<[^>]+>", "", snippet_match.group(1))).strip() if snippet_match else ""
+            if not _is_low_quality_search_result(title, href, snippet):
+                results.append({"title": title[:200], "url": href, "snippet": snippet[:300]})
+        if not results:
+            return {"ok": True, "count": 0, "results": [], "source": "DuckDuckGo", "note": "未解析出结果"}
+        return {"ok": True, "count": len(results), "results": _dedupe_search_results(results, limit), "source": "DuckDuckGo"}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "source": "DuckDuckGo"}
 _TAVILY_API_KEY = ""
 
 def set_tavily_api_key(api_key: str) -> None:
@@ -438,6 +499,17 @@ def build_chat_system_prompt(web_enabled: Optional[bool] = None) -> str:
   - 不管是 JSON 里的 reply 字段,还是 action 工具调用的上下文,都**不得**出现这类标签。
   - 内部推理应当在你"内心"完成,直接产出最终结论/JSON 即可。
   - 客户端会用正则强制剥离这类标签,但**你也必须从源头避免输出**,这是双保险。
+
+【联网搜索优化规则】
+当调用 web_search 工具时，**你自己负责构造高质量的搜索词**：
+1. 搜索"角色/游戏攻略/材料"时，**必须**在 query 里加上游戏名 + "攻略"、"培养"、"材料"等词。
+   示例：搜"绝区零 蕾米埃尔 材料" → query 写"绝区零 蕾米埃尔·丹 突破材料 技能材料 攻略"
+2. 名字不确定时，补上别名/全名，让搜索引擎能找到。
+   示例：用户说"雷米艾尔" → query 写"雷米艾尔 蕾米埃尔·丹 绝区零 攻略"
+3. 搜技术报错时，加上"报错"、"修复"、"解决方案"等词。
+4. 搜新闻/热点时，加上"最新"、"2026"等时效词。
+这条规则是让你**搜索之前就优化好 query**，不是搜完之后改。
+搜索到结果后，如实呈现给用户。如果结果不包含具体数据（如材料清单），就明确告诉用户"搜索结果未找到具体数据"，**不要编造虚假的材料数值**。
 """
 
 
@@ -948,9 +1020,8 @@ class MiniChatDialog(QDialog):
         self.setWindowTitle("💬 AI 小对话")
         self.resize(520, 420)
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+        self._first_show = True  # 标记是否首次显示
         self._build_ui()
-        self.chat_view.setHtml(chat_tab.chat_view.toHtml())
-        chat_tab.html_appended.connect(self._append_html)
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -970,6 +1041,15 @@ class MiniChatDialog(QDialog):
         row.addWidget(btn)
         root.addLayout(row)
 
+    def showEvent(self, event):
+        """首次显示时同步一次主聊天记录，并连接增量信号"""
+        super().showEvent(event)
+        if self._first_show:
+            self._first_show = False
+            # 只同步一次，避免每次打开都序列化/反序列化大量 HTML
+            self.chat_view.setHtml(self._chat_tab.chat_view.toHtml())
+            self._chat_tab.html_appended.connect(self._append_html)
+
     def _append_html(self, html: str):
         self.chat_view.append(html)
         sb = self.chat_view.verticalScrollBar()
@@ -983,8 +1063,6 @@ class MiniChatDialog(QDialog):
         self._chat_tab.send_text(text)
 
     def closeEvent(self, event):
-        try:
-            self._chat_tab.html_appended.disconnect(self._append_html)
-        except Exception:
-            pass
-        super().closeEvent(event)
+        """关闭时只隐藏不销毁，下次打开无需重建 UI"""
+        event.ignore()
+        self.hide()
