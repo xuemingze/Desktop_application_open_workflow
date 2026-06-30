@@ -731,41 +731,26 @@ class ContextTab(QWidget):
             self._append_log(f"[系统] 上下文感知模式已更新: {modes}")
 
     def _save_ai_sense_config(self, master_enabled: bool) -> None:
-        """把总开关 + 4 个子模式持久化到 config.json（主配置）"""
-        try:
-            from data_paths import USER_DATA_DIR
-            cfg_path = USER_DATA_DIR / "config.json"
-            cfg = {}
-            if cfg_path.exists():
-                try:
-                    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-                except Exception:
-                    cfg = {}
-            cfg["ai_sense_enabled"] = bool(master_enabled)
-            cfg["ai_sense_modes"] = {
+        """把总开关 + 4 个子模式持久化到 self._config + context_aware_config.json（统一配置文件）"""
+        if "ai_sense" not in self._config:
+            self._config["ai_sense"] = {}
+        self._config["ai_sense"] = {
+            "enabled": bool(master_enabled),
+            "modes": {
                 "clipboard": self.chk_clipboard.isChecked(),
                 "window": self.chk_window.isChecked(),
                 "file": self.chk_file.isChecked(),
                 "process": self.chk_process.isChecked(),
-            }
-            cfg_path.parent.mkdir(parents=True, exist_ok=True)
-            cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception as e:
-            self._append_log(f"[配置] AI 感知配置保存失败: {e}")
+            },
+        }
+        self._save_config()
 
     def _load_ai_sense_config_into_ui(self) -> None:
-        """从 config.json 读取 AI 感知配置到 UI（默认全关）。防止在设置状态时触发信号。"""
+        """从 self._config 读取 AI 感知配置到 UI（默认全关）。防止在设置状态时触发信号。"""
         try:
-            from data_paths import USER_DATA_DIR
-            cfg_path = USER_DATA_DIR / "config.json"
-            cfg = {}
-            if cfg_path.exists():
-                try:
-                    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-                except Exception:
-                    cfg = {}
-            master_enabled = bool(cfg.get("ai_sense_enabled", False))
-            modes = cfg.get("ai_sense_modes", {}) if isinstance(cfg.get("ai_sense_modes"), dict) else {}
+            ai_cfg = self._config.get("ai_sense", {}) if isinstance(self._config, dict) else {}
+            master_enabled = bool(ai_cfg.get("enabled", False))
+            modes = ai_cfg.get("modes", {}) if isinstance(ai_cfg.get("modes"), dict) else {}
             # 在加载期间阻断 toggle 信号避免重复保存
             self._loading_ai_sense_config = True
             try:
