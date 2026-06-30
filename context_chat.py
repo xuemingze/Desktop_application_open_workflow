@@ -120,7 +120,7 @@ TOOL_DEFINITIONS = [
         "name": "create_reminder",
         "description": "当用户要求在未来某个时间提醒他做某事时调用。默认只弹 Toast；如需关联工作流，只创建带按钮的提醒，必须用户到期后点击才运行。",
         "params": {
-            "trigger_time": "ISO 时间或中文相对时间，如 2026-06-21T15:00:00、半小时后、明天下午3点",
+            "trigger_time": "【重要】必须使用相对时间表达式，如'2分钟后'、'半小时后'、'明天下午3点'。绝对不要自己计算/生成 ISO 绝对时间，你的系统时间不准！让服务端解析相对时间。",
             "content": "提醒内容",
             "action_type": "toast 或 run_workflow，默认 toast",
             "workflow_name": "可选，action_type=run_workflow 时填写工作流名"
@@ -175,6 +175,8 @@ def tool_launch_shortcut(name: str) -> dict:
 
 def tool_create_reminder(trigger_time: str, content: str, action_type: str = "toast", workflow_name: str = "") -> dict:
     try:
+        from reminders import parse_time_expr
+        parsed_iso = parse_time_expr(trigger_time)
         reminder_id = create_reminder(
             trigger_time=trigger_time,
             content=content,
@@ -182,7 +184,7 @@ def tool_create_reminder(trigger_time: str, content: str, action_type: str = "to
             workflow_name=workflow_name or None,
             created_from_chat=True,
         )
-        return {"ok": True, "id": reminder_id, "trigger_time": trigger_time, "content": content}
+        return {"ok": True, "id": reminder_id, "parsed_time": parsed_iso, "content": content}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
