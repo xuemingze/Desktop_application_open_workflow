@@ -2847,6 +2847,15 @@ class MainWindow(QMainWindow):
 
             self.context_tab._toast_manager.show_toast(intent)
 
+            # 系统托盘通知（即使窗口最小化也能看到）
+            if self._tray_icon:
+                self._tray_icon.showMessage(
+                    "🔔 提醒",
+                    content[:120],
+                    QSystemTrayIcon.Information,
+                    5000,
+                )
+
             # 标记为已完成，避免每分钟重复弹出
             update_reminder_status(rid, "done")
             self._append_log(f"[Reminder] 已弹出提醒 #{rid}: {content}")
