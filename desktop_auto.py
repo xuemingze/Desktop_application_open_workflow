@@ -2842,8 +2842,9 @@ class MainWindow(QMainWindow):
                 action_param=json.dumps(payload, ensure_ascii=False),
 
             )
-            # VTuber 推送提醒
-            self._push_vtuber_notification(f"🔔 {intent.message}")
+            # VTuber 推送提醒（_push_vtuber_notification 在 context_tab 上）
+            if hasattr(self, "context_tab") and self.context_tab:
+                self.context_tab._push_vtuber_notification(f"🔔 {intent.message}")
 
             self.context_tab._toast_manager.show_toast(intent)
 
